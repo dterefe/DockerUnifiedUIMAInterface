@@ -1,0 +1,11 @@
+FROM rustlang/rust:nightly-buster-slim
+ADD Cargo.toml Cargo.toml
+ADD src src
+ADD rust_communication_msgpack.lua rust_communication_msgpack.lua
+RUN rustup target add x86_64-unknown-linux-musl
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+FROM alpine:latest
+WORKDIR /root/
+COPY --from=0 /target/x86_64-unknown-linux-musl/release/rust_sentiment ./
+CMD ["./rust_sentiment"]

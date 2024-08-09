@@ -103,47 +103,47 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
         return document;
     }
 
-    private String getFolderId(String folderName) {
-
-        FileList result = null;
-
-        try {
-            result = service.files().list()
-                    .setQ(String.format("name = '%s' and mimeType = 'application/vnd.google-apps.folder'", folderName))
-                    .setFields("files(parents, id, name)")
-                    .execute();
-
-        } catch (IOException e) {
-            return "";
-        }
-
-        List<File> files = result.getFiles();
-
-        if (files.isEmpty()) return "";
-
-        return files.get(0).getId();
-    }
-
-    private String getFileId(String fileName) {
-
-        FileList result = null;
-
-        try {
-            result = service.files().list()
-                    .setQ(String.format("name = '%s'", fileName))
-                    .setFields("files(parents, id, name)")
-                    .execute();
-
-        } catch (IOException e) {
-            return "";
-        }
-
-        List<File> files = result.getFiles();
-
-        if (files.isEmpty()) return "";
-
-        return files.get(0).getId();
-    }
+//    private String getFolderId(String folderName) {
+//
+//        FileList result = null;
+//
+//        try {
+//            result = service.files().list()
+//                    .setQ(String.format("name = '%s' and mimeType = 'application/vnd.google-apps.folder'", folderName))
+//                    .setFields("files(parents, id, name)")
+//                    .execute();
+//
+//        } catch (IOException e) {
+//            return "";
+//        }
+//
+//        List<File> files = result.getFiles();
+//
+//        if (files.isEmpty()) return "";
+//
+//        return files.get(0).getId();
+//    }
+//
+//    private String getFileId(String fileName) {
+//
+//        FileList result = null;
+//
+//        try {
+//            result = service.files().list()
+//                    .setQ(String.format("name = '%s'", fileName))
+//                    .setFields("files(parents, id, name)")
+//                    .execute();
+//
+//        } catch (IOException e) {
+//            return "";
+//        }
+//
+//        List<File> files = result.getFiles();
+//
+//        if (files.isEmpty()) return "";
+//
+//        return files.get(0).getId();
+//    }
 
     private String getAllSubFolders(String parent)  {
 

@@ -43,7 +43,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URISyntaxException;
-import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidParameterException;
@@ -803,21 +802,6 @@ public class DUUIComposer {
     private long instantiationDuration;
     private AtomicInteger progress = new AtomicInteger(0);
 
-    private static final String LOCALHOST;
-
-    static {
-        String selected;
-
-        try {
-            InetAddress addr = InetAddress.getByName("host.docker.internal");
-            selected = "http://" + addr.getHostAddress();
-        } catch (UnknownHostException e) {
-            selected = "http://127.0.0.1";
-        }
-
-        LOCALHOST = selected;
-    }
-    
     /**
      * Composer constructor.
      * @throws URISyntaxException
@@ -863,13 +847,8 @@ public class DUUIComposer {
         Runtime.getRuntime().addShutdownHook(_shutdownHook);
     }
 
-    /**
-     * Returns the previously determined reachable host.
-     *
-     * @return The host URL that was determined at startup.
-     */
     public static String getLocalhost() {
-        return LOCALHOST;
+        return "http://127.0.0.1";
     }
 
     /**

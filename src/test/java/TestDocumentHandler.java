@@ -5,10 +5,11 @@ import com.dropbox.core.v2.files.WriteMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDropboxDocumentHandler;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDocumentHandler;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIMinioDocumentHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.*;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.Timer;
 
 import java.io.IOException;
@@ -21,12 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestDocumentHandler {
 
-    private static final DbxCredential dropboxCredentials = new DbxCredential(
-        System.getenv("dbx_personal_access_token"),
-        1L,
-        System.getenv("dbx_personal_refresh_token"),
-        System.getenv("dbx_app_key"),
-        System.getenv("dbx_app_secret"));
+    private static final DbxCredential dropboxCredentials = null;
+//            new DbxCredential(
+//        System.getenv("dbx_personal_access_token"),
+//        1L,
+//        System.getenv("dbx_personal_refresh_token"),
+//        System.getenv("dbx_app_key"),
+//        System.getenv("dbx_app_secret"));
 
     private static final DbxRequestConfig dropboxConfig = new DbxRequestConfig("DUUI");
 
@@ -346,4 +348,53 @@ public class TestDocumentHandler {
         }
     }
 
+
+    @Nested
+    @DisplayName("NextCloud")
+    public class TestNextCloudDocumentHandler {
+
+        @Test
+        public void TestProcess() throws Exception {
+
+            DUUIComposer composer = new DUUIComposer()
+                    .withSkipVerification(true)
+                    .withDebugLevel(DUUIComposer.DebugLevel.DEBUG)
+                    .withIgnoreErrors(true)
+                    .withLuaContext(new DUUILuaContext().withJsonLibrary());
+
+            DUUIDockerDriver dockerDriver = new DUUIDockerDriver();
+
+            composer.addDriver(dockerDriver);
+
+            composer.add(
+                    new DUUIDockerDriver.Component("docker.texttechnologylab.org/textimager-duui-spacy-single-de_core_news_sm:0.1.4")
+                            .withImageFetching()
+                            .withScale(1)
+                            .build()
+            );
+
+            String serverName = "https://nextcloud.texttechnologylab.org/";
+            String loginName = "terefe";
+            String password = "AqV-rtto5z";
+
+            DUUINextcloudDocumentHandler handler = new DUUINextcloudDocumentHandler(serverName, loginName, password);
+
+            DUUIDocumentReader reader = new DUUIDocumentReader.Builder(composer)
+                    .withInputPath("/Documents/")
+                    .withInputFileExtension(".xmi")
+                    .withInputHandler(handler)
+                    .withOutputPath("/Output/")
+                    .withOutputFileExtension(".xmi")
+                    .withOutputHandler(handler)
+                    .withAddMetadata(true)
+                    .withLanguage("de")
+                    .build();
+
+            long readerSize = reader.getSize();
+
+            composer.run(reader, "nextcloud-test");
+
+            assertEquals(readerSize, reader.getDone());
+        }
+    }
 }

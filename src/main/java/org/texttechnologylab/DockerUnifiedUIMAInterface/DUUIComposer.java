@@ -863,10 +863,6 @@ public class DUUIComposer {
         Runtime.getRuntime().addShutdownHook(_shutdownHook);
     }
 
-    public static String getLocalhost() {
-        return "http://127.0.0.1";
-    }
-
     /**
      * Returns the previously determined reachable host.
      *

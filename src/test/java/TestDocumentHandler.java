@@ -22,13 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestDocumentHandler {
 
-    private static final DbxCredential dropboxCredentials = null;
-//            new DbxCredential(
-//        System.getenv("dbx_personal_access_token"),
-//        1L,
-//        System.getenv("dbx_personal_refresh_token"),
-//        System.getenv("dbx_app_key"),
-//        System.getenv("dbx_app_secret"));
+    private static final DbxCredential dropboxCredentials = new DbxCredential(
+        System.getenv("dbx_personal_access_token"),
+        1L,
+        System.getenv("dbx_personal_refresh_token"),
+        System.getenv("dbx_app_key"),
+        System.getenv("dbx_app_secret"));
 
     private static final DbxRequestConfig dropboxConfig = new DbxRequestConfig("DUUI");
 
@@ -373,17 +372,18 @@ public class TestDocumentHandler {
                             .build()
             );
 
-            String serverName = "https://nextcloud.texttechnologylab.org/";
-            String loginName = "terefe";
-            String password = "AqV-rtto5z";
+
+            String serverName = System.getenv("nextcloud_server");
+            String loginName = System.getenv("nextcloud_login");
+            String password = System.getenv("nextcloud_password");
 
             DUUINextcloudDocumentHandler handler = new DUUINextcloudDocumentHandler(serverName, loginName, password);
 
             DUUIDocumentReader reader = new DUUIDocumentReader.Builder(composer)
-                    .withInputPath("/Documents/")
+                    .withInputPath(System.getenv("nextcloud_input_path"))
                     .withInputFileExtension(".xmi")
                     .withInputHandler(handler)
-                    .withOutputPath("/Output/")
+                    .withOutputPath(System.getenv("nextcloud_output_path"))
                     .withOutputFileExtension(".xmi")
                     .withOutputHandler(handler)
                     .withAddMetadata(true)

@@ -1,20 +1,8 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface;
 
-import com.github.dockerjava.api.DockerClient;
-import com.github.dockerjava.api.async.ResultCallback;
-import com.github.dockerjava.api.async.ResultCallbackTemplate;
-import com.github.dockerjava.api.command.*;
-import com.github.dockerjava.api.exception.DockerClientException;
-import com.github.dockerjava.api.exception.NotModifiedException;
-import com.github.dockerjava.api.model.*;
-import com.github.dockerjava.core.DockerClientBuilder;
-import com.github.dockerjava.core.command.LogContainerResultCallback;
-import com.github.dockerjava.httpclient5.ApacheDockerHttpClient;
-import com.github.dockerjava.transport.DockerHttpClient;
-import com.google.common.collect.ImmutableList;
-
 import java.io.File;
 import java.io.IOException;
+import static java.lang.String.format;
 import java.net.URI;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -28,7 +16,47 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static java.lang.String.format;
+import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.async.ResultCallback;
+import com.github.dockerjava.api.async.ResultCallbackTemplate;
+import com.github.dockerjava.api.command.BuildImageCmd;
+import com.github.dockerjava.api.command.BuildImageResultCallback;
+import com.github.dockerjava.api.command.CreateContainerCmd;
+import com.github.dockerjava.api.command.CreateContainerResponse;
+import com.github.dockerjava.api.command.CreateServiceResponse;
+import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.command.InspectImageResponse;
+import com.github.dockerjava.api.command.PullImageResultCallback;
+import com.github.dockerjava.api.exception.DockerClientException;
+import com.github.dockerjava.api.model.AuthConfig;
+import com.github.dockerjava.api.model.Bind;
+import com.github.dockerjava.api.model.BuildResponseItem;
+import com.github.dockerjava.api.model.ContainerSpec;
+import com.github.dockerjava.api.model.DeviceRequest;
+import com.github.dockerjava.api.model.Endpoint;
+import com.github.dockerjava.api.model.EndpointSpec;
+import com.github.dockerjava.api.model.ExposedPort;
+import com.github.dockerjava.api.model.Frame;
+import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Image;
+import com.github.dockerjava.api.model.Info;
+import com.github.dockerjava.api.model.Network;
+import com.github.dockerjava.api.model.PortBinding;
+import com.github.dockerjava.api.model.PortConfig;
+import com.github.dockerjava.api.model.Ports;
+import com.github.dockerjava.api.model.PullResponseItem;
+import com.github.dockerjava.api.model.PushResponseItem;
+import com.github.dockerjava.api.model.Service;
+import com.github.dockerjava.api.model.ServiceModeConfig;
+import com.github.dockerjava.api.model.ServicePlacement;
+import com.github.dockerjava.api.model.ServiceReplicatedModeOptions;
+import com.github.dockerjava.api.model.ServiceSpec;
+import com.github.dockerjava.api.model.TaskSpec;
+import com.github.dockerjava.core.DockerClientBuilder;
+import com.github.dockerjava.core.command.LogContainerResultCallback;
+import com.github.dockerjava.httpclient5.ApacheDockerHttpClient;
+import com.github.dockerjava.transport.DockerHttpClient;
+import com.google.common.collect.ImmutableList;
 
 //TODO: Enable different tags here
 class PullImageStdout extends PullImageResultCallback {
@@ -294,10 +322,14 @@ public class DUUIDockerInterface {
      * @param id The id of the container to stop.
      */
     public void stop_container(String id) {
-        try {
-            _docker.stopContainerCmd(id).withTimeout(10).exec();
-        } catch (NotModifiedException e) {
+        try{
+            _docker.killContainerCmd(id).exec();
         } catch (Exception e) {
+        }
+        try{
+            _docker.removeContainerCmd(id).exec();
+        } catch (Exception e) {
+            System.out.println("[DOCKER-INSTANCE] Error on remove: " + e.getMessage());
         }
     }
 
@@ -545,6 +577,45 @@ public class DUUIDockerInterface {
         CreateContainerResponse feedback = cmd.exec();
         _docker.startContainerCmd(feedback.getId()).exec();
         return feedback.getId();
+    }
+
+    /**
+     * Look up which host IP/port Docker bound to a given container port,
+     * and return it as an HTTP URL.
+     *
+     * @param containerId    the ID of the running container
+     * @param containerPort  the container‐side TCP port you exposed/published
+     * @return               a URL like "http://127.0.0.1:32768"
+     * @throws IllegalStateException if no binding is found
+     */
+    public String getHostUrl(String containerId, int containerPort) {
+        // Inspect the container’s network settings
+        InspectContainerResponse inspect =
+            _docker.inspectContainerCmd(containerId).exec();
+
+        // Look up the binding for the given ExposedPort
+        ExposedPort exposed = ExposedPort.tcp(containerPort);
+        Ports.Binding[] bindings =
+            inspect.getNetworkSettings()
+                .getPorts()
+                .getBindings()
+                .get(exposed);
+
+        if (bindings == null || bindings.length == 0) {
+            throw new IllegalStateException(
+                "No host binding found for container port " + containerPort
+            );
+        }
+
+        String hostIp   = bindings[0].getHostIp();
+        String hostPort = bindings[0].getHostPortSpec();
+
+        // If Docker bound to all interfaces, you can replace 0.0.0.0 with localhost if you like:
+        if ("0.0.0.0".equals(hostIp)) {
+            hostIp = "localhost";
+        }
+
+        return "http://" + hostIp + ":" + hostPort;
     }
 
     /**

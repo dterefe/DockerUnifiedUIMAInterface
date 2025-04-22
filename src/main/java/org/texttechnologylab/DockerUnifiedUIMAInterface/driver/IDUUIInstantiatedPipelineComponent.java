@@ -1,6 +1,23 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InvalidObjectException;
+import java.net.ProxySelector;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.cas.CASException;
@@ -16,18 +33,6 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnecti
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
 import org.xml.sax.SAXException;
-
-import java.io.*;
-import java.net.ProxySelector;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.util.List;
-import java.util.Map;
 
 /**
  * The interface for the instance of each component that is executed in a pipeline.
@@ -58,7 +63,12 @@ public interface IDUUIInstantiatedPipelineComponent {
      */
     public static TypeSystemDescription getTypesystem(String uuid, IDUUIInstantiatedPipelineComponent comp) throws ResourceInitializationException {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
-        //System.out.printf("Address %s\n",queue.getValue0().generateURL()+ DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM);
+        
+        System.out.printf("[%s][%s] Requesting Typesystem on  %s\n",
+            comp.getPipelineComponent().getDriver(), 
+            comp.getUniqueComponentKey(),
+            queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM
+        );
 
         int tries = 0;
         while(tries < 100) {
@@ -132,6 +142,14 @@ public interface IDUUIInstantiatedPipelineComponent {
                 }
             }
         }
+
+        System.out.printf("[%s][%s] Process Request on  %s\n",
+            comp.getPipelineComponent().getDriver(), 
+            comp.getUniqueComponentKey(),
+            queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
+            viewJc.getSofaDataURI()
+        );
+
 
         layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
         // lua serialize call()

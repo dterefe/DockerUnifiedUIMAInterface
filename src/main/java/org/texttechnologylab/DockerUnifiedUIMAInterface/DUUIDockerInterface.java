@@ -9,6 +9,7 @@ import java.nio.file.Paths;
 import java.security.InvalidParameterException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -316,6 +317,14 @@ public class DUUIDockerInterface {
         return completelog;
     }
 
+    public void shutdown() {
+        try {
+            _docker.close();
+        } catch (IOException e) {
+        }
+    }
+
+
     /**
      * Stops the container with the given container id
      *
@@ -329,7 +338,6 @@ public class DUUIDockerInterface {
         try{
             _docker.removeContainerCmd(id).exec();
         } catch (Exception e) {
-            System.out.println("[DOCKER-INSTANCE] Error on remove: " + e.getMessage());
         }
     }
 
@@ -593,6 +601,15 @@ public class DUUIDockerInterface {
         InspectContainerResponse inspect =
             _docker.inspectContainerCmd(containerId).exec();
 
+        
+        inspect.getNetworkSettings().getPorts().getBindings().forEach((expPort, bindingss) -> {
+            System.out.printf(
+                "Key=%s → Host bindings=%s%n",
+                expPort,
+                Arrays.toString(bindingss)
+            );
+        });
+
         // Look up the binding for the given ExposedPort
         ExposedPort exposed = ExposedPort.tcp(containerPort);
         Ports.Binding[] bindings =
@@ -600,6 +617,8 @@ public class DUUIDockerInterface {
                 .getPorts()
                 .getBindings()
                 .get(exposed);
+
+
 
         if (bindings == null || bindings.length == 0) {
             throw new IllegalStateException(

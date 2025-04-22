@@ -1992,25 +1992,11 @@ public class DUUIComposer {
         if (_monitor != null) {
             addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down monitor.");
             _monitor.shutdown();
-            /**
-             * @see
-             * @Givara
-             * @edited Dawit Terefe
-             * Added option to keep connection open.
-             */
-//                if (!_connection_open) {
-//                    _clients.forEach(IDUUIConnectionHandler::close);
-//                }
         }
 
         if (_storage != null) {
             addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down storage.");
             _storage.shutdown();
-        }
-
-
-        if (!_connection_open) {
-            _clients.forEach(IDUUIConnectionHandler::close);
         }
 
         try {

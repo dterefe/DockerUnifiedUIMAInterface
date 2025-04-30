@@ -1,14 +1,17 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
-import org.bson.Document;
-import org.bson.json.JsonWriterSettings;
-
 import java.io.IOException;
-import java.nio.file.*;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveTask;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIFolderPickerApi.DUUIFolder;
 
 public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler implements IDUUIFolderPickerApi{
 
@@ -29,128 +32,187 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         this.rootPath = rootPath;
     }
 
+    @Override
     public DUUIFolder getFolderStructure() {
 
-        FolderTreeBuilder folderTreeBuilder = new FolderTreeBuilder(4);
-        DUUIFolder root = folderTreeBuilder.build(Paths.get(this.rootPath));
+        // FolderTreeBuilder folderTreeBuilder = new FolderTreeBuilder(4);
+        // DUUIFolder root = folderTreeBuilder.build(Paths.get(this.rootPath));
 //        DUUIFolder root = new DUUIFolder(this.rootPath, "Files");
+        Path rootDir = Paths.get(this.rootPath);
+        DUUIFolder tree = FolderTreeBuilder.buildTree(rootDir);
 
-
-        return root;
+        return tree;
     }
 
-    public static class FolderTask extends RecursiveTask<DUUIFolder> {
-        private final Path path;
 
-        public FolderTask(Path path) {
-            this.path = path;
+    public class FolderTreeBuilder {
+
+        /**
+         * Traverse starting at 'rootDir' and return the corresponding DUUIFolder tree.
+         */
+        public static DUUIFolder buildTree(Path rootDir) {
+            // submit root task to common pool
+            return ForkJoinPool.commonPool().invoke(new FolderTask(rootDir));
         }
 
-        @Override
-        protected DUUIFolder compute() {
-            DUUIFolder node = new DUUIFolder(path.toString(), path.getFileName().toString());
-            List<FolderTask> subTasks = new ArrayList<>();
+        private static class FolderTask extends RecursiveTask<DUUIFolder> {
+            private final Path dir;
 
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(path, Files::isDirectory)) {
-                for (Path subdir : stream) {
-                    FolderTask task = new FolderTask(subdir);
-                    task.fork();                      // schedule it asynchronously
-                    subTasks.add(task);
+            FolderTask(Path dir) {
+                this.dir = dir;
+            }
+
+            @Override
+            protected DUUIFolder compute() {
+                // id = absolute path, name = last segment
+                String id   = dir.toAbsolutePath().toString();
+                String name = dir.getFileName() != null
+                            ? dir.getFileName().toString()
+                            : dir.toString();
+
+                DUUIFolder folder = new DUUIFolder(id, name);
+                List<FolderTask> subTasks = new ArrayList<>();
+
+                // list entries, skip failures
+                try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir)) {
+                    for (Path child : ds) {
+                        boolean isDir;
+                        try {
+                            // default isDirectory follows symlinks
+                            isDir = Files.isDirectory(child);
+                        } catch (SecurityException ex) {
+                            // skip paths we can’t check
+                            continue;
+                        }
+
+                        if (isDir) {
+                            // fork a task for each subdirectory
+                            FolderTask task = new FolderTask(child);
+                            task.fork();
+                            subTasks.add(task);
+                        }
+                    }
+                } catch (IOException ioe) {
+                    // could not open this directory—just skip it
                 }
-                // join them and attach as children
+
+                // join results and add as children
                 for (FolderTask t : subTasks) {
-                    DUUIFolder child = t.join();
-                    node.addChild(child);
+                    DUUIFolder childFolder = t.join();
+                    folder.addChild(childFolder);
                 }
-            } catch (IOException | SecurityException e) {
-                // unable to read this folder; just return it empty
+
+                return folder;
             }
-
-            return node;
         }
     }
+    
+    // public DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) throws IOException {
+    //     // Create a fresh root for the filtered tree
+    //     DUUIFolder filteredRoot = new DUUIFolder(root.id, root.name);
 
-    // Utility to kick off the parallel traversal
-    public static class FolderTreeBuilder {
-        private final ForkJoinPool pool;
+    //     for (DUUIFolder child : root.children) {
+    //         DUUIFolder kept = filterNode(child, allowedRoots);
+    //         if (kept != null) {
+    //             filteredRoot.addChild(kept);
+    //         }
+    //     }
 
-        public FolderTreeBuilder(int parallelism) {
-            this.pool = new ForkJoinPool(parallelism);
-        }
+    //     return filteredRoot;
+    // }
 
-        public DUUIFolder build(Path rootPath) {
-            return pool.invoke(new FolderTask(rootPath));
-        }
+    // private DUUIFolder filterNode(DUUIFolder node, List<Path> allowedRoots) throws IOException {
+    //     Path nodeRealPath = Paths.get(node.id)
+    //             .toRealPath(LinkOption.NOFOLLOW_LINKS);
 
-        public void shutdown() {
-            pool.shutdown();
-        }
-    }
-    public DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) throws IOException {
-        // Create a fresh root for the filtered tree
-        DUUIFolder filteredRoot = new DUUIFolder(root.id, root.name);
+    //     // 1) Check if this node itself is under any allowed root
+    //     boolean isAllowed = allowedRoots.stream().anyMatch(rootPath -> {
+    //         try {
+    //             return nodeRealPath.startsWith(rootPath.toRealPath());
+    //         } catch (IOException e) {
+    //             return false;
+    //         }
+    //     });
 
+    //     // 2) Recursively filter children
+    //     List<DUUIFolder> keptChildren = new ArrayList<>();
+    //     for (DUUIFolder child : node.children) {
+    //         DUUIFolder keptChild = filterNode(child, allowedRoots);
+    //         if (keptChild != null) {
+    //             keptChildren.add(keptChild);
+    //         }
+    //     }
+
+    //     // 3) If this node is allowed, or has any allowed descendants, keep it
+    //     if (isAllowed || !keptChildren.isEmpty()) {
+    //         DUUIFolder copy = new DUUIFolder(node.id, node.name);
+    //         keptChildren.forEach(copy::addChild);
+    //         return copy;
+    //     } else {
+    //         return null;  // prune this branch entirely
+    //     }
+    // }
+    
+    /**
+     * Filters the given DUUIFolder tree, keeping only the nodes that are under the allowed roots.
+     * 
+     * @param node The root node of the tree to filter.
+     * @param allowedRoots A list of allowed root paths.
+     * @return A new DUUIFolder tree containing only the allowed nodes.
+     */
+    private DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) {
+        DUUIFolder out = new DUUIFolder(root.id, root.name);
         for (DUUIFolder child : root.children) {
-            DUUIFolder kept = filterNode(child, allowedRoots);
-            if (kept != null) {
-                filteredRoot.addChild(kept);
+            for (DUUIFolder match : collectAllowed(child, allowedRoots)) {
+            out.addChild(match);
             }
         }
-
-        return filteredRoot;
+        return out;
     }
 
-    private DUUIFolder filterNode(DUUIFolder node, List<Path> allowedRoots) throws IOException {
-        Path nodeRealPath = Paths.get(node.id)
-                .toRealPath(LinkOption.NOFOLLOW_LINKS);
-
-        // 1) Check if this node itself is under any allowed root
-        boolean isAllowed = allowedRoots.stream().anyMatch(rootPath -> {
-            try {
-                return nodeRealPath.startsWith(rootPath.toRealPath());
-            } catch (IOException e) {
-                return false;
-            }
-        });
-
-        // 2) Recursively filter children
-        List<DUUIFolder> keptChildren = new ArrayList<>();
-        for (DUUIFolder child : node.children) {
-            DUUIFolder keptChild = filterNode(child, allowedRoots);
-            if (keptChild != null) {
-                keptChildren.add(keptChild);
-            }
+    /**
+     * Recursively walks 'node' and:
+     *  - if node.id is in allowed, returns a singleton list containing node (with its full subtree)
+     *  - otherwise, descends into its children and returns the concatenation of their matches
+     */
+    private List<DUUIFolder> collectAllowed(DUUIFolder node, List<Path> allowedRoots) {
+        Path p = Paths.get(node.id).toAbsolutePath().normalize();
+        if (allowedRoots.contains(p)) {
+          // Node itself is allowed → keep it (with its original subtree)
+          return List.of(node);
         }
-
-        // 3) If this node is allowed, or has any allowed descendants, keep it
-        if (isAllowed || !keptChildren.isEmpty()) {
-            DUUIFolder copy = new DUUIFolder(node.id, node.name);
-            keptChildren.forEach(copy::addChild);
-            return copy;
-        } else {
-            return null;  // prune this branch entirely
+      
+        // Otherwise, recurse and flatten
+        List<DUUIFolder> results = new ArrayList<>();
+        for (DUUIFolder kid : node.children) {
+          results.addAll(collectAllowed(kid, allowedRoots));
         }
-    }
+        return results;
+      }
 
+    // public static void main(String[] args) throws IOException {
+    //     long start = System.nanoTime();
 
-    public static void main(String[] args) throws IOException {
-        String rootPath = System.getProperty("user.home");
-        DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
-        DUUIFolder folderStructure = handler.getFolderStructure();
-        List<Path> allowedRoots = new ArrayList<>();
-        allowedRoots.add(Path.of("/home/stud_homes/s0424382/Nextcloud"));
-        allowedRoots.add(Path.of("/home/stud_homes/s0424382/Dokumente"));
-        allowedRoots.add(Path.of("/home/stud_homes/s0424382/projects"));
+    //     // String rootPath = System.getProperty("user.home");
+    //     String rootPath = "/home";
+    //     DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
 
-        folderStructure = handler.filterTree(folderStructure, allowedRoots);
+    //     DUUIFolder folderStructure = handler.getFolderStructure();
+    //     List<Path> allowedRoots = new ArrayList<>();
+    //     allowedRoots.add(Path.of("/home/dater/projects/duui-dterefe/DockerUnifiedUIMAInterface/docs"));
 
-//        folderStructure.children.stream().map(f -> f.id).forEach(System.out::println);
+    //     folderStructure = handler.filterTree(folderStructure, allowedRoots);
 
-        JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
-                .indent(true)
-                .build();
-        String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
-        System.out.println(fs);
-    }
+    //     JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
+    //             .indent(true)
+    //             .build();
+    //     String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
+        
+    //     System.out.println(fs);
+
+    //     long end = System.nanoTime();
+    //     double seconds = (end - start) / 1_000_000_000.0;
+    //     System.out.printf("Elapsed: %.3f s%n", seconds);
+    // }
 
 }

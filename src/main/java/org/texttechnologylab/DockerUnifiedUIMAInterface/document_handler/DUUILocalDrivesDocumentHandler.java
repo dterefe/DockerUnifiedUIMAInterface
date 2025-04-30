@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveTask;
 
+import org.bson.Document;
+import org.bson.json.JsonWriterSettings;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIFolderPickerApi.DUUIFolder;
 
 public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler implements IDUUIFolderPickerApi{
@@ -35,17 +37,13 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
     @Override
     public DUUIFolder getFolderStructure() {
 
-        // FolderTreeBuilder folderTreeBuilder = new FolderTreeBuilder(4);
-        // DUUIFolder root = folderTreeBuilder.build(Paths.get(this.rootPath));
-//        DUUIFolder root = new DUUIFolder(this.rootPath, "Files");
         Path rootDir = Paths.get(this.rootPath);
-        DUUIFolder tree = FolderTreeBuilder.buildTree(rootDir);
 
-        return tree;
+        return FolderTreeBuilder.buildTree(rootDir);
     }
 
 
-    public class FolderTreeBuilder {
+    public static class FolderTreeBuilder {
 
         /**
          * Traverse starting at 'rootDir' and return the corresponding DUUIFolder tree.
@@ -107,60 +105,14 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         }
     }
     
-    // public DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) throws IOException {
-    //     // Create a fresh root for the filtered tree
-    //     DUUIFolder filteredRoot = new DUUIFolder(root.id, root.name);
-
-    //     for (DUUIFolder child : root.children) {
-    //         DUUIFolder kept = filterNode(child, allowedRoots);
-    //         if (kept != null) {
-    //             filteredRoot.addChild(kept);
-    //         }
-    //     }
-
-    //     return filteredRoot;
-    // }
-
-    // private DUUIFolder filterNode(DUUIFolder node, List<Path> allowedRoots) throws IOException {
-    //     Path nodeRealPath = Paths.get(node.id)
-    //             .toRealPath(LinkOption.NOFOLLOW_LINKS);
-
-    //     // 1) Check if this node itself is under any allowed root
-    //     boolean isAllowed = allowedRoots.stream().anyMatch(rootPath -> {
-    //         try {
-    //             return nodeRealPath.startsWith(rootPath.toRealPath());
-    //         } catch (IOException e) {
-    //             return false;
-    //         }
-    //     });
-
-    //     // 2) Recursively filter children
-    //     List<DUUIFolder> keptChildren = new ArrayList<>();
-    //     for (DUUIFolder child : node.children) {
-    //         DUUIFolder keptChild = filterNode(child, allowedRoots);
-    //         if (keptChild != null) {
-    //             keptChildren.add(keptChild);
-    //         }
-    //     }
-
-    //     // 3) If this node is allowed, or has any allowed descendants, keep it
-    //     if (isAllowed || !keptChildren.isEmpty()) {
-    //         DUUIFolder copy = new DUUIFolder(node.id, node.name);
-    //         keptChildren.forEach(copy::addChild);
-    //         return copy;
-    //     } else {
-    //         return null;  // prune this branch entirely
-    //     }
-    // }
-    
     /**
      * Filters the given DUUIFolder tree, keeping only the nodes that are under the allowed roots.
      * 
-     * @param node The root node of the tree to filter.
+     * @param root The root node of the tree to filter.
      * @param allowedRoots A list of allowed root paths.
      * @return A new DUUIFolder tree containing only the allowed nodes.
      */
-    private DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) {
+    public DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) {
         DUUIFolder out = new DUUIFolder(root.id, root.name);
         for (DUUIFolder child : root.children) {
             for (DUUIFolder match : collectAllowed(child, allowedRoots)) {
@@ -190,29 +142,29 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         return results;
       }
 
-    // public static void main(String[] args) throws IOException {
-    //     long start = System.nanoTime();
-
-    //     // String rootPath = System.getProperty("user.home");
-    //     String rootPath = "/home";
-    //     DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
-
-    //     DUUIFolder folderStructure = handler.getFolderStructure();
-    //     List<Path> allowedRoots = new ArrayList<>();
-    //     allowedRoots.add(Path.of("/home/dater/projects/duui-dterefe/DockerUnifiedUIMAInterface/docs"));
-
-    //     folderStructure = handler.filterTree(folderStructure, allowedRoots);
-
-    //     JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
-    //             .indent(true)
-    //             .build();
-    //     String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
-        
-    //     System.out.println(fs);
-
-    //     long end = System.nanoTime();
-    //     double seconds = (end - start) / 1_000_000_000.0;
-    //     System.out.printf("Elapsed: %.3f s%n", seconds);
-    // }
+//     public static void main(String[] args) throws IOException {
+//         long start = System.nanoTime();
+//
+//         // String rootPath = System.getProperty("user.home");
+//         String rootPath = "/home/stud_homes";
+//         DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
+//
+//         DUUIFolder folderStructure = handler.getFolderStructure();
+//         List<Path> allowedRoots = new ArrayList<>();
+//         allowedRoots.add(Path.of("/home/stud_homes/s0424382/projects/duui-fork/DockerUnifiedUIMAInterface/docs"));
+//
+//         folderStructure = handler.filterTree(folderStructure, allowedRoots);
+//
+//         JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
+//                 .indent(true)
+//                 .build();
+//         String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
+//
+////         System.out.println(fs);
+//
+//         long end = System.nanoTime();
+//         double seconds = (end - start) / 1_000_000_000.0;
+//         System.out.printf("Elapsed: %.3f s%n", seconds);
+//     }
 
 }

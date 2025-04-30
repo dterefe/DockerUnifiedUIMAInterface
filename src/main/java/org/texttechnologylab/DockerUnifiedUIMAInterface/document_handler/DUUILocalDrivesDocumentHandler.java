@@ -1,11 +1,8 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
 import java.io.IOException;
-import java.nio.file.DirectoryStream;
-import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.UncheckedIOException;
+import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ForkJoinPool;
@@ -90,7 +87,7 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
                             subTasks.add(task);
                         }
                     }
-                } catch (IOException ioe) {
+                } catch (IOException | UncheckedIOException ioe) {
                     // could not open this directory—just skip it
                 }
 

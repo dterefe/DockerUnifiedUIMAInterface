@@ -454,7 +454,6 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
         private String _container_id;
         private int _port;
         private String _url; 
-        private IDUUIConnectionHandler _handler;
         private IDUUICommunicationLayer _communicationLayer;
 
         public ComponentInstance(String id, int port, IDUUICommunicationLayer communicationLayer, String url) {
@@ -468,11 +467,10 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
             return _communicationLayer;
         }
 
-        public ComponentInstance(String id, int port, IDUUICommunicationLayer layer, IDUUIConnectionHandler handler) {
+        public ComponentInstance(String id, int port, IDUUICommunicationLayer layer) {
             _container_id = id;
             _port = port;
             _communicationLayer = layer;
-            _handler = handler;
         }
 
         String getContainerId() {
@@ -489,10 +487,6 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
 
         String getContainerUrl() {
             return format(_url);
-        }
-
-        public IDUUIConnectionHandler getHandler() {
-            return _handler;
         }
     }
 

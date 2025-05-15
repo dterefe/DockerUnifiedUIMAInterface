@@ -15,11 +15,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.compress.compressors.CompressorException;
-import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.fit.factory.TypeSystemDescriptionFactory;
 import org.apache.uima.jcas.JCas;
@@ -28,8 +26,6 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
 import org.xml.sax.SAXException;
@@ -252,95 +248,5 @@ public interface IDUUIInstantiatedPipelineComponent {
     public static void process_handler(JCas jc,
                                        IDUUIInstantiatedPipelineComponent comp,
                                        DUUIPipelineDocumentPerformance perf) throws CompressorException, IOException, SAXException, CASException, InterruptedException {
-        Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
-
-        IDUUICommunicationLayer layer = queue.getValue0().getCommunicationLayer();
-        long serializeStart = System.nanoTime();
-
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-
-        DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
-
-        String viewName = pipelineComponent.getViewName();
-        JCas viewJc;
-        if(viewName == null) {
-            viewJc = jc;
-        }
-        else {
-            try {
-                viewJc = jc.getView(viewName);
-            }
-            catch(CASException e) {
-                if(pipelineComponent.getCreateViewFromInitialView()) {
-                    viewJc = jc.createView(viewName);
-                    viewJc.setDocumentText(jc.getDocumentText());
-                    viewJc.setDocumentLanguage(jc.getDocumentLanguage());
-                }
-                else {
-                    throw e;
-                }
-            }
-        }
-        // lua serialize call()
-        layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
-
-        // ok is the message.
-        byte[] ok = out.toByteArray();
-        long sizeArray = ok.length;
-        long serializeEnd = System.nanoTime();
-
-        long annotatorStart = serializeEnd;
-
-        /**
-         * @edited Givara Ebo, Dawit Terefe
-         *
-         * Retrieve websocket-client from IDUUIUrlAccessible (ComponentInstance).
-         *
-         */
-        IDUUIUrlAccessible accessible = queue.getValue0();
-        IDUUIConnectionHandler handler = accessible.getHandler();
-
-        if (handler.getClass() == DUUIWebsocketAlt.class){
-            String error = null;
-
-            JCas finalViewJc = viewJc;
-
-            List<ByteArrayInputStream> results = handler.send(ok);
-
-            long annotatorEnd = System.nanoTime();
-            long deserializeStart = annotatorEnd;
-
-            ByteArrayInputStream result = null;
-            try {
-                /***
-                 * @edited
-                 * Givara Ebo, Dawit Terefe
-                 *
-                 * Merging results before deserializing.
-                 */
-                result = layer.merge(results);
-                layer.deserialize(finalViewJc, result, comp.getTargetView());
-            }
-            catch(Exception e) {
-                e.printStackTrace();
-                System.err.printf("Caught exception printing response %s\n",new String(result.readAllBytes(), StandardCharsets.UTF_8));
-
-                // TODO more error handling needed?
-                error = ExceptionUtils.getStackTrace(e);
-            }
-
-            long deserializeEnd = System.nanoTime();
-
-            comp.addComponent(accessible);
-
-            ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
-            ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
-            ann.setCompression(DUUIPipelineComponent.compressionMethod);
-            ann.setTimestamp(System.nanoTime());
-            ann.setPipelineName(perf.getRunKey());
-            ann.addToIndexes();
-            perf.addData(serializeEnd-serializeStart,deserializeEnd-deserializeStart,annotatorEnd-annotatorStart,queue.getValue2()-queue.getValue1(),deserializeEnd-queue.getValue1(), String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()), sizeArray, jc, error);
-            comp.addComponent(accessible);
-        }
     }
 }

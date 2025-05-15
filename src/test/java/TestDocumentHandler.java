@@ -5,10 +5,11 @@ import com.dropbox.core.v2.files.WriteMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDropboxDocumentHandler;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDocumentHandler;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIMinioDocumentHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.*;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.Timer;
 
 import java.io.IOException;
@@ -346,4 +347,54 @@ public class TestDocumentHandler {
         }
     }
 
+
+    @Nested
+    @DisplayName("NextCloud")
+    public class TestNextCloudDocumentHandler {
+
+        @Test
+        public void TestProcess() throws Exception {
+
+            DUUIComposer composer = new DUUIComposer()
+                    .withSkipVerification(true)
+                    .withDebugLevel(DUUIComposer.DebugLevel.DEBUG)
+                    .withIgnoreErrors(true)
+                    .withLuaContext(new DUUILuaContext().withJsonLibrary());
+
+            DUUIDockerDriver dockerDriver = new DUUIDockerDriver();
+
+            composer.addDriver(dockerDriver);
+
+            composer.add(
+                    new DUUIDockerDriver.Component("docker.texttechnologylab.org/textimager-duui-spacy-single-de_core_news_sm:0.1.4")
+                            .withImageFetching()
+                            .withScale(1)
+                            .build()
+            );
+
+
+            String serverName = System.getenv("nextcloud_server");
+            String loginName = System.getenv("nextcloud_login");
+            String password = System.getenv("nextcloud_password");
+
+            DUUINextcloudDocumentHandler handler = new DUUINextcloudDocumentHandler(serverName, loginName, password);
+
+            DUUIDocumentReader reader = new DUUIDocumentReader.Builder(composer)
+                    .withInputPath(System.getenv("nextcloud_input_path"))
+                    .withInputFileExtension(".xmi")
+                    .withInputHandler(handler)
+                    .withOutputPath(System.getenv("nextcloud_output_path"))
+                    .withOutputFileExtension(".xmi")
+                    .withOutputHandler(handler)
+                    .withAddMetadata(true)
+                    .withLanguage("de")
+                    .build();
+
+            long readerSize = reader.getSize();
+
+            composer.run(reader, "nextcloud-test");
+
+            assertEquals(readerSize, reader.getDone());
+        }
+    }
 }

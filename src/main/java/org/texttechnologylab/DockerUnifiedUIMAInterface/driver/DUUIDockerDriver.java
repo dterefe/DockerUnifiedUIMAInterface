@@ -34,6 +34,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.InvalidParameterException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -129,13 +130,18 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
 
         int iError = 0;
         while (true) {
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER))
-                .version(HttpClient.Version.HTTP_1_1)
-                .timeout(Duration.ofSeconds(timeout_ms))
-                .GET()
-                .build();
-
+            HttpRequest request = null;
+            try {
+                request = HttpRequest.newBuilder()
+                        .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER))
+                        .version(HttpClient.Version.HTTP_1_1)
+//                        .timeout(Duration.ofSeconds(10))
+                        .timeout(Duration.ofSeconds(timeout_ms))
+                        .GET()
+                        .build();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
             try {
                 HttpResponse<byte[]> resp = null;
 
@@ -266,7 +272,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
      * @return
      * @throws Exception
      */
-    public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws Exception {
+    public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws InterruptedException {
         String uuid = UUID.randomUUID().toString();
 
         while (_active_components.containsKey(uuid)) {
@@ -361,6 +367,21 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
         return IDUUIInstantiatedPipelineComponent.getTypesystem(uuid, comp);
+    }
+
+    /**
+     * init reader component
+     * @param uuid
+     * @param filePath
+     * @return
+     */
+    @Override
+    public int initReaderComponent(String uuid, Path filePath) {
+        InstantiatedComponent comp = _active_components.get(uuid);
+        if (comp == null) {
+            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
+        }
+        return IDUUIInstantiatedPipelineReaderComponent.initComponent(comp, filePath);
     }
 
     /**

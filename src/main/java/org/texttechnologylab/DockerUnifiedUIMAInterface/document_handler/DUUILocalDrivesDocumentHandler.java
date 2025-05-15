@@ -1,15 +1,16 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.*;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveTask;
+// import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDrivesDocumentHandler.FolderTreeBuilder;
 
-import org.bson.Document;
-import org.bson.json.JsonWriterSettings;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIFolderPickerApi.DUUIFolder;
 
 public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler implements IDUUIFolderPickerApi{
@@ -74,8 +75,8 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
                         boolean isDir;
                         try {
                             // default isDirectory follows symlinks
-                            isDir = Files.isDirectory(child);
-                        } catch (SecurityException ex) {
+                            isDir = Files.isDirectory(child) && Files.isReadable(child) && Files.isWritable(child);
+                        } catch (Exception ex) {
                             // skip paths we can’t check
                             continue;
                         }
@@ -87,7 +88,7 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
                             subTasks.add(task);
                         }
                     }
-                } catch (IOException | UncheckedIOException ioe) {
+                } catch (Exception ioe) {
                     // could not open this directory—just skip it
                 }
 
@@ -101,6 +102,46 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
             }
         }
     }
+    // public DUUIFolder getFolderStructure() {
+    //     return build(Paths.get(rootPath));
+    // }
+
+    // private DUUIFolder build(Path dir) {
+    //     DUUIFolder folder = new DUUIFolder(
+    //         dir.toAbsolutePath().toString(),
+    //         Optional.ofNullable(dir.getFileName()).map(Path::toString).orElse(dir.toString())
+    //     );
+    //     try (
+    //         var scope  = new StructuredTaskScope.ShutdownOnFailure();
+    //         var stream = Files.newDirectoryStream(dir)
+    //     ) {
+    //         List<StructuredTaskScope.Subtask<DUUIFolder>> tasks = new ArrayList();
+    //         for (Path p : stream) {
+    //             try {
+    //                 if (Files.isDirectory(p)
+    //                     && Files.isReadable(p)
+    //                     && Files.isWritable(p)) {
+    //                         tasks.add(scope.fork(() -> build(p)));
+    //                     }
+    //             } catch (Exception e) {
+    //             }
+    //         }
+
+    //         scope.join();
+    //         scope.exception()
+    //             .ifPresent(e -> {
+    //                 // handle exception
+    //                 System.err.println("Error while traversing directory: ");
+    //                 e.printStackTrace();
+    //             });
+
+    //         tasks.forEach(t -> folder.addChild(t.get()));
+    //     } catch (IOException | InterruptedException e) {
+    //         // skip dirs we can’t traverse or if interrupted
+    //     }
+
+    //     return folder;
+    // }
     
     /**
      * Filters the given DUUIFolder tree, keeping only the nodes that are under the allowed roots.
@@ -110,58 +151,63 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
      * @return A new DUUIFolder tree containing only the allowed nodes.
      */
     public DUUIFolder filterTree(DUUIFolder root, List<Path> allowedRoots) {
+        if (root == null || allowedRoots == null || allowedRoots.isEmpty()) {
+            return root;
+        }
+
         DUUIFolder out = new DUUIFolder(root.id, root.name);
+        Path p = Paths.get(root.id).toAbsolutePath();
+
+        // System.out.println(p.toAbsolutePath() + " " + allowedRoots.stream().allMatch(ar -> 
+        //        !p.toAbsolutePath().startsWith(ar.toAbsolutePath()) 
+        //     && !ar.toAbsolutePath().startsWith(p.toAbsolutePath())));
+        if (allowedRoots.stream().allMatch(ar -> 
+               !p.toAbsolutePath().startsWith(ar.toAbsolutePath()) 
+            && !ar.toAbsolutePath().startsWith(p.toAbsolutePath()))) {
+            // Node is not allowed → skip it
+            return null;
+        }
+
+        if (allowedRoots.stream().anyMatch(ar -> p.equals(ar.toAbsolutePath()))) {
+            // Node itself is allowed → keep it (with its original subtree)
+            return root;
+        }
+
         for (DUUIFolder child : root.children) {
-            for (DUUIFolder match : collectAllowed(child, allowedRoots)) {
-            out.addChild(match);
+            var subtree = filterTree(child, allowedRoots);
+            if (subtree == null) {
+                continue;
             }
+
+            out.addChild(subtree);
         }
         return out;
     }
 
-    /**
-     * Recursively walks 'node' and:
-     *  - if node.id is in allowed, returns a singleton list containing node (with its full subtree)
-     *  - otherwise, descends into its children and returns the concatenation of their matches
-     */
-    private List<DUUIFolder> collectAllowed(DUUIFolder node, List<Path> allowedRoots) {
-        Path p = Paths.get(node.id).toAbsolutePath().normalize();
-        if (allowedRoots.contains(p)) {
-          // Node itself is allowed → keep it (with its original subtree)
-          return List.of(node);
-        }
-      
-        // Otherwise, recurse and flatten
-        List<DUUIFolder> results = new ArrayList<>();
-        for (DUUIFolder kid : node.children) {
-          results.addAll(collectAllowed(kid, allowedRoots));
-        }
-        return results;
-      }
+    // public static void main(String[] args) throws IOException {
+    //     long start = System.nanoTime();
 
-//     public static void main(String[] args) throws IOException {
-//         long start = System.nanoTime();
-//
-//         // String rootPath = System.getProperty("user.home");
-//         String rootPath = "/home/stud_homes";
-//         DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
-//
-//         DUUIFolder folderStructure = handler.getFolderStructure();
-//         List<Path> allowedRoots = new ArrayList<>();
-//         allowedRoots.add(Path.of("/home/stud_homes/s0424382/projects/duui-fork/DockerUnifiedUIMAInterface/docs"));
-//
-//         folderStructure = handler.filterTree(folderStructure, allowedRoots);
-//
-//         JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
-//                 .indent(true)
-//                 .build();
-//         String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
-//
-////         System.out.println(fs);
-//
-//         long end = System.nanoTime();
-//         double seconds = (end - start) / 1_000_000_000.0;
-//         System.out.printf("Elapsed: %.3f s%n", seconds);
-//     }
+    //     // String rootPath = System.getProperty("user.home");
+    //     String rootPath = "/home/";
+    //     DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
+
+    //     DUUIFolder folderStructure = handler.getFolderStructure();
+    //     List<Path> allowedRoots = new ArrayList<>();
+    //     allowedRoots.add(Path.of("/home/dater/projects/duui-dterefe/DockerUnifiedUIMAInterface/docs"));
+
+    //     // folderStructure = handler.filterTree(folderStructure, allowedRoots);
+
+    //     // JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
+    //     //         .indent(true)
+    //     //         .build();
+
+    //     // String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
+
+    //     // System.out.println(fs);
+
+    //     long end = System.nanoTime();
+    //     double seconds = (end - start) / 1_000_000_000.0;
+    //     System.out.printf("Elapsed: %.3f s%n", seconds);
+    // }
 
 }

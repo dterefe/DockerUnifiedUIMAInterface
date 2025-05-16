@@ -1,5 +1,6 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
+import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
@@ -7,6 +8,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.*;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveTask;
 // import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDrivesDocumentHandler.FolderTreeBuilder;
@@ -102,47 +105,7 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
             }
         }
     }
-    // public DUUIFolder getFolderStructure() {
-    //     return build(Paths.get(rootPath));
-    // }
 
-    // private DUUIFolder build(Path dir) {
-    //     DUUIFolder folder = new DUUIFolder(
-    //         dir.toAbsolutePath().toString(),
-    //         Optional.ofNullable(dir.getFileName()).map(Path::toString).orElse(dir.toString())
-    //     );
-    //     try (
-    //         var scope  = new StructuredTaskScope.ShutdownOnFailure();
-    //         var stream = Files.newDirectoryStream(dir)
-    //     ) {
-    //         List<StructuredTaskScope.Subtask<DUUIFolder>> tasks = new ArrayList();
-    //         for (Path p : stream) {
-    //             try {
-    //                 if (Files.isDirectory(p)
-    //                     && Files.isReadable(p)
-    //                     && Files.isWritable(p)) {
-    //                         tasks.add(scope.fork(() -> build(p)));
-    //                     }
-    //             } catch (Exception e) {
-    //             }
-    //         }
-
-    //         scope.join();
-    //         scope.exception()
-    //             .ifPresent(e -> {
-    //                 // handle exception
-    //                 System.err.println("Error while traversing directory: ");
-    //                 e.printStackTrace();
-    //             });
-
-    //         tasks.forEach(t -> folder.addChild(t.get()));
-    //     } catch (IOException | InterruptedException e) {
-    //         // skip dirs we can’t traverse or if interrupted
-    //     }
-
-    //     return folder;
-    // }
-    
     /**
      * Filters the given DUUIFolder tree, keeping only the nodes that are under the allowed roots.
      * 
@@ -184,30 +147,30 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         return out;
     }
 
-    // public static void main(String[] args) throws IOException {
-    //     long start = System.nanoTime();
-
-    //     // String rootPath = System.getProperty("user.home");
-    //     String rootPath = "/home/";
-    //     DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
-
-    //     DUUIFolder folderStructure = handler.getFolderStructure();
-    //     List<Path> allowedRoots = new ArrayList<>();
-    //     allowedRoots.add(Path.of("/home/dater/projects/duui-dterefe/DockerUnifiedUIMAInterface/docs"));
-
-    //     // folderStructure = handler.filterTree(folderStructure, allowedRoots);
-
-    //     // JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
-    //     //         .indent(true)
-    //     //         .build();
-
-    //     // String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
-
-    //     // System.out.println(fs);
-
-    //     long end = System.nanoTime();
-    //     double seconds = (end - start) / 1_000_000_000.0;
-    //     System.out.printf("Elapsed: %.3f s%n", seconds);
-    // }
+//     public static void main(String[] args) throws IOException {
+//         long start = System.nanoTime();
+//
+//         // String rootPath = System.getProperty("user.home");
+//         String rootPath = "/home/";
+//         DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
+//
+//         DUUIFolder folderStructure = handler.getFolderStructure();
+//         List<Path> allowedRoots = new ArrayList<>();
+//         allowedRoots.add(Path.of("/home/stud_homes/s0424382/projects/duui-fork/DockerUnifiedUIMAInterface/docs"));
+//
+//         // folderStructure = handler.filterTree(folderStructure, allowedRoots);
+//
+//         // JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
+//         //         .indent(true)
+//         //         .build();
+//
+//         // String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
+//
+//         // System.out.println(fs);
+//
+//         long end = System.nanoTime();
+//         double seconds = (end - start) / 1_000_000_000.0;
+//         System.out.printf("Elapsed: %.3f s%n", seconds);
+//     }
 
 }

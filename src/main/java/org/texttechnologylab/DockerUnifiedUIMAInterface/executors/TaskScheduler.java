@@ -122,10 +122,7 @@ public class TaskScheduler<T> {
         if (latch == null) {
             return; // no awaitable tasks defined
         }
-        // wait until queue is empty
-        while (!taskQueue.isEmpty()) {
-            Thread.sleep(50);
-        }
+
         // wait for all tasks to complete
         latch.await();
     }

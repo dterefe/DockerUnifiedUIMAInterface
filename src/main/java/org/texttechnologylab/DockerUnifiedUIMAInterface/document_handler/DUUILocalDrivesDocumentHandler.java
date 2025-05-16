@@ -78,7 +78,10 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
                         boolean isDir;
                         try {
                             // default isDirectory follows symlinks
-                            isDir = Files.isDirectory(child) && Files.isReadable(child) && Files.isWritable(child);
+                            isDir = Files.isDirectory(child)
+                                    && Files.isReadable(child)
+                                    && Files.isWritable(child)
+                                    && !child.getFileName().startsWith(".");
                         } catch (Exception ex) {
                             // skip paths we can’t check
                             continue;

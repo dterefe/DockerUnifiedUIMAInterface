@@ -14,7 +14,6 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIFallbackCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunicationLayer;
@@ -50,7 +49,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 import static java.lang.String.format;
-import static org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.getLocalhost;
 
 /**
  * Interface for all drivers

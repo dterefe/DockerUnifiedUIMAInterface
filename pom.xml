@@ -284,6 +284,13 @@
 
 
     <dependencies>
+
+        <dependency>
+            <groupId>commons-lang</groupId>
+            <artifactId>commons-lang</artifactId>
+            <version>2.6</version>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.uima</groupId>
             <artifactId>uimaj-core</artifactId>
@@ -491,13 +498,6 @@
         </dependency>
 
 
-        <dependency>
-            <groupId>com.github.jponge</groupId>
-            <artifactId>podman-java-client</artifactId>
-            <version>a3b54ecc45</version>
-        </dependency>
-
-
         <!-- https://mvnrepository.com/artifact/org.msgpack/msgpack-core -->
         <dependency>
             <groupId>org.msgpack</groupId>
@@ -516,7 +516,7 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>RELEASE</version>
+            <version>5.10.2</version>
             <scope>compile</scope>
         </dependency>
 
@@ -618,13 +618,6 @@
         <dependency>
             <groupId>org.dkpro.core</groupId>
             <artifactId>dkpro-core-api-resources-asl</artifactId>
-        </dependency>
-
-        <!-- https://mvnrepository.com/artifact/org.dkpro.core/dkpro-core-tokit-asl -->
-        <dependency>
-            <groupId>org.dkpro.core</groupId>
-            <artifactId>dkpro-core-tokit-asl</artifactId>
-            <scope>test</scope>
         </dependency>
 
         <dependency>

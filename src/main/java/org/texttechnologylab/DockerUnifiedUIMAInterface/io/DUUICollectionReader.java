@@ -40,4 +40,9 @@ public interface DUUICollectionReader {
      */
     long getDone();
 
+    /**
+     * Shuts down persistent objects. 
+     */
+    default void shutdown() {};
+
 }

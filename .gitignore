@@ -5,3 +5,4 @@ target/*
 *.db
 *.iml
 Gemfile.lock
+.vscode/settings.json

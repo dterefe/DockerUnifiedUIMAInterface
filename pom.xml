@@ -191,6 +191,10 @@
                 <configuration>
                     <source>21</source>
                     <target>21</target>
+                    <release>21</release>
+                    <compilerArgs>
+                        <arg>--enable-preview</arg>
+                    </compilerArgs>
                 </configuration>
             </plugin>
             <plugin>
@@ -201,6 +205,7 @@
                     <argLine>
                         --illegal-access=permit
                         --add-opens java.base/java.util=ALL-UNNAMED
+                        --enable-preview
                         <!--                        add-opens for use in JUnit-Tests...-->
                     </argLine>
                 </configuration>
@@ -212,7 +217,37 @@
                 <configuration>
                     <argLine>
                         --illegal-access=permit
+                        --enable-preview
                     </argLine>
+                </configuration>
+            </plugin>
+<!--            <plugin>-->
+<!--                <groupId>org.codehaus.mojo</groupId>-->
+<!--                <artifactId>exec-maven-plugin</artifactId>-->
+<!--                <version>3.1.0</version>-->
+<!--                <configuration>-->
+<!--                    <executable>java</executable>-->
+<!--                    <arguments>-->
+<!--                        <argument>&#45;&#45;enable-preview</argument>-->
+<!--                        <argument>-classpath</argument>-->
+<!--                        <argument>${project.build.outputDirectory}</argument>-->
+<!--&lt;!&ndash;                        <classpath/>&ndash;&gt;-->
+<!--                        <argument>org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDrivesDocumentHandler</argument>-->
+<!--                    </arguments>-->
+<!--                </configuration>-->
+<!--            </plugin>-->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <executable>java</executable>
+                    <arguments>
+                        <argument>-classpath</argument>
+                        <argument>${project.build.outputDirectory}</argument>
+                        <argument>org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDrivesDocumentHandler</argument>
+                        <argument>--enable-preview</argument>
+                    </arguments>
                 </configuration>
             </plugin>
             <plugin>
@@ -603,7 +638,7 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
-            <version>5.10.2</version>
+            <!-- <version>5.9.3</version> -->
             <scope>test</scope>
         </dependency>
 

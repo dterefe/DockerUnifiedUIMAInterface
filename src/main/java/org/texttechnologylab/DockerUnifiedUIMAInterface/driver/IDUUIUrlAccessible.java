@@ -1,6 +1,5 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 
 /**
  * Interface for the generation of DUUI-available URLs
@@ -12,12 +11,6 @@ public interface IDUUIUrlAccessible {
      * @return
      */
     public String generateURL();
-
-    /**
-     * Returns the connection handler for accessing connectors.
-     * @return
-     */
-    public IDUUIConnectionHandler getHandler();
 
     /**
      * Returns the communication layer.

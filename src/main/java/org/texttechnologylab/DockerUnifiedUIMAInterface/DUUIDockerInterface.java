@@ -1,8 +1,12 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import static java.lang.String.format;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -635,15 +639,51 @@ public class DUUIDockerInterface {
             );
         }
 
-        String hostIp   = bindings[0].getHostIp();
         String hostPort = bindings[0].getHostPortSpec();
 
-        // If Docker bound to all interfaces, you can replace 0.0.0.0 with localhost if you like:
-        if ("0.0.0.0".equals(hostIp)) {
-            hostIp = "localhost";
+        List<String> candidates = new ArrayList<>();
+        candidates.add("localhost");
+        candidates.add("host.docker.internal");
+        // Try to dynamically get the Docker Gateway IP (works in Linux)
+        String dockerGatewayIp = getDockerHostIp();
+        if (dockerGatewayIp != null && !dockerGatewayIp.equals("127.0.0.1")) {
+            candidates.add(dockerGatewayIp);
         }
 
-        return "http://" + hostIp + ":" + hostPort;
+        for (String host : candidates) {
+            if (canConnect(host, Integer.parseInt(hostPort), 700)) {
+                return "http://" + host + ":" + hostPort;
+            }
+        }
+
+        throw new IllegalStateException("Could not reach container on any host IP: " + candidates);
+    }
+
+    // Checks if a TCP connection is possible
+    private boolean canConnect(String host, int port, int timeoutMs) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // Try to get Docker gateway IP inside a container
+    private String getDockerHostIp() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", "ip route | awk '/default/ { print $3 }'");
+            Process p = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String line = reader.readLine();
+                if (line != null && !line.isEmpty()) {
+                    return line.trim();
+                }
+            }
+        } catch (Exception e) {
+            // Ignore, fallback to localhost
+        }
+        return null;
     }
 
     /**

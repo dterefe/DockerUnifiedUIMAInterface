@@ -101,9 +101,6 @@ public interface IDUUIInstantiatedPipelineComponent {
                 e.printStackTrace(System.out);
                 System.out.printf("Cannot reach endpoint, trying again %d/%d...\n", tries + 1, 100);
                 try { Thread.sleep(250); } catch (InterruptedException ignored) {}
-            } finally {
-                System.out.printf("[DEBUG][%s] Adding component back to pool.%n", uuid);
-                comp.addComponent(queue.getValue0());
             }
         }
         System.out.printf("[DEBUG][%s] All tries failed, endpoint unreachable!%n", uuid);
@@ -120,13 +117,10 @@ public interface IDUUIInstantiatedPipelineComponent {
      * @throws PipelineComponentException
      */
     public static void process(JCas jc, IDUUIInstantiatedPipelineComponent comp, DUUIPipelineDocumentPerformance perf) throws CASException, PipelineComponentException {
-        
-        System.out.printf("[DEBUG] process(): Starting processing for component %s%n", comp.getPipelineComponent().getName());
-        System.out.printf("[DEBUG] process(): Retrieving component instance... %n");
         Triplet<IDUUIUrlAccessible, Long, Long> queue = comp.getComponent();
         String uuid = java.util.UUID.randomUUID().toString(); // Für Tracing, falls kein besseres vorhanden
 
-        System.out.printf("[DEBUG][%s] Retrieved component instance. %n", uuid);
+        System.out.printf("[DEBUG][%s] process(): Start for component %s%n", uuid, comp.getPipelineComponent().getName());
 
         IDUUICommunicationLayer layer = queue.getValue0().getCommunicationLayer();
         long serializeStart = System.nanoTime();

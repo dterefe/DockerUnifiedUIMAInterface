@@ -1,16 +1,16 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
+import org.apache.uima.fit.util.JCasUtil;
+import org.apache.uima.jcas.JCas;
+import org.apache.uima.jcas.cas.TOP;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
+
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import org.apache.uima.fit.util.JCasUtil;
-import org.apache.uima.jcas.JCas;
-import org.apache.uima.jcas.cas.TOP;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
 public class DUUIDocument {
 
@@ -34,8 +34,6 @@ public class DUUIDocument {
     private long uploadProgress = 0L;
     private long downloadProgress = 0L;
     private final Map<String, Integer> annotations = new HashMap<>();
-    private int retryCount = 0;
-    
 
     public DUUIDocument(String name, String path, long size) {
         this.name = name;
@@ -148,12 +146,6 @@ public class DUUIDocument {
     public String getText() {
         return new String(bytes, StandardCharsets.UTF_8);
     }
-
-    
-    public int getRetryCount() { return retryCount; }
-
-
-    public void setRetryCount(int retryCount) { this.retryCount = retryCount; }
 
     /**
      * Increment the document progress by one.

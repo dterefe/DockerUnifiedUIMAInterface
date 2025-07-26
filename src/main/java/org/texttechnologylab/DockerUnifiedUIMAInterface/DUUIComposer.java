@@ -22,7 +22,6 @@ import java.util.Set;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -31,7 +30,6 @@ import java.util.stream.Collectors;
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.lang3.SerializationUtils;
 import org.apache.uima.analysis_engine.AnalysisEngineProcessException;
-import org.apache.uima.cas.CASException;
 import org.apache.uima.cas.impl.XmiCasSerializer;
 import org.apache.uima.collection.CollectionReader;
 import org.apache.uima.collection.CollectionReaderDescription;
@@ -721,7 +719,7 @@ class DUUIWorkerDocumentReader extends Thread {
                         pipelinePart.getName())
                 );
                 document.incrementProgress();
-                System.out.printf("[DEBUG][%s] PipelinePart complete: %s (Progress: %d)\n", threadName, pipelinePart.getName(), document.getProgress());
+                System.out.printf("[DEBUG][%s] PipelinePart complete: %s \n", threadName, pipelinePart.getName());
             }
 
             timer.stop();

@@ -41,6 +41,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     private final AtomicLong currentMemorySize = new AtomicLong(0);
     private final int initialSize;
     private ConcurrentLinkedQueue<DUUIDocument> documentQueue;
+    private final ConcurrentLinkedQueue<DUUIDocument> failedDocuments = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<DUUIDocument> documentsBackup;
     private final ConcurrentLinkedQueue<DUUIDocument> loadedDocuments;
     private List<DUUIDocument> preProcessor;
@@ -380,36 +381,50 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     }
 
     private DUUIDocument pollDocument() {
-        DUUIDocument polled = loadedDocuments.poll();
-        DUUIDocument document;
-
-        if (polled == null) {
-            document = documentQueue.poll();
-            if (document == null) return null;
+        // 1. Erst aus der Fehlerqueue lesen
+        DUUIDocument document = failedDocuments.poll();
+        if (document != null) {
+            System.out.println("[DEBUG][READER] Retry document: " + document.getPath());
         } else {
-            document = polled;
-            long factor = 1;
-            if (document.getName().endsWith(".gz") || document.getName().endsWith(".xz")) {
-                factor = 10;
+            DUUIDocument polled = loadedDocuments.poll();
+            if (polled == null) {
+                document = documentQueue.poll();
+                System.out.println("[DEBUG][READER] Polled from documentQueue: " + (document != null ? document.getPath() : "null"));
+                if (document == null) return null;
+            } else {
+                document = polled;
+                System.out.println("[DEBUG][READER] Polled from loadedDocuments: " + document.getPath());
+                long factor = 1;
+                if (document.getName().endsWith(".gz") || document.getName().endsWith(".xz")) {
+                    factor = 10;
+                }
+                currentMemorySize.getAndAdd(-factor * document.getSize());
             }
-            currentMemorySize.getAndAdd(-factor * document.getSize());
         }
 
         this.progress.addAndGet(1);
 
-        if (polled == null) {
-            try {
-                polled = builder.inputHandler.readDocument(document.getPath());
-            } catch (IOException exception) {
-                throw new RuntimeException(exception);
+        try {
+            DUUIDocument loaded = builder.inputHandler.readDocument(document.getPath());
+            document = composer.addDocument(loaded);
+            document.setBytes(loaded.getBytes());
+            return document;
+        } catch (IOException exception) {
+            System.out.println("[DEBUG][READER] readDocument failed for " + document.getPath() + ": " + exception.getMessage());
+            // Maximal 3 retries, dann endgültig raus
+            Integer retries = document.getRetryCount();
+            
+            if (retries < 3) {
+                document.setRetryCount(retries + 1);
+                failedDocuments.offer(document);
+                System.out.println("[DEBUG][READER] Retry #" + document.getRetryCount() + " for " + document.getPath());
+            } else {
+                System.out.println("[DEBUG][READER] Gave up on " + document.getPath());
             }
+            return null;
         }
-
-
-        document = composer.addDocument(polled);
-        document.setBytes(polled.getBytes());
-        return document;
     }
+
 
     private InputStream decodeDocument(DUUIDocument document, Timer timer) {
         document.setStatus(DUUIStatus.DECODE);

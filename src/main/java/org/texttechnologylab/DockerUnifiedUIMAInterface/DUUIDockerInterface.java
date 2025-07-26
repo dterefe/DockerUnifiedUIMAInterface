@@ -610,66 +610,82 @@ public class DUUIDockerInterface {
      * @throws IllegalStateException if no binding is found
      */
     public String getHostUrl(String containerId, int containerPort) {
-        // Inspect the container’s network settings
-        InspectContainerResponse inspect =
-            _docker.inspectContainerCmd(containerId).exec();
+        System.out.printf("Building container host URI for: %s with port: %d%n", containerId, containerPort);
 
-        
+        // Inspect the container’s network settings
+        InspectContainerResponse inspect = _docker.inspectContainerCmd(containerId).exec();
+
+        System.out.println("---- Port Bindings for container ----");
         inspect.getNetworkSettings().getPorts().getBindings().forEach((expPort, bindingss) -> {
             System.out.printf(
-                "Key=%s → Host bindings=%s%n",
+                "  ExposedPort=%s → Host bindings=%s%n",
                 expPort,
                 Arrays.toString(bindingss)
             );
         });
+        System.out.println("------------------------------------");
 
         // Look up the binding for the given ExposedPort
         ExposedPort exposed = ExposedPort.tcp(containerPort);
-        Ports.Binding[] bindings =
-            inspect.getNetworkSettings()
+        Ports.Binding[] bindings = inspect.getNetworkSettings()
                 .getPorts()
                 .getBindings()
                 .get(exposed);
 
-
-
         if (bindings == null || bindings.length == 0) {
+            System.err.printf("ERROR: No host binding found for container port %d (ExposedPort: %s)%n", containerPort, exposed);
             throw new IllegalStateException(
                 "No host binding found for container port " + containerPort
             );
         }
 
+        for (int i = 0; i < bindings.length; i++) {
+            System.out.printf("  Binding[%d]: HostIp=%s, HostPort=%s%n", i, bindings[i].getHostIp(), bindings[i].getHostPortSpec());
+        }
+
         String hostPort = bindings[0].getHostPortSpec();
+        System.out.printf("Trying to reach mapped port: %s%n", hostPort);
 
         List<String> candidates = new ArrayList<>();
         candidates.add("localhost");
         candidates.add("host.docker.internal");
-        // Try to dynamically get the Docker Gateway IP (works in Linux)
+
         String dockerGatewayIp = getDockerHostIp();
+        System.out.printf("Docker Gateway IP detected: %s%n", dockerGatewayIp);
         if (dockerGatewayIp != null && !dockerGatewayIp.equals("127.0.0.1")) {
             candidates.add(dockerGatewayIp);
         }
 
+        System.out.printf("Connection candidates (in order): %s%n", candidates);
+
         for (String host : candidates) {
-            if (canConnect(host, Integer.parseInt(hostPort), 700)) {
+            System.out.printf("  Attempting connection to http://%s:%s ... ", host, hostPort);
+            boolean ok = canConnectDebug(host, Integer.parseInt(hostPort), 700);
+            if (ok) {
+                System.out.println("SUCCESS");
+                System.out.printf("Resolved host URL: http://%s:%s%n", host, hostPort);
                 return "http://" + host + ":" + hostPort;
+            } else {
+                System.out.println("FAILED");
             }
         }
 
+        System.err.printf("ERROR: Could not reach container on any host IP: %s%n", candidates);
         throw new IllegalStateException("Could not reach container on any host IP: " + candidates);
     }
 
-    // Checks if a TCP connection is possible
-    private boolean canConnect(String host, int port, int timeoutMs) {
+    // Checks if a TCP connection is possible (with debug prints)
+    private boolean canConnectDebug(String host, int port, int timeoutMs) {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
             return true;
         } catch (Exception e) {
+            System.out.printf("(Exception: %s)%n", e.getMessage());
             return false;
         }
     }
 
-    // Try to get Docker gateway IP inside a container
+    // Try to get Docker gateway IP inside a container (with debug prints)
     private String getDockerHostIp() {
         try {
             ProcessBuilder pb = new ProcessBuilder("sh", "-c", "ip route | awk '/default/ { print $3 }'");
@@ -677,11 +693,12 @@ public class DUUIDockerInterface {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line = reader.readLine();
                 if (line != null && !line.isEmpty()) {
+                    System.out.printf("  [getDockerHostIp] Found IP: %s%n", line.trim());
                     return line.trim();
                 }
             }
         } catch (Exception e) {
-            // Ignore, fallback to localhost
+            System.out.printf("  [getDockerHostIp] Exception: %s%n", e.getMessage());
         }
         return null;
     }

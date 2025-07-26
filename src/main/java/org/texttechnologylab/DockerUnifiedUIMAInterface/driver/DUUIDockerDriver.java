@@ -24,6 +24,7 @@ import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
@@ -122,72 +123,104 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
      * @return
      * @throws Exception
      */
-    public static IDUUICommunicationLayer responsiveAfterTime(String url, JCas jc, int timeout_ms, HttpClient client, ResponsiveMessageCallback printfunc, DUUILuaContext context, boolean skipVerification) throws Exception {
-        long start = System.currentTimeMillis();
-        IDUUICommunicationLayer layer = new DUUIFallbackCommunicationLayer();  // Hier wird layer zum ersten mal erstellt.
-        boolean fatal_error = false;
+    public static IDUUICommunicationLayer responsiveAfterTime(
+            String url,
+            JCas jc,
+            int timeout_ms,
+            HttpClient client,
+            ResponsiveMessageCallback printfunc,
+            DUUILuaContext context,
+            boolean skipVerification) throws Exception {
 
+        long start = System.currentTimeMillis();
+        IDUUICommunicationLayer layer = new DUUIFallbackCommunicationLayer();
+        boolean fatal_error = false;
         int iError = 0;
+
+        System.out.printf("[DEBUG] Entered responsiveAfterTime. url=%s, timeout_ms=%d%n", url, timeout_ms);
+        System.out.printf("[DEBUG] PID=%s, Inside docker? %b%n", java.lang.management.ManagementFactory.getRuntimeMXBean().getName(), isLikelyInsideDocker());
+        System.out.printf("[DEBUG] HttpClient type: %s%n", client.getClass().getCanonicalName());
+
         while (true) {
             HttpRequest request = null;
             try {
+                String requestUri = url + DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER;
+                System.out.printf("[DEBUG] Preparing HttpRequest: %s%n", requestUri);
+
                 request = HttpRequest.newBuilder()
-                        .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER))
+                        .uri(URI.create(requestUri))
                         .version(HttpClient.Version.HTTP_1_1)
-//                        .timeout(Duration.ofSeconds(10))
                         .timeout(Duration.ofSeconds(timeout_ms))
                         .GET()
                         .build();
             } catch (Exception e) {
+                System.err.println("[DEBUG] Exception building HttpRequest:");
                 e.printStackTrace();
             }
+
             try {
                 HttpResponse<byte[]> resp = null;
 
                 boolean connectionError = true;
                 int iCount = 0;
                 while (connectionError && iCount < 10) {
-
+                    System.out.printf("[DEBUG] Attempt #%d: Sending HTTP GET to %s%n", iCount + 1, request.uri());
                     try {
-                        // Das hier geht beim KubernetesDriver nicht
                         resp = client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
                         connectionError = false;
+                        System.out.printf("[DEBUG] Got HTTP response: %d bytes, status: %d%n", resp.body() != null ? resp.body().length : -1, resp.statusCode());
                     } catch (Exception e) {
-                        System.out.println(e.getMessage() + "\t" + url);
+                        System.err.printf("[DEBUG] HTTP connection error on try #%d: %s (%s)\n", iCount + 1, e.getClass().getSimpleName(), e.getMessage());
                         if (e instanceof java.net.ConnectException) {
+                            System.err.printf("[DEBUG] ConnectException: Host=%s, Port=%s%n", request.uri().getHost(), request.uri().getPort());
                             Thread.sleep(timeout_ms);
                             iCount++;
                         } else if (e instanceof CompletionException) {
                             Thread.sleep(timeout_ms);
                             iCount++;
+                        } else {
+                            System.err.printf("[DEBUG] Unexpected exception: %s%n", e);
+                            throw e;
                         }
                     }
                 }
+
+                if (resp == null) {
+                    throw new Exception("[DEBUG] No HTTP response after 10 tries!");
+                }
+
                 if (resp.statusCode() == 200) {
                     String body2 = new String(resp.body(), Charset.defaultCharset());
                     try {
                         printfunc.operation("Component lua communication layer, loading...");
+                        System.out.println("[DEBUG] 200 OK: Body length = " + body2.length());
                         IDUUICommunicationLayer lua_com = new DUUILuaCommunicationLayer(body2, "requester", context);
                         layer = lua_com;
                         printfunc.operation("Component lua communication layer, loaded.");
                         break;
                     } catch (Exception e) {
                         fatal_error = true;
+                        System.err.println("[DEBUG] Fatal error: Lua script is not runnable!");
                         e.printStackTrace();
                         throw new Exception("Component provided a lua script which is not runnable.");
                     }
                 } else if (resp.statusCode() == 404) {
                     printfunc.operation("Component provided no own communication layer implementation using fallback.");
+                    System.out.println("[DEBUG] 404 Not Found: Using fallback.");
                     break;
+                } else {
+                    System.err.printf("[DEBUG] Got HTTP status: %d (body %d bytes)%n", resp.statusCode(), resp.body() != null ? resp.body().length : -1);
                 }
+
                 long finish = System.currentTimeMillis();
                 long timeElapsed = finish - start;
                 if (timeElapsed > timeout_ms) {
-                    throw new TimeoutException(format("The Container did not provide one succesful answer in %d milliseconds", timeout_ms));
+                    System.err.printf("[DEBUG] Timeout: waited %d ms%n", timeElapsed);
+                    throw new TimeoutException(String.format("The Container did not provide one successful answer in %d milliseconds", timeout_ms));
                 }
 
             } catch (Exception e) {
-
+                System.err.printf("[DEBUG] Exception in HTTP/Layer creation: %s%n", e.getMessage());
                 if (fatal_error) {
                     throw e;
                 } else {
@@ -196,41 +229,65 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
                 }
 
                 if (iError > 10) {
+                    System.err.println("[DEBUG] Too many errors, aborting.");
                     throw e;
                 }
             }
         }
+
         if (skipVerification) {
+            System.out.println("[DEBUG] skipVerification=true, returning early.");
             return layer;
         }
         ByteArrayOutputStream stream = new ByteArrayOutputStream();
         try {
-            //TODO: Make this accept options to better check the instantiation!
+            System.out.println("[DEBUG] Serializing layer for verification...");
             layer.serialize(jc, stream, null, "_InitialView");
         } catch (Exception e) {
-            e.printStackTrace();
-            throw new Exception(format("The serialization step of the communication layer fails for implementing class %s", layer.getClass().getCanonicalName()));
+            System.err.printf("[DEBUG] Serialization failed: %s%n", e.getMessage());
+            throw new Exception(String.format("The serialization step of the communication layer fails for implementing class %s", layer.getClass().getCanonicalName()));
         }
 
+        String processUri = url + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS;
+        System.out.printf("[DEBUG] Sending POST request to: %s (bytes: %d)%n", processUri, stream.size());
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
+            .uri(URI.create(processUri))
             .version(HttpClient.Version.HTTP_1_1)
             .POST(HttpRequest.BodyPublishers.ofByteArray(stream.toByteArray()))
             .build();
         HttpResponse<byte[]> resp = client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
+        System.out.printf("[DEBUG] POST response status: %d, length: %d%n", resp.statusCode(), resp.body() != null ? resp.body().length : -1);
+
         if (resp.statusCode() == 200) {
             ByteArrayInputStream inputStream = new ByteArrayInputStream(resp.body());
             try {
+                System.out.println("[DEBUG] Deserializing response into communication layer...");
                 layer.deserialize(jc, inputStream, "_InitialView");
             } catch (Exception e) {
-                System.err.printf("Caught exception printing response %s\n", new String(resp.body(), StandardCharsets.UTF_8));
+                System.err.printf("[DEBUG] Caught exception deserializing response: %s\nResponse: %s\n", e.getMessage(), new String(resp.body(), StandardCharsets.UTF_8));
                 throw e;
             }
             return layer;
         } else {
-            throw new Exception(format("The container returned response with code != 200\nResponse %s", resp.body().toString()));
+            System.err.printf("[DEBUG] POST request failed, response code: %d, body: %s%n", resp.statusCode(), new String(resp.body(), StandardCharsets.UTF_8));
+            throw new Exception(String.format("The container returned response with code != 200\nResponse %s", new String(resp.body(), StandardCharsets.UTF_8)));
         }
     }
+
+    // Optional: Docker detection helper (very simple heuristic)
+    private static boolean isLikelyInsideDocker() {
+        File dockerEnv = new File("/.dockerenv");
+        File cgroup = new File("/proc/1/cgroup");
+        try {
+            if (dockerEnv.exists()) return true;
+            if (cgroup.exists()) {
+                String cg = new String(java.nio.file.Files.readAllBytes(cgroup.toPath()));
+                return cg.contains("docker") || cg.contains("kubepods") || cg.contains("containerd");
+            }
+        } catch (IOException ignored) {}
+        return false;
+    }
+
 
     /**
      * Set Lua-Context

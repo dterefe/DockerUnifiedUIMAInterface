@@ -560,12 +560,15 @@ class DUUIWorkerDocumentReader extends Thread {
     @Override
     public void run() {
 
+        String threadName = Thread.currentThread().getName();
+        System.out.printf("[DEBUG][%s] Thread started. Threads alive: %d\n", threadName, threadsAlive.addAndGet(1));
+
         composer.addEvent(
             DUUIEvent.Sender.COMPOSER,
-            String.format("%d threads are active.", threadsAlive.addAndGet(1))
+            String.format("%d threads are active.", threadsAlive.get())
         );
 
-        DUUIDocument document;
+        DUUIDocument document = null;
 
         while (!composer.shouldShutdown()) {
             Timer timer = new Timer();
@@ -573,31 +576,34 @@ class DUUIWorkerDocumentReader extends Thread {
 
             while (true) {
                 if (composer.shouldShutdown()) {
+                    System.out.printf("[DEBUG][%s] Shutdown requested. Threads alive: %d\n", threadName, threadsAlive.get());
                     threadsAlive.getAndDecrement();
                     return;
                 }
 
                 try {
                     document = reader.getNextDocument(cas);
-                    if (document != null && !document.isFinished()) break;
-
+                    if (document != null && !document.isFinished()) {
+                        System.out.printf("[DEBUG][%s] Got next document: %s\n", threadName, document.getPath());
+                        break;
+                    }
+                    System.out.printf("[DEBUG][%s] No new document, sleeping...\n", threadName);
                     Thread.sleep(300);
                 } catch (IllegalArgumentException ignored) {
+                    System.out.printf("[DEBUG][%s] IllegalArgumentException ignored in getNextDocument\n", threadName);
                 } catch (InterruptedException e) {
                     composer.addEvent(
                         DUUIEvent.Sender.COMPOSER,
                         e.getMessage(),
                         DUUIComposer.DebugLevel.ERROR
                     );
+                    System.out.printf("[DEBUG][%s] InterruptedException: %s\n", threadName, e.getMessage());
                 }
             }
 
             timer.stop();
 
-            boolean trackErrorDocs = false;
-            if (backend != null) {
-                trackErrorDocs = backend.shouldTrackErrorDocs();
-            }
+            boolean trackErrorDocs = backend != null && backend.shouldTrackErrorDocs();
 
             DUUIPipelineDocumentPerformance perf = new DUUIPipelineDocumentPerformance(runKey,
                 timer.getDuration(),
@@ -609,11 +615,15 @@ class DUUIWorkerDocumentReader extends Thread {
                 DUUIEvent.Sender.DOCUMENT,
                 String.format("Starting to process %s", document.getPath()));
 
+            System.out.printf("[DEBUG][%s] Start processing document: %s\n", threadName, document.getPath());
+
             timer.restart();
 
             document.setStatus(DUUIStatus.ACTIVE);
 
             for (DUUIComposer.PipelinePart pipelinePart : flow) {
+                System.out.printf("[DEBUG][%s] PipelinePart: %s (%s)\n", threadName, pipelinePart.getName(), pipelinePart.getDriver().getClass().getSimpleName());
+
                 composer.addEvent(
                     DUUIEvent.Sender.DOCUMENT,
                     String.format(
@@ -625,6 +635,7 @@ class DUUIWorkerDocumentReader extends Thread {
                 try {
                     DUUISegmentationStrategy segmentationStrategy = pipelinePart.getSegmentationStrategy();
                     if (segmentationStrategy instanceof DUUISegmentationStrategyNone) {
+                        System.out.printf("[DEBUG][%s] No segmentation. Running driver...\n", threadName);
                         composer.setPipelineStatus(
                             pipelinePart.getName(),
                             DUUIStatus.ACTIVE);
@@ -633,30 +644,30 @@ class DUUIWorkerDocumentReader extends Thread {
                             pipelinePart.getDriver().getClass().getSimpleName(),
                             DUUIStatus.ACTIVE);
 
-
                         pipelinePart.getDriver().run(pipelinePart.getUUID(), cas, perf, composer);
                     } else {
+                        System.out.printf("[DEBUG][%s] Segmentation strategy: %s\n", threadName, segmentationStrategy.getClass().getSimpleName());
                         segmentationStrategy.initialize(cas);
                         JCas jCasSegmented = segmentationStrategy.getNextSegment();
+                        int segCount = 0;
 
                         while (jCasSegmented != null) {
+                            segCount++;
                             if (segmentationStrategy instanceof DUUISegmentationStrategyByDelemiter) {
                                 DUUISegmentationStrategyByDelemiter pStrategie = ((DUUISegmentationStrategyByDelemiter) segmentationStrategy);
 
                                 if (pStrategie.hasDebug()) {
                                     int iLeft = pStrategie.getSegments();
                                     DocumentMetaData dmd = DocumentMetaData.get(cas);
-                                    composer.addEvent(
-                                        DUUIEvent.Sender.COMPOSER,
-                                        String.format("%s Left: %s", dmd.getDocumentId(), iLeft)
-                                    );
+                                    System.out.printf("[DEBUG][%s] Segmentation: %s Left: %d\n", threadName, dmd.getDocumentId(), iLeft);
                                 }
                             }
+                            System.out.printf("[DEBUG][%s] Processing segment %d...\n", threadName, segCount);
                             pipelinePart.getDriver().run(pipelinePart.getUUID(), jCasSegmented, perf, composer);
                             segmentationStrategy.merge(jCasSegmented);
                             jCasSegmented = segmentationStrategy.getNextSegment();
                         }
-
+                        System.out.printf("[DEBUG][%s] Segmentation complete (%d segments processed).\n", threadName, segCount);
                         segmentationStrategy.finalize(cas);
                     }
 
@@ -675,6 +686,7 @@ class DUUIWorkerDocumentReader extends Thread {
                         exception.getMessage() == null ? "" : exception.getMessage()));
 
                     document.setStatus(DUUIStatus.FAILED);
+                    System.out.printf("[DEBUG][%s] AnalysisEngineProcessException: %s\n", threadName, exception.getMessage());
 
                     if (composer.getIgnoreErrors()) {
                         break;
@@ -682,6 +694,7 @@ class DUUIWorkerDocumentReader extends Thread {
                         throw new RuntimeException(exception);
                     }
                 } catch (Exception exception) {
+                    System.out.printf("[DEBUG][%s] Exception: %s\n", threadName, exception.getMessage());
                     composer.addEvent(
                         DUUIEvent.Sender.DOCUMENT,
                         String.format(
@@ -708,8 +721,8 @@ class DUUIWorkerDocumentReader extends Thread {
                         pipelinePart.getName())
                 );
                 document.incrementProgress();
+                System.out.printf("[DEBUG][%s] PipelinePart complete: %s (Progress: %d)\n", threadName, pipelinePart.getName(), document.getProgress());
             }
-
 
             timer.stop();
 
@@ -719,8 +732,10 @@ class DUUIWorkerDocumentReader extends Thread {
 
                 if (reader.hasOutput()) {
                     try {
+                        System.out.printf("[DEBUG][%s] Uploading document: %s\n", threadName, document.getPath());
                         reader.upload(document, cas);
                     } catch (IOException | SAXException exception) {
+                        System.out.printf("[DEBUG][%s] Exception during upload: %s\n", threadName, exception.getMessage());
                         document.setError(String.format(
                             "%s%n%s",
                             exception.getClass().getCanonicalName(),
@@ -738,6 +753,7 @@ class DUUIWorkerDocumentReader extends Thread {
                 String.format("%s has been processed after %d ms",
                     document.getPath(),
                     timer.getDuration()));
+            System.out.printf("[DEBUG][%s] Document %s processed in %d ms. Status: %s\n", threadName, document.getPath(), timer.getDuration(), document.getStatus());
 
             if (backend != null) {
                 backend.addMetricsForDocument(perf);
@@ -747,8 +763,11 @@ class DUUIWorkerDocumentReader extends Thread {
             document.setDurationProcess(timer.getDuration());
             document.setFinished(true);
             document.setFinishedAt();
+
+            System.out.printf("[DEBUG][%s] Finished processing document: %s. Threads alive: %d\n", threadName, document.getPath(), threadsAlive.get());
         }
     }
+
 
 }
 

@@ -45,7 +45,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
@@ -79,11 +78,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
 
     public DUUIDockerDriver() throws IOException, UIMAException, SAXException {
         _interface = new DUUIDockerInterface();
-        _client = HttpClient
-                .newBuilder()
-                .executor(Executors.newVirtualThreadPerTaskExecutor())
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        _client = HttpClient.newHttpClient();
 
         JCas _basic = JCasFactory.createJCas();
         _basic.setDocumentLanguage("en");
@@ -108,7 +103,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
      */
     public DUUIDockerDriver(int timeout) throws IOException, UIMAException, SAXException {
         _interface = new DUUIDockerInterface();
-        _client = HttpClient.newBuilder().executor(Executors.newVirtualThreadPerTaskExecutor()).connectTimeout(Duration.ofSeconds(timeout)).build();
+        _client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeout)).build();
 
         _container_timeout = timeout;
 
@@ -171,7 +166,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
                 while (connectionError && iCount < 10) {
                     System.out.printf("[DEBUG] Attempt #%d: Sending HTTP GET to %s%n", iCount + 1, request.uri());
                     try {
-                        resp = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+                        resp = client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
                         connectionError = false;
                         System.out.printf("[DEBUG] Got HTTP response: %d bytes, status: %d%n", resp.body() != null ? resp.body().length : -1, resp.statusCode());
                     } catch (Exception e) {

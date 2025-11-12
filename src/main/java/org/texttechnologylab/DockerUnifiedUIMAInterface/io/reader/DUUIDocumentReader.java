@@ -492,7 +492,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         XmiCasSerializer xmiCasSerializer = new XmiCasSerializer(null);
         XMLSerializer sax2xml = new XMLSerializer(outputStream);
-
+        sax2xml.setOutputProperty(javax.xml.transform.OutputKeys.VERSION, "1.1");
         xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
 
         String outputName = document

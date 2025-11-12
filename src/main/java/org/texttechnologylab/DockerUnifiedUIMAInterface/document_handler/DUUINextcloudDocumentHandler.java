@@ -9,7 +9,6 @@ import org.aarboard.nextcloud.api.exception.NextcloudApiException;
 import org.aarboard.nextcloud.api.provisioning.ProvisionConnector;
 import org.aarboard.nextcloud.api.provisioning.User;
 import org.aarboard.nextcloud.api.utils.ConnectorCommon;
-import org.aarboard.nextcloud.api.utils.WebdavInputStream;
 import org.aarboard.nextcloud.api.webdav.AWebdavHandler;
 import org.aarboard.nextcloud.api.webdav.Folders;
 import org.aarboard.nextcloud.api.webdav.pathresolver.NextcloudVersion;
@@ -20,8 +19,6 @@ import org.apache.http.auth.NTCredentials;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.config.AuthSchemes;
-import org.apache.http.client.config.CookieSpecs;
-import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.HttpClientBuilder;
@@ -31,18 +28,14 @@ import javax.xml.namespace.QName;
 import java.io.*;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.nio.charset.Charset;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
-public class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
+public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
 
     class NCFolders extends Folders {
 
@@ -186,9 +179,14 @@ public class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler, IDUUI
         } catch (MalformedURLException | IllegalArgumentException e) {
             throw new RuntimeException(e.getMessage(), e);
         }
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            this.shutdown();
+        }));
     }
 
 
+    @Override
     public void shutdown() {
         if (!isShutdown.compareAndSet(false, true)) return;
 

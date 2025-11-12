@@ -85,6 +85,12 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         skipped = initial - documentQueue.size();
     }
 
+    @Override
+    public void shutdown() {
+        builder.inputHandler.shutdown();
+        if (builder.inputHandler == builder.outputHandler) builder.outputHandler.shutdown();
+    }
+
     public static Builder builder(DUUIComposer composer) {
         return new Builder(composer);
     }
@@ -481,6 +487,9 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         XmiCasSerializer xmiCasSerializer = new XmiCasSerializer(null);
         XMLSerializer sax2xml = new XMLSerializer(outputStream);
+
+        // Use XMI 1.1 in case of special characters which break serialization in XMI 1.0.
+        // sax2xml.setOutputProperty(javax.xml.transform.OutputKeys.VERSION, "1.1");
 
         xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
 

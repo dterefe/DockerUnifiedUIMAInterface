@@ -33,6 +33,24 @@ public interface IDUUIFolderPickerApi {
 
             return map;
         }
+
+        public static DUUIFolder fromJson(Map<String, Object> json) {
+            String id = (String) json.get("id");
+            String name = (String) json.get("content");
+            DUUIFolder folder = new DUUIFolder(id, name);
+
+            try {
+                List<Map<String, Object>> childrenJson = (List<Map<String, Object>>) json.getOrDefault("children", new ArrayList<Map<String, Object>>());
+                for (Map<String, Object> childJson : childrenJson) {
+                    folder.addChild(fromJson(childJson));
+                }
+            } catch (Exception e) {
+                // Handle the case where "children" is not a list or is missing
+                System.err.println("Error parsing children for folder: " + name + " " + id);
+            }
+
+            return folder;
+        }
     }
 
     DUUIFolder getFolderStructure();

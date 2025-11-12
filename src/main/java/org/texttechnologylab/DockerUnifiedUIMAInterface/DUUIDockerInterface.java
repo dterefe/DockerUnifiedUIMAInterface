@@ -15,8 +15,12 @@ import com.github.dockerjava.httpclient5.ApacheDockerHttpClient;
 import com.github.dockerjava.transport.DockerHttpClient;
 import com.google.common.collect.ImmutableList;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -268,6 +272,8 @@ public class DUUIDockerInterface {
     }
 
     /**
+     * @deprecated Use getHostUrl instead.
+     * 
      * Reads the container gateway bridge ip if inside the container to enable communication between sibling containers or the
      * localhost ip if one is the host.
      *
@@ -279,6 +285,100 @@ public class DUUIDockerInterface {
             return net.getIpam().getConfig().get(0).getGateway();
         }
         return "127.0.0.1";
+    }
+
+    /**
+     * Look up which host IP/port Docker bound to a given container port,
+     * and return it as an HTTP URL.
+     *
+     * @param containerId    the ID of the running container
+     * @param containerPort  the container‐side TCP port you exposed/published
+     * @return               a URL like "http://127.0.0.1:32768"
+     * @throws IllegalStateException if no binding is found
+     */
+    public String getHostUrl(String containerId, int containerPort) {
+        System.out.printf("Building container host URI for: %s with port: %d%n", containerId, containerPort);
+
+        InspectContainerResponse inspect = _docker.inspectContainerCmd(containerId).exec();
+
+        ExposedPort exposed = ExposedPort.tcp(containerPort);
+        Ports.Binding[] bindings = inspect.getNetworkSettings()
+                .getPorts()
+                .getBindings()
+                .get(exposed);
+
+        if (bindings == null || bindings.length == 0) {
+            throw new IllegalStateException("No host binding found for container port " + containerPort);
+        }
+
+        String hostPort = bindings[0].getHostPortSpec();
+        List<String> candidates = new ArrayList<>(List.of("localhost", "host.docker.internal"));
+
+        String dockerGatewayIp = getDockerHostIp();
+        if (dockerGatewayIp != null && !dockerGatewayIp.equals("127.0.0.1")) {
+            candidates.add(dockerGatewayIp);
+        }
+
+        if (new File("/.dockerenv").exists()) {
+            try {
+                Network net = _docker.inspectNetworkCmd().withNetworkId("docker_gwbridge").exec();
+                String gw = net.getIpam().getConfig().get(0).getGateway();
+                if (gw != null && !gw.isBlank() && !candidates.contains(gw)) {
+                    candidates.add(gw);
+                }
+            } catch (Exception e) {
+                System.out.printf("[getHostUrl] Failed to read docker_gwbridge gateway: %s%n", e.getMessage());
+            }
+        }
+
+        for (String host : candidates) {
+            if (canConnectDebug(host, Integer.parseInt(hostPort), 700)) {
+                return "http://" + host + ":" + hostPort;
+            }
+        }
+
+        throw new IllegalStateException("Could not reach container on any host IP: " + candidates);
+    }
+
+
+    /**
+     * Checks if a TCP connection is possible.
+     * 
+     * @param host  Host address
+     * @param port  Port number
+     * @param timeoutMs Timeout in milliseconds
+     * @return true if connection is possible, false otherwise
+    */
+    private boolean canConnectDebug(String host, int port, int timeoutMs) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            return true;
+        } catch (Exception e) {
+            System.out.printf("(Exception: %s)%n", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Try to get Docker gateway IP inside a container
+     * 
+     * @return the Docker host IP or null if not found
+     */
+    private String getDockerHostIp() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", "ip route | awk '/default/ { print $3 }'");
+            Process p = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String line = reader.readLine();
+                if (line != null && !line.isEmpty()) {
+                    System.out.printf("  [getDockerHostIp] Found IP: %s%n", line.trim());
+                    return line.trim();
+                }
+            }
+        } catch (Exception e) {
+            System.out.printf("  [getDockerHostIp] Exception: %s%n", e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -304,6 +404,17 @@ public class DUUIDockerInterface {
             completelog += x;
         }
         return completelog;
+    }
+
+    /**
+     * Shuts down the docker client connection
+     * 
+     */
+    public void shutdown() {
+        try {
+            _docker.close();
+        } catch (IOException e) {
+        }
     }
 
     /**
@@ -634,4 +745,5 @@ public class DUUIDockerInterface {
         _docker.startContainerCmd(feedback.getId()).exec();
         return feedback.getId();
     }
+
 }

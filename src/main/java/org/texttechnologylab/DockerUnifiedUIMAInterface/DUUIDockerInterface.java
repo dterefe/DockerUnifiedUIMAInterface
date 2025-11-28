@@ -297,7 +297,7 @@ public class DUUIDockerInterface {
      * @throws IllegalStateException if no binding is found
      */
     public String getHostUrl(String containerId, int containerPort) {
-        System.out.printf("Building container host URI for: %s with port: %d%n", containerId, containerPort);
+        System.out.printf("[DUUIDockerInterface] Building container host URI for: %s with port: %d%n", containerId, containerPort);
 
         InspectContainerResponse inspect = _docker.inspectContainerCmd(containerId).exec();
 
@@ -308,7 +308,7 @@ public class DUUIDockerInterface {
                 .get(exposed);
 
         if (bindings == null || bindings.length == 0) {
-            throw new IllegalStateException("No host binding found for container port " + containerPort);
+            throw new IllegalStateException("[DUUIDockerInterface] No host binding found for container port " + containerPort);
         }
 
         String hostPort = bindings[0].getHostPortSpec();
@@ -327,7 +327,7 @@ public class DUUIDockerInterface {
                     candidates.add(gw);
                 }
             } catch (Exception e) {
-                System.out.printf("[getHostUrl] Failed to read docker_gwbridge gateway: %s%n", e.getMessage());
+                System.err.printf("[DUUIDockerInterface] ERROR Failed to read docker_gwbridge gateway: %s%n", e.getMessage());
             }
         }
 
@@ -349,7 +349,7 @@ public class DUUIDockerInterface {
      * @param timeoutMs Timeout in milliseconds
      * @return true if connection is possible, false otherwise
     */
-    private boolean canConnectDebug(String host, int port, int timeoutMs) {
+    public static boolean canConnectDebug(String host, int port, int timeoutMs) {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
             return true;
@@ -364,7 +364,7 @@ public class DUUIDockerInterface {
      * 
      * @return the Docker host IP or null if not found
      */
-    private String getDockerHostIp() {
+    public static String getDockerHostIp() {
         try {
             ProcessBuilder pb = new ProcessBuilder("sh", "-c", "ip route | awk '/default/ { print $3 }'");
             Process p = pb.start();

@@ -1714,6 +1714,8 @@ public class DUUIComposer {
         } catch (InterruptedException e) {
             return null;
         } catch (Exception e) {
+            System.err.println("[Composer] Pipeline instantiation failed:");
+            // e.printStackTrace();
             addEvent(
                 DUUIEvent.Sender.COMPOSER,
                 e.getMessage(),

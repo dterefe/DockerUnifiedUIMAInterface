@@ -11,6 +11,7 @@ import com.influxdb.client.domain.CreateDashboardRequest;
 import com.influxdb.client.domain.Organization;
 import com.influxdb.client.write.Point;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -94,7 +95,11 @@ public class DUUIMonitor {
                 }
             }
             catch(Exception e) {
-                _docker.pullImage("influxdb:alpine",null,null);
+                try {
+                    _docker.pullImage("influxdb:alpine",null,null);
+                } catch (ImagePullException imagePullException) {
+                    throw new IllegalStateException("Unable to pull influxdb:alpine image for monitoring backend.", imagePullException);
+                }
                 System.out.println("[DUUIMonitor] Could not find existing container creating one...");
                 ExposedPort tcp8086 = ExposedPort.tcp(8086);
 

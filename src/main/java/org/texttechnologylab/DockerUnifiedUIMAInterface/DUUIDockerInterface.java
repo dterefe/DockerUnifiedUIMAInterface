@@ -5,6 +5,7 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.async.ResultCallbackTemplate;
 import com.github.dockerjava.api.command.*;
 import com.github.dockerjava.api.exception.DockerClientException;
+import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.*;
 import com.github.dockerjava.core.DefaultDockerClientConfig;
@@ -30,6 +31,8 @@ import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 
 import static java.lang.String.format;
 
@@ -582,12 +585,12 @@ public class DUUIDockerInterface {
     }
 
 
-    public String pullImage(String tag) throws InterruptedException {
+    public String pullImage(String tag) throws InterruptedException, ImagePullException {
         return pullImage(tag, null, null);
     }
 
 
-    public String pullImage(String tag, String username, String password) throws InterruptedException {
+    public String pullImage(String tag, String username, String password) throws InterruptedException, ImagePullException {
         return pullImage(tag, username, password, null);
     }
 
@@ -601,7 +604,7 @@ public class DUUIDockerInterface {
      * @return The image tag.
      * @throws InterruptedException
      */
-    public String pullImage(String tag, String username, String password, AtomicBoolean shutdown) throws InterruptedException {
+    public String pullImage(String tag, String username, String password, AtomicBoolean shutdown) throws InterruptedException, ImagePullException {
 
         try {
             if (username != null && password != null) {
@@ -622,10 +625,13 @@ public class DUUIDockerInterface {
                 template.awaitCompletion();
             }
         } catch (CancellationException exception) {
-            shutdown.set(true);
+            if (shutdown != null) {
+                shutdown.set(true);
+            }
+        } catch (NotFoundException notFoundException) {
+            throw new ImagePullException(tag, format("Image manifest not found for %s", tag), notFoundException);
         } catch (Exception e) {
-            e.printStackTrace();
-            System.out.printf("Could not fetch image %s, continuing without.\n", tag);
+            throw new ImagePullException(tag, format("Could not fetch image %s: %s", tag, e.getMessage()), e);
         }
         return tag;
     }

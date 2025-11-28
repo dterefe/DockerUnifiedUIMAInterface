@@ -18,6 +18,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPipelineComponent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.IDUUIStorageBackend;
 
@@ -133,7 +134,11 @@ public class DUUIArangoDBStorageBackend implements IDUUIStorageBackend {
                 }
             }
             catch(Exception e) {
-                _docker.pullImage("arangodb:3.9",null,null);
+                try {
+                    _docker.pullImage("arangodb:3.9",null,null);
+                } catch (ImagePullException imagePullException) {
+                    throw new IllegalStateException("Unable to pull arangodb:3.9 image for storage backend.", imagePullException);
+                }
                 System.out.println("[DUUIArangoDBStorageBackend] Could not find existing container creating one...");
                 ExposedPort tcp8529 = ExposedPort.tcp(8529);
 

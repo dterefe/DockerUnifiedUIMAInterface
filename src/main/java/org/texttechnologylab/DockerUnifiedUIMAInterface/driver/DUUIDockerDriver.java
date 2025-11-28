@@ -17,6 +17,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
@@ -373,7 +374,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
      * @return
      * @throws Exception
      */
-    public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws InterruptedException {
+    public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws InterruptedException, PipelineComponentException {
         String uuid = UUID.randomUUID().toString();
         while (_active_components.containsKey(uuid.toString())) {
             uuid = UUID.randomUUID().toString();
@@ -385,24 +386,32 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
         // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
         if (comp.getImageFetching()) {
             if (comp.getUsername() != null) {
-                System.out.printf("[DockerLocalDriver] Attempting image %s download from secure remote registry\n", comp.getImageName());
+                System.out.printf("[DUUIDockerDriver] Attempting image %s download from secure remote registry\n", comp.getImageName());
             }
-            _interface.pullImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
+            try {
+                _interface.pullImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
+            } catch (ImagePullException imagePullException) {
+                System.err.printf("[DUUIDockerDriver] Failed to pull image %s: %s%n", comp.getImageName(), imagePullException.getMessage());
+                throw new PipelineComponentException(
+                        format("Failed to pull docker image %s", comp.getImageName()),
+                        imagePullException
+                );
+            }
             if (shutdown.get()) {
                 return null;
             }
 
-            System.out.printf("[DockerLocalDriver] Pulled image with id %s\n", comp.getImageName());
+            System.out.printf("[DUUIDockerDriver] Pulled image with id %s\n", comp.getImageName());
         } else {
 //            _interface.pullImage(comp.getImageName());
             if (!_interface.hasLocalImage(comp.getImageName())) {
                 throw new InvalidParameterException(format("Could not find local docker image \"%s\". Did you misspell it or forget with .withImageFetching() to fetch it from remote registry?", comp.getImageName()));
             }
         }
-        System.out.printf("[DockerLocalDriver] Assigned new pipeline component unique id %s\n", uuid);
+        System.out.printf("[DUUIDockerDriver] Assigned new pipeline component unique id %s\n", uuid);
         String digest = _interface.getDigestFromImage(comp.getImageName());
         comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
-        System.out.printf("[DockerLocalDriver] Transformed image %s to pinnable image name %s\n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
+        System.out.printf("[DUUIDockerDriver] Transformed image %s to pinnable image name %s\n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
 
         _active_components.put(uuid, comp);
         // TODO: Fragen, was hier genau gemacht wird.
@@ -424,9 +433,9 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
                 final int iCopy = i;
                 final String uuidCopy = uuid;
                 IDUUICommunicationLayer layer = responsiveAfterTime(containerURL, jc, _container_timeout, _client, (msg) -> {
-                    System.out.printf("[DockerLocalDriver][%s][Docker Replication %d/%d] %s\n", uuidCopy, iCopy + 1, comp.getScale(), msg);
+                    System.out.printf("[DUUIDockerDriver][%s][Docker Replication %d/%d] %s\n", uuidCopy, iCopy + 1, comp.getScale(), msg);
                 }, _luaContext, skipVerification);
-                System.out.printf("[DockerLocalDriver][%s][Docker Replication %d/%d] Container for image %s is online (URL %s) and seems to understand DUUI V1 format!\n", uuid, i + 1, comp.getScale(), comp.getImageName(), containerURL);
+                System.out.printf("[DUUIDockerDriver][%s][Docker Replication %d/%d] Container for image %s is online (URL %s) and seems to understand DUUI V1 format!\n", uuid, i + 1, comp.getScale(), comp.getImageName(), containerURL);
 
                 /**
                  * @see
@@ -472,7 +481,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
         if (component == null) {
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
-        System.out.printf("[DockerLocalDriver][%s]: Maximum concurrency %d\n", uuid, component.getInstances().size());
+        System.out.printf("[DUUIDockerDriver][%s]: Maximum concurrency %d\n", uuid, component.getInstances().size());
     }
 
     /**
@@ -557,7 +566,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
         if (!comp.getRunningAfterExit()) {
             int counter = 1;
             for (ComponentInstance inst : comp.getInstances()) {
-                System.out.printf("[DockerLocalDriver][Replication %d/%d] Stopping docker container %s...\n", counter, comp.getInstances().size(), inst.getContainerId());
+                System.out.printf("[DUUIDockerDriver][Replication %d/%d] Stopping docker container %s...\n", counter, comp.getInstances().size(), inst.getContainerId());
                 _interface.stop_container(inst.getContainerId());
                 counter += 1;
             }
@@ -667,7 +676,7 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
             _targetView = comp.getTargetView();
             _sourceView = comp.getSourceView();
             if (_image_name == null) {
-                throw new InvalidParameterException("The image name was not set! This is mandatory for the DockerLocalDriver Class.");
+                throw new InvalidParameterException("The image name was not set! This is mandatory for the DUUIDockerDriver Class.");
             }
             _withImageFetching = comp.getDockerImageFetching(false);
 

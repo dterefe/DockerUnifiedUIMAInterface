@@ -15,6 +15,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
@@ -85,7 +86,11 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
 
     public DUUISwarmDriver withSwarmVisualizer(Integer port) throws InterruptedException {
         if (_withSwarmVisualizer == null) {
-            _interface.pullImage("dockersamples/visualizer", null, null);
+            try {
+                _interface.pullImage("dockersamples/visualizer", null, null);
+            } catch (ImagePullException e) {
+                throw new IllegalStateException("Unable to pull swarm visualizer image.", e);
+            }
             if (port == null) {
                 _withSwarmVisualizer = _interface.run("dockersamples/visualizer", false, true, 8080, true);
             } else {
@@ -137,7 +142,11 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
 
         if (_interface.getLocalImage(comp.getImageName()) == null) {
             // If image is not available try to pull it
-            _interface.pullImage(comp.getImageName(), null, null);
+            try {
+                _interface.pullImage(comp.getImageName(), null, null);
+            } catch (ImagePullException e) {
+                throw new PipelineComponentException(format("Failed to pull docker image %s", comp.getImageName()), e);
+            }
             if (shutdown.get()) {
                 return null;
             }

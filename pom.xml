@@ -77,9 +77,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
-        <!--        <typesystem.version>3.0.10</typesystem.version>-->
-        <!--        <typesystem.version>68246f604c</typesystem.version>-->
-        <typesystem.version>ba474b74bd</typesystem.version>
+        <maven.test.skip>true</maven.test.skip>
+        <typesystem.version>3.0.14</typesystem.version>
         <utilities.version>653a6a0850</utilities.version>
         <uima.version>3.6.0</uima.version>
         <dkpro.core.version>2.4.0</dkpro.core.version>
@@ -286,29 +285,7 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.18.0</version>
         </dependency>
-
-        <!--        &lt;!&ndash; https://mvnrepository.com/artifact/org.apache.httpcomponents.client5/httpclient5 &ndash;&gt;-->
-<!--        <dependency>-->
-<!--            <groupId>org.apache.httpcomponents.client5</groupId>-->
-<!--            <artifactId>httpclient5</artifactId>-->
-<!--            <version>5.3.1</version>-->
-<!--        </dependency>-->
-
-        <!-- https://mvnrepository.com/artifact/jakarta.ws.rs/jakarta.ws.rs-api -->
-        <!--        <dependency>-->
-        <!--            <groupId>jakarta.ws.rs</groupId>-->
-        <!--            <artifactId>jakarta.ws.rs-api</artifactId>-->
-        <!--            <version>4.0.0</version>-->
-        <!--        </dependency>-->
-
-        <!--        &lt;!&ndash; https://mvnrepository.com/artifact/javax.ws.rs/javax.ws.rs-api &ndash;&gt;-->
-        <!--        <dependency>-->
-        <!--            <groupId>javax.ws.rs</groupId>-->
-        <!--            <artifactId>javax.ws.rs-api</artifactId>-->
-        <!--            <version>2.1.1</version>-->
-        <!--        </dependency>-->
 
         <dependency>
             <groupId>com.google.api-client</groupId>
@@ -379,7 +356,6 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.16.1</version>
         </dependency>
         <dependency>
             <groupId>org.java-websocket</groupId>
@@ -402,7 +378,6 @@
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
-            <version>2.20.0</version>
         </dependency>
 
 
@@ -410,7 +385,6 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>
-            <version>1.27.1</version>
         </dependency>
 
         <dependency>
@@ -435,7 +409,6 @@
         <dependency>
             <groupId>xerces</groupId>
             <artifactId>xercesImpl</artifactId>
-            <version>2.12.2</version>
         </dependency>
 
 
@@ -497,29 +470,8 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>RELEASE</version>
             <scope>compile</scope>
         </dependency>
-
-<!--        <dependency>-->
-<!--            <groupId>com.github.texttechnologylab.textimager-uima</groupId>-->
-<!--            <artifactId>textimager-uima-io</artifactId>-->
-<!--            <version>b10db8275163d19d63b9512cc20ca5872e52499b</version>-->
-<!--            <exclusions>-->
-<!--                <exclusion>-->
-<!--                    <groupId>com.github.texttechnologylab</groupId>-->
-<!--                    <artifactId>UIMATypeSystem</artifactId>-->
-<!--                </exclusion>-->
-<!--                <exclusion>-->
-<!--                    <groupId>org.dkpro.core</groupId>-->
-<!--                    <artifactId>*</artifactId>-->
-<!--                </exclusion>-->
-<!--                <exclusion>-->
-<!--                    <groupId>de.tudarmstadt.ukp.dkpro.core</groupId>-->
-<!--                    <artifactId>*</artifactId>-->
-<!--                </exclusion>-->
-<!--            </exclusions>-->
-<!--        </dependency>-->
 
         <!-- Givara Ebo https://mvnrepository.com/artifact/io.socket/socket.io-client -->
         <dependency>
@@ -543,13 +495,18 @@
         <dependency>
             <groupId>com.amazonaws</groupId>
             <artifactId>aws-java-sdk-s3</artifactId>
-            <version>1.12.565</version>
         </dependency>
 
         <dependency>
             <groupId>io.minio</groupId>
             <artifactId>minio</artifactId>
             <version>8.6.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+            <version>4.12.0</version>
         </dependency>
 
           <dependency>
@@ -601,13 +558,6 @@
             <artifactId>dkpro-core-api-resources-asl</artifactId>
         </dependency>
 
-        <!-- https://mvnrepository.com/artifact/org.dkpro.core/dkpro-core-tokit-asl -->
-        <dependency>
-            <groupId>org.dkpro.core</groupId>
-            <artifactId>dkpro-core-tokit-asl</artifactId>
-            <scope>test</scope>
-        </dependency>
-
         <dependency>
             <groupId>com.github.texttechnologylab</groupId>
             <artifactId>UIMATypeSystem</artifactId>
@@ -625,18 +575,8 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
-            <version>5.10.2</version>
             <scope>test</scope>
         </dependency>
-
-
-        <!--        &lt;!&ndash; https://mvnrepository.com/artifact/jakarta.ws.rs/all &ndash;&gt;-->
-        <!--        <dependency>-->
-        <!--            <groupId>jakarta.ws.rs</groupId>-->
-        <!--            <artifactId>all</artifactId>-->
-        <!--            <version>3.1.0</version>-->
-        <!--            <type>pom</type>-->
-        <!--        </dependency>-->
 
         <dependency>
             <groupId>org.bytedeco</groupId>

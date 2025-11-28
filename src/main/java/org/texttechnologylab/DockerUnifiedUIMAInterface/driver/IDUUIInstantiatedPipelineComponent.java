@@ -73,7 +73,7 @@ public interface IDUUIInstantiatedPipelineComponent {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
         DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
         String driverName = pipelineComponent.getDriver() != null
-                ? pipelineComponent.getDriver().getClass().getSimpleName()
+                ? pipelineComponent.getDriver()
                 : "unknown-driver";
         String componentKey = comp.getUniqueComponentKey() != null
                 ? comp.getUniqueComponentKey()
@@ -177,7 +177,7 @@ public interface IDUUIInstantiatedPipelineComponent {
         try {
             DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
             String driverName = pipelineComponent.getDriver() != null
-                    ? pipelineComponent.getDriver().getClass().getSimpleName()
+                    ? pipelineComponent.getDriver()
                     : "unknown-driver";
             String componentKey = comp.getUniqueComponentKey() != null
                     ? comp.getUniqueComponentKey()
@@ -347,7 +347,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                 System.err.printf(
                         "[%s][%s] Unhandled exception while processing component: %s\n%s\n",
                         comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriver() != null
-                                ? comp.getPipelineComponent().getDriver().getClass().getSimpleName()
+                                ? comp.getPipelineComponent().getDriver()
                                 : "unknown-driver",
                         comp.getUniqueComponentKey() != null
                                 ? comp.getUniqueComponentKey()
@@ -361,7 +361,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                 System.err.printf(
                         "[%s][%s] Could not retrieve DocumentMetaData from CAS while wrapping exception: %s\n",
                         comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriver() != null
-                                ? comp.getPipelineComponent().getDriver().getClass().getSimpleName()
+                                ? comp.getPipelineComponent().getDriver()
                                 : "unknown-driver",
                         comp.getUniqueComponentKey() != null
                                 ? comp.getUniqueComponentKey()

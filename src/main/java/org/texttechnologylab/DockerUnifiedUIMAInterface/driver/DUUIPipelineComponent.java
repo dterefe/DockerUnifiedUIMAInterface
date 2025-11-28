@@ -1,6 +1,22 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
-import com.google.common.collect.ImmutableList;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.compress.compressors.CompressorInputStream;
 import org.apache.commons.compress.compressors.CompressorOutputStream;
@@ -13,15 +29,7 @@ import org.json.JSONObject;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
 import org.xml.sax.SAXException;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.StringWriter;
-import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.*;
+import com.google.common.collect.ImmutableList;
 
 /**
  * Encapsulation of a component for a pipeline.
@@ -125,7 +133,7 @@ public class DUUIPipelineComponent {
     }
 
     public <Y> DUUIPipelineComponent withDriver(Class<Y> t) {
-        _options.put(driverName,t.getCanonicalName());
+        _options.put(driverName,t.getSimpleName());
         return this;
     }
 

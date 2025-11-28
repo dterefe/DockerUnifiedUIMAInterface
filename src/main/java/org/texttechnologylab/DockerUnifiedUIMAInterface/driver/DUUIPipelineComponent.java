@@ -133,8 +133,13 @@ public class DUUIPipelineComponent {
     }
 
     public <Y> DUUIPipelineComponent withDriver(Class<Y> t) {
-        _options.put(driverName,t.getSimpleName());
+        _options.put(driverName,t.getCanonicalName());
+        _options.put(driverName + "_simple",t.getSimpleName());
         return this;
+    }
+
+    public String getDriverSimpleName() {
+        return _options.get(driverName + "_simple");
     }
 
     public String getDriver() {

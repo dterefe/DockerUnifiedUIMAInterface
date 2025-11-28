@@ -72,8 +72,8 @@ public interface IDUUIInstantiatedPipelineComponent {
     public static TypeSystemDescription getTypesystem(String uuid, IDUUIInstantiatedPipelineComponent comp) throws ResourceInitializationException {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
         DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
-        String driverName = pipelineComponent.getDriver() != null
-                ? pipelineComponent.getDriver()
+        String driverName = pipelineComponent.getDriverSimpleName() != null
+                ? pipelineComponent.getDriverSimpleName()
                 : "unknown-driver";
         String componentKey = comp.getUniqueComponentKey() != null
                 ? comp.getUniqueComponentKey()
@@ -176,8 +176,8 @@ public interface IDUUIInstantiatedPipelineComponent {
 
         try {
             DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
-            String driverName = pipelineComponent.getDriver() != null
-                    ? pipelineComponent.getDriver()
+            String driverName = pipelineComponent.getDriverSimpleName() != null
+                    ? pipelineComponent.getDriverSimpleName()
                     : "unknown-driver";
             String componentKey = comp.getUniqueComponentKey() != null
                     ? comp.getUniqueComponentKey()
@@ -346,8 +346,8 @@ public interface IDUUIInstantiatedPipelineComponent {
             try {
                 System.err.printf(
                         "[%s][%s] Unhandled exception while processing component: %s\n%s\n",
-                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriver() != null
-                                ? comp.getPipelineComponent().getDriver()
+                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriverSimpleName() != null
+                                ? comp.getPipelineComponent().getDriverSimpleName()
                                 : "unknown-driver",
                         comp.getUniqueComponentKey() != null
                                 ? comp.getUniqueComponentKey()
@@ -360,8 +360,8 @@ public interface IDUUIInstantiatedPipelineComponent {
             } catch (IllegalArgumentException ignored) {
                 System.err.printf(
                         "[%s][%s] Could not retrieve DocumentMetaData from CAS while wrapping exception: %s\n",
-                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriver() != null
-                                ? comp.getPipelineComponent().getDriver()
+                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriverSimpleName() != null
+                                ? comp.getPipelineComponent().getDriverSimpleName()
                                 : "unknown-driver",
                         comp.getUniqueComponentKey() != null
                                 ? comp.getUniqueComponentKey()

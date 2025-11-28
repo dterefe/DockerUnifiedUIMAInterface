@@ -1,10 +1,34 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface;
 
-import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import static java.lang.String.format;
+import java.net.URISyntaxException;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.security.InvalidParameterException;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.Vector;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.lang3.SerializationUtils;
 import org.apache.uima.analysis_engine.AnalysisEngineProcessException;
-import org.apache.uima.cas.CASException;
 import org.apache.uima.cas.impl.XmiCasSerializer;
 import org.apache.uima.collection.CollectionReader;
 import org.apache.uima.collection.CollectionReaderDescription;
@@ -22,7 +46,12 @@ import org.luaj.vm2.lib.jse.JsePlatform;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.composer.DUUISegmentedWorker;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.*;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRemoteDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUISwarmDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIUIMADriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.IDUUIDriverInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.AsyncCollectionReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUIAsynchronousProcessor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionDBReader;
@@ -39,24 +68,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegment
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.Timer;
 import org.xml.sax.SAXException;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.URISyntaxException;
-import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
-import java.security.InvalidParameterException;
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
-
-import static java.lang.String.format;
+import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 
 /**
  * Worker thread processing a CAS following an execution plan.
@@ -547,191 +559,264 @@ class DUUIWorkerDocumentReader extends Thread {
 
         composer.addEvent(
             DUUIEvent.Sender.COMPOSER,
-            String.format("%d threads are active.", threadsAlive.addAndGet(1))
+            String.format("[DUUIWorkerDocumentReader] Thread %s started, %d threads are active.",
+                Thread.currentThread().getName(),
+                threadsAlive.addAndGet(1))
         );
 
-        DUUIDocument document;
+        try {
+            DUUIDocument document;
 
-        while (!composer.shouldShutdown()) {
-            Timer timer = new Timer();
-            timer.start();
+            while (!composer.shouldShutdown()) {
+                Timer timer = new Timer();
+                timer.start();
 
-            while (true) {
-                if (composer.shouldShutdown()) {
-                    threadsAlive.getAndDecrement();
-                    return;
-                }
+                while (true) {
+                    if (composer.shouldShutdown()) {
+                        return;
+                    }
 
-                try {
-                    document = reader.getNextDocument(cas);
-                    if (document != null && !document.isFinished()) break;
-
-                    Thread.sleep(300);
-                } catch (IllegalArgumentException ignored) {
-                } catch (InterruptedException e) {
-                    composer.addEvent(
-                        DUUIEvent.Sender.COMPOSER,
-                        e.getMessage(),
-                        DUUIComposer.DebugLevel.ERROR
-                    );
-                }
-            }
-
-            timer.stop();
-
-            boolean trackErrorDocs = false;
-            if (backend != null) {
-                trackErrorDocs = backend.shouldTrackErrorDocs();
-            }
-
-            DUUIPipelineDocumentPerformance perf = new DUUIPipelineDocumentPerformance(runKey,
-                timer.getDuration(),
-                cas,
-                trackErrorDocs);
-
-            document.setDurationWait(timer.getDuration());
-            composer.addEvent(
-                DUUIEvent.Sender.DOCUMENT,
-                String.format("Starting to process %s", document.getPath()));
-
-            timer.restart();
-
-            document.setStatus(DUUIStatus.ACTIVE);
-
-            for (DUUIComposer.PipelinePart pipelinePart : flow) {
-                composer.addEvent(
-                    DUUIEvent.Sender.DOCUMENT,
-                    String.format(
-                        "%s is being processed by component %s",
-                        document.getPath(),
-                        pipelinePart.getName())
-                );
-
-                try {
-                    DUUISegmentationStrategy segmentationStrategy = pipelinePart.getSegmentationStrategy();
-                    if (segmentationStrategy instanceof DUUISegmentationStrategyNone) {
-                        composer.setPipelineStatus(
-                            pipelinePart.getName(),
-                            DUUIStatus.ACTIVE);
-
-                        composer.setPipelineStatus(
-                            pipelinePart.getDriver().getClass().getSimpleName(),
-                            DUUIStatus.ACTIVE);
-
-
-                        pipelinePart.getDriver().run(pipelinePart.getUUID(), cas, perf, composer);
-                    } else {
-                        segmentationStrategy.initialize(cas);
-                        JCas jCasSegmented = segmentationStrategy.getNextSegment();
-
-                        while (jCasSegmented != null) {
-                            if (segmentationStrategy instanceof DUUISegmentationStrategyByDelemiter) {
-                                DUUISegmentationStrategyByDelemiter pStrategie = ((DUUISegmentationStrategyByDelemiter) segmentationStrategy);
-
-                                if (pStrategie.hasDebug()) {
-                                    int iLeft = pStrategie.getSegments();
-                                    DocumentMetaData dmd = DocumentMetaData.get(cas);
-                                    composer.addEvent(
-                                        DUUIEvent.Sender.COMPOSER,
-                                        String.format("%s Left: %s", dmd.getDocumentId(), iLeft)
-                                    );
-                                }
-                            }
-                            pipelinePart.getDriver().run(pipelinePart.getUUID(), jCasSegmented, perf, composer);
-                            segmentationStrategy.merge(jCasSegmented);
-                            jCasSegmented = segmentationStrategy.getNextSegment();
+                    try {
+                        document = reader.getNextDocument(cas);
+                        if (document != null && !document.isFinished()) {
+                            composer.addEvent(
+                                DUUIEvent.Sender.DOCUMENT,
+                                String.format(
+                                    "[DUUIWorkerDocumentReader] Fetched document %s (status=%s)",
+                                    document.getPath(),
+                                    document.getStatus())
+                            );
+                            break;
+                        } else {
+                            composer.addEvent(
+                                DUUIEvent.Sender.COMPOSER,
+                                "[DUUIWorkerDocumentReader] No ready document available yet, backing off for 300ms.");
                         }
 
-                        segmentationStrategy.finalize(cas);
-                    }
-
-                } catch (AnalysisEngineProcessException exception) {
-                    composer.setPipelineStatus(pipelinePart.getName(), DUUIStatus.FAILED);
-
-                    composer.addEvent(
-                        DUUIEvent.Sender.DOCUMENT,
-                        String.format(
-                            "%s encountered error %s. Thread continues work with next document.",
-                            document.getPath(), exception.getMessage()));
-
-                    document.setError(String.format(
-                        "%s%n%s",
-                        exception.getClass().getCanonicalName(),
-                        exception.getMessage() == null ? "" : exception.getMessage()));
-
-                    document.setStatus(DUUIStatus.FAILED);
-
-                    if (composer.getIgnoreErrors()) {
-                        break;
-                    } else {
-                        throw new RuntimeException(exception);
-                    }
-                } catch (Exception exception) {
-                    composer.addEvent(
-                        DUUIEvent.Sender.DOCUMENT,
-                        String.format(
-                            "%s encountered error %s. Thread continues work with next document.",
-                            document.getPath(), exception));
-
-                    document.setError(String.format(
-                        "%s%n%s",
-                        exception.getClass().getCanonicalName(),
-                        exception.getMessage() == null ? "" : exception.getMessage()));
-                    document.setStatus(DUUIStatus.FAILED);
-
-                    if (composer.getIgnoreErrors()) {
-                        break;
-                    } else {
-                        throw new RuntimeException(exception.getMessage());
+                        Thread.sleep(300);
+                    } catch (IllegalArgumentException e) {
+                        composer.addEvent(
+                            DUUIEvent.Sender.COMPOSER,
+                            String.format(
+                                "[DUUIWorkerDocumentReader] IllegalArgumentException while fetching next document: %s",
+                                e.toString()),
+                            DUUIComposer.DebugLevel.ERROR
+                        );
+                    } catch (InterruptedException e) {
+                        composer.addEvent(
+                            DUUIEvent.Sender.COMPOSER,
+                            String.format(
+                                "[DUUIWorkerDocumentReader] Interrupted while waiting for next document: %s",
+                                e.toString()),
+                            DUUIComposer.DebugLevel.ERROR
+                        );
                     }
                 }
+
+                timer.stop();
+
+                boolean trackErrorDocs = false;
+                if (backend != null) {
+                    trackErrorDocs = backend.shouldTrackErrorDocs();
+                }
+
+                DUUIPipelineDocumentPerformance perf = new DUUIPipelineDocumentPerformance(runKey,
+                    timer.getDuration(),
+                    cas,
+                    trackErrorDocs);
+
+                document.setDurationWait(timer.getDuration());
                 composer.addEvent(
                     DUUIEvent.Sender.DOCUMENT,
-                    String.format(
-                        "%s has been processed by component %s",
-                        document.getPath(),
-                        pipelinePart.getName())
-                );
-                document.incrementProgress();
-            }
+                    String.format("Starting to process %s", document.getPath()));
 
+                timer.restart();
 
-            timer.stop();
+                document.setStatus(DUUIStatus.ACTIVE);
 
-            if (!document.getStatus().equals(DUUIStatus.FAILED)) {
-                document.setStatus(reader.hasOutput() ? DUUIStatus.OUTPUT : DUUIStatus.COMPLETED);
-                document.countAnnotations(cas);
+                for (DUUIComposer.PipelinePart pipelinePart : flow) {
+                    composer.addEvent(
+                        DUUIEvent.Sender.DOCUMENT,
+                        String.format("[DUUIWorkerDocumentReader] %s is being processed by component %s (driver=%s, segmentation=%s)",
+                            document.getPath(),
+                            pipelinePart.getName(),
+                            pipelinePart.getDriver().getClass().getSimpleName(),
+                            pipelinePart.getSegmentationStrategy().getClass().getSimpleName())
+                    );
 
-                if (reader.hasOutput()) {
                     try {
-                        reader.upload(document, cas);
-                    } catch (IOException | SAXException exception) {
+                        DUUISegmentationStrategy segmentationStrategy = pipelinePart.getSegmentationStrategy();
+                        if (segmentationStrategy instanceof DUUISegmentationStrategyNone) {
+                            composer.setPipelineStatus(
+                                pipelinePart.getName(),
+                                DUUIStatus.ACTIVE);
+
+                            composer.setPipelineStatus(
+                                pipelinePart.getDriver().getClass().getSimpleName(),
+                                DUUIStatus.ACTIVE);
+
+
+                            pipelinePart.getDriver().run(pipelinePart.getUUID(), cas, perf, composer);
+                        } else {
+                            composer.addEvent(
+                                DUUIEvent.Sender.DOCUMENT,
+                                String.format("[DUUIWorkerDocumentReader] Initializing segmentation strategy %s for %s",
+                                    segmentationStrategy.getClass().getSimpleName(),
+                                    document.getPath())
+                            );
+                            segmentationStrategy.initialize(cas);
+                            JCas jCasSegmented = segmentationStrategy.getNextSegment();
+
+                            while (jCasSegmented != null) {
+                                if (segmentationStrategy instanceof DUUISegmentationStrategyByDelemiter) {
+                                    DUUISegmentationStrategyByDelemiter pStrategie = ((DUUISegmentationStrategyByDelemiter) segmentationStrategy);
+
+                                    if (pStrategie.hasDebug()) {
+                                        int iLeft = pStrategie.getSegments();
+                                        DocumentMetaData dmd = DocumentMetaData.get(cas);
+                                        composer.addEvent(
+                                            DUUIEvent.Sender.COMPOSER,
+                                            String.format("%s Left: %s", dmd.getDocumentId(), iLeft)
+                                        );
+                                    }
+                                }
+                                composer.addEvent(
+                                    DUUIEvent.Sender.DOCUMENT,
+                                    String.format("[DUUIWorkerDocumentReader] Processing next segment of %s with component %s",
+                                        document.getPath(),
+                                        pipelinePart.getName())
+                                );
+                                pipelinePart.getDriver().run(pipelinePart.getUUID(), jCasSegmented, perf, composer);
+                                segmentationStrategy.merge(jCasSegmented);
+                                jCasSegmented = segmentationStrategy.getNextSegment();
+                            }
+
+                            segmentationStrategy.finalize(cas);
+                        }
+
+                    } catch (AnalysisEngineProcessException exception) {
+                        composer.setPipelineStatus(pipelinePart.getName(), DUUIStatus.FAILED);
+
+                        composer.addEvent(
+                            DUUIEvent.Sender.DOCUMENT,
+                            String.format(
+                                "%s encountered error %s. Thread continues work with next document.",
+                                document.getPath(), exception.getMessage()));
+
+                        document.setError(String.format(
+                            "%s%n%s",
+                            exception.getClass().getCanonicalName(),
+                            exception.getMessage() == null ? "" : exception.getMessage()));
+
+                        document.setStatus(DUUIStatus.FAILED);
+
+                        if (composer.getIgnoreErrors()) {
+                            break;
+                        } else {
+                            throw new RuntimeException(exception);
+                        }
+                    } catch (Exception exception) {
+                        composer.addEvent(
+                            DUUIEvent.Sender.DOCUMENT,
+                            String.format(
+                                "%s encountered error %s. Thread continues work with next document.",
+                                document.getPath(), exception));
+
                         document.setError(String.format(
                             "%s%n%s",
                             exception.getClass().getCanonicalName(),
                             exception.getMessage() == null ? "" : exception.getMessage()));
                         document.setStatus(DUUIStatus.FAILED);
 
-                        if (!composer.getIgnoreErrors())
-                            throw new RuntimeException(exception);
+                        if (composer.getIgnoreErrors()) {
+                            break;
+                        } else {
+                            throw new RuntimeException(exception.getMessage());
+                        }
+                    }
+                    composer.addEvent(
+                        DUUIEvent.Sender.DOCUMENT,
+                        String.format("[DUUIWorkerDocumentReader] %s has been processed by component %s",
+                            document.getPath(),
+                            pipelinePart.getName())
+                    );
+                    document.incrementProgress();
+                }
+
+
+                timer.stop();
+
+                if (!document.getStatus().equals(DUUIStatus.FAILED)) {
+                    document.setStatus(reader.hasOutput() ? DUUIStatus.OUTPUT : DUUIStatus.COMPLETED);
+                    document.countAnnotations(cas);
+
+                    if (reader.hasOutput()) {
+                        composer.addEvent(
+                            DUUIEvent.Sender.DOCUMENT,
+                            String.format("[DUUIWorkerDocumentReader] Uploading output for %s", document.getPath())
+                        );
+                        try {
+                            reader.upload(document, cas);
+                        } catch (IOException | SAXException exception) {
+                            composer.addEvent(
+                                DUUIEvent.Sender.DOCUMENT,
+                                String.format(
+                                    "[DUUIWorkerDocumentReader] Failed to upload output for %s: %s",
+                                    document.getPath(),
+                                    exception.toString()),
+                                DUUIComposer.DebugLevel.ERROR
+                            );
+
+                            document.setError(String.format(
+                                "%s%n%s",
+                                exception.getClass().getCanonicalName(),
+                                exception.getMessage() == null ? "" : exception.getMessage()));
+                            document.setStatus(DUUIStatus.FAILED);
+
+                            if (!composer.getIgnoreErrors())
+                                throw new RuntimeException(exception);
+                        }
                     }
                 }
-            }
 
+                composer.addEvent(
+                    DUUIEvent.Sender.DOCUMENT,
+                    String.format("[DUUIWorkerDocumentReader] %s has been processed after %d ms (status=%s)",
+                        document.getPath(),
+                        timer.getDuration(),
+                        document.getStatus()));
+
+                if (backend != null) {
+                    backend.addMetricsForDocument(perf);
+                }
+
+                composer.incrementProgress();
+                document.setDurationProcess(timer.getDuration());
+                document.setFinished(true);
+                document.setFinishedAt();
+            }
+        } catch (Exception e) {
             composer.addEvent(
-                DUUIEvent.Sender.DOCUMENT,
-                String.format("%s has been processed after %d ms",
-                    document.getPath(),
-                    timer.getDuration()));
+                DUUIEvent.Sender.COMPOSER,
+                String.format(
+                    "[DUUIWorkerDocumentReader] Unhandled exception in worker thread %s: %s",
+                    Thread.currentThread().getName(),
+                    e.toString()),
+                DUUIComposer.DebugLevel.ERROR
+            );
 
-            if (backend != null) {
-                backend.addMetricsForDocument(perf);
+            if (!composer.getIgnoreErrors()) {
+                throw new RuntimeException(e);
             }
-
-            composer.incrementProgress();
-            document.setDurationProcess(timer.getDuration());
-            document.setFinished(true);
-            document.setFinishedAt();
+        } finally {
+            int remaining = threadsAlive.decrementAndGet();
+            composer.addEvent(
+                DUUIEvent.Sender.COMPOSER,
+                String.format(
+                    "[DUUIWorkerDocumentReader] Thread %s finished, %d threads remain active.",
+                    Thread.currentThread().getName(),
+                    remaining)
+            );
         }
     }
 
@@ -2621,4 +2706,3 @@ public class DUUIComposer {
 
     }
 }
-

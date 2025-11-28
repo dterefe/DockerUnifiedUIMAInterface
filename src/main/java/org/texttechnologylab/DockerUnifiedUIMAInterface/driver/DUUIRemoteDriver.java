@@ -193,14 +193,14 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
     }
 
     private static class InstantiatedComponent implements IDUUIInstantiatedPipelineComponent {
-        private List<String> _urls;
+        private final List<String> _urls;
         private int _maximum_concurrency;
         private ConcurrentLinkedQueue<ComponentInstance> _components;
-        private String _uniqueComponentKey;
+        private final String _uniqueComponentKey;
         private Map<String, String> _parameters;
         private String _sourceView;
         private String _targetView;
-        private DUUIPipelineComponent _component;
+        private final DUUIPipelineComponent _component;
         private boolean _websocket;
         private int _ws_elements;
 
@@ -219,8 +219,9 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
         }
 
 
-        public InstantiatedComponent(DUUIPipelineComponent comp) {
+        public InstantiatedComponent(DUUIPipelineComponent comp, String uniqueComponentKey) {
             _component = comp;
+            _uniqueComponentKey = uniqueComponentKey;
             _urls = comp.getUrl();
             if (_urls == null || _urls.size() == 0) {
                 throw new InvalidParameterException("Missing parameter URL in the pipeline component descriptor");
@@ -229,8 +230,6 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
             _parameters = comp.getParameters();
             _targetView = comp.getTargetView();
             _sourceView = comp.getSourceView();
-
-            _uniqueComponentKey = "";
 
             _maximum_concurrency = comp.getWorkers(1);
             _components = new ConcurrentLinkedQueue<>();
@@ -301,7 +300,7 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
         while (_components.containsKey(uuid)) {
             uuid = UUID.randomUUID().toString();
         }
-        InstantiatedComponent comp = new InstantiatedComponent(component);
+        InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
         final String uuidCopy = uuid;
         boolean added_communication_layer = false;

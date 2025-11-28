@@ -117,7 +117,7 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
 
     public boolean canAccept(DUUIPipelineComponent comp) {
         try {
-            InstantiatedComponent s = new InstantiatedComponent(comp);
+            InstantiatedComponent s = new InstantiatedComponent(comp, "validation");
             return true;
         } catch (Exception e) {
             return false;
@@ -133,7 +133,7 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
         if (!_interface.isSwarmManagerNode()) {
             throw new InvalidParameterException("This node is not a Docker Swarm Manager, thus cannot create and schedule new services!");
         }
-        DUUISwarmDriver.InstantiatedComponent comp = new DUUISwarmDriver.InstantiatedComponent(component);
+        DUUISwarmDriver.InstantiatedComponent comp = new DUUISwarmDriver.InstantiatedComponent(component, uuid);
 
         if (_interface.getLocalImage(comp.getImageName()) == null) {
             // If image is not available try to pull it
@@ -298,10 +298,12 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
         private String _targetView;
         private DUUIPipelineComponent _component;
         private String sHost = "localhost";
+        private final String _uniqueComponentKey;
 
 
-        InstantiatedComponent(DUUIPipelineComponent comp) {
+        InstantiatedComponent(DUUIPipelineComponent comp, String uniqueComponentKey) {
             _component = comp;
+            _uniqueComponentKey = uniqueComponentKey;
             _image_name = comp.getDockerImageName();
             if (_image_name == null) {
                 throw new InvalidParameterException("The image name was not set! This is mandatory for the DockerLocalDriver Class.");
@@ -339,7 +341,7 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
         }
 
         public String getUniqueComponentKey() {
-            return "";
+            return _uniqueComponentKey;
         }
 
         public String getPassword() {

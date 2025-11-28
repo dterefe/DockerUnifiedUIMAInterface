@@ -12,6 +12,7 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.InvalidXMLException;
 import org.json.JSONObject;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
@@ -302,16 +303,38 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
                         if (port == 0) {
                             throw new UnknownError("Could not read the container port!");
                         }
+
+                        String containerUrl = resolveHostUrl(port);
+
                         final int iCopy = i;
                         final String uuidCopy = uuid;
-                        IDUUICommunicationLayer layer = responsiveAfterTime(getLocalhost() + ":" + String.valueOf(port), jc, _container_timeout, _client, (msg) -> {
-                            System.out.printf("[PodmanDriver][%s][Podman Replication %d/%d] %s\n", uuidCopy, iCopy + 1, comp.getScale(), msg);
-                        }, _luaContext, skipVerification);
-                        System.out.printf("[PodmanDriver][%s][Podman Replication %d/%d] Container for image %s is online (URL http://127.0.0.1:%d) and seems to understand DUUI V1 format!\n", uuid, i + 1, comp.getScale(), comp.getImageName(), port);
+                        IDUUICommunicationLayer layer = responsiveAfterTime(
+                                containerUrl,
+                                jc,
+                                _container_timeout,
+                                _client,
+                                (msg) -> System.out.printf("[PodmanDriver][%s][Podman Replication %d/%d] %s\n",
+                                        uuidCopy, iCopy + 1, comp.getScale(), msg),
+                                _luaContext,
+                                skipVerification
+                        );
 
-                        /// Add one replica of the instantiated component per worker
+                        System.out.printf(
+                                "[PodmanDriver][%s][Podman Replication %d/%d] Container for image %s is online (URL %s) and seems to understand DUUI V1 format!\n",
+                                uuid, i + 1, comp.getScale(), comp.getImageName(), containerUrl
+                        );
+
+                        // Add one replica of the instantiated component per worker
                         for (int j = 0; j < comp.getWorkers(); j++) {
-                            comp.addInstance(new DUUIDockerDriver.ComponentInstance(containerId, port, layer.copy()));
+                            comp.addInstance(
+                                    new DUUIDockerDriver.ComponentInstance(
+                                            containerId,
+                                            port,
+                                            layer.copy(),
+                                            null,
+                                            containerUrl
+                                    )
+                            );
                         }
                     } catch (Exception e) {
 
@@ -327,6 +350,33 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
             throw new RuntimeException(e);
         }
         return shutdown.get() ? null : uuid;
+    }
+
+    /**
+     * Resolve a host URL for a published container port, similar in spirit
+     * to {@link org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface#getHostUrl}.
+     *
+     * @param port published host port
+     * @return URL like "http://host:port" that is reachable from this process
+     */
+    private String resolveHostUrl(int port) {
+        List<String> candidates = new ArrayList<>();
+        candidates.add(DUUIComposer.getLocalhost());
+        candidates.add("localhost");
+        candidates.add("host.docker.internal");
+
+        String gw = DUUIDockerInterface.getDockerHostIp();
+        if (gw != null && !gw.isBlank() && !candidates.contains(gw)) {
+            candidates.add(gw);
+        }
+
+        for (String host : candidates) {
+            if (DUUIDockerInterface.canConnectDebug(host, port, 700)) {
+                return "http://" + host + ":" + port;
+            }
+        }
+
+        throw new IllegalStateException("Could not reach Podman container on any host IP: " + candidates);
     }
 
     private void stop_container(String containerId) {

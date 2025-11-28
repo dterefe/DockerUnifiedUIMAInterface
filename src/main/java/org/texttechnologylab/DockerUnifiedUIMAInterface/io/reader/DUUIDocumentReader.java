@@ -29,6 +29,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
+import org.apache.commons.compress.compressors.CompressorException;
+import org.apache.commons.compress.compressors.CompressorOutputStream;
+import org.apache.commons.compress.compressors.CompressorStreamFactory;
+
 public class DUUIDocumentReader implements DUUICollectionReader {
 
     private final long maximumMemory;
@@ -261,9 +265,30 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         timer.restart();
 
-        try {
-            XmiCasDeserializer.deserialize(decodedDocument, pCas.getCas(), true);
-        } catch (Exception e) {
+        if (decodedDocument != null) {
+            try {
+                XmiCasDeserializer.deserialize(decodedDocument, pCas.getCas(), true);
+            } catch (Exception e) {
+                composer.addEvent(
+                    DUUIEvent.Sender.DOCUMENT,
+                    String.format(
+                        "Failed to deserialize XMI for document %s, falling back to plain text: %s",
+                        document.getPath(),
+                        e.toString()
+                    ),
+                    DUUIComposer.DebugLevel.ERROR
+                );
+                pCas.setDocumentText(document.getText().trim());
+            }
+        } else {
+            composer.addEvent(
+                DUUIEvent.Sender.DOCUMENT,
+                String.format(
+                    "Decoded content for document %s is unavailable, using raw text representation if present.",
+                    document.getPath()
+                ),
+                DUUIComposer.DebugLevel.ERROR
+            );
             pCas.setDocumentText(document.getText().trim());
         }
 
@@ -337,9 +362,30 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         timer.restart();
 
-        try {
-            XmiCasDeserializer.deserialize(decodedDocument, pCas.getCas(), true);
-        } catch (Exception e) {
+        if (decodedDocument != null) {
+            try {
+                XmiCasDeserializer.deserialize(decodedDocument, pCas.getCas(), true);
+            } catch (Exception e) {
+                composer.addEvent(
+                    DUUIEvent.Sender.DOCUMENT,
+                    String.format(
+                        "Failed to deserialize XMI for document %s, falling back to plain text: %s",
+                        document.getPath(),
+                        e.toString()
+                    ),
+                    DUUIComposer.DebugLevel.ERROR
+                );
+                pCas.setDocumentText(document.getText().trim());
+            }
+        } else {
+            composer.addEvent(
+                DUUIEvent.Sender.DOCUMENT,
+                String.format(
+                    "Decoded content for document %s is unavailable, using raw text representation if present.",
+                    document.getPath()
+                ),
+                DUUIComposer.DebugLevel.ERROR
+            );
             pCas.setDocumentText(document.getText().trim());
         }
 
@@ -396,6 +442,15 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             try {
                 polled = builder.inputHandler.readDocument(document.getPath());
             } catch (IOException exception) {
+                composer.addEvent(
+                    DUUIEvent.Sender.READER,
+                    String.format(
+                        "Failed to read document %s: %s",
+                        document.getPath(),
+                        exception.toString()
+                    ),
+                    DUUIComposer.DebugLevel.ERROR
+                );
                 throw new RuntimeException(exception);
             }
         }
@@ -423,6 +478,20 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         try {
             decodedFile = DUUIDocumentDecoder.decode(document);
         } catch (IOException e) {
+            composer.addEvent(
+                DUUIEvent.Sender.DOCUMENT,
+                String.format(
+                    "Failed to decode document %s: %s",
+                    document.getPath(),
+                    e.toString()
+                ),
+                DUUIComposer.DebugLevel.ERROR
+            );
+            document.setError(String.format(
+                "%s%n%s",
+                e.getClass().getCanonicalName(),
+                e.getMessage() == null ? "" : e.getMessage()));
+            document.setStatus(DUUIStatus.FAILED);
             return null;
         }
         timer.stop();
@@ -438,6 +507,15 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                 try {
                     return builder.inputHandler.readDocument(document.getPath());
                 } catch (IOException e) {
+                    composer.addEvent(
+                        DUUIEvent.Sender.READER,
+                        String.format(
+                            "Failed to read document %s asynchronously: %s",
+                            document.getPath(),
+                            e.toString()
+                        ),
+                        DUUIComposer.DebugLevel.ERROR
+                    );
                     throw new RuntimeException(e);
                 }
             }
@@ -493,14 +571,73 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
 
-        String outputName = document
-            .getName()
-            .replace(document.getFileExtension(), builder.outputFileExtension);
+        String inputExtension = document.getFileExtension();
+        String outputExtension = builder.outputFileExtension;
+
+        String originalName = document.getName();
+        String outputName = originalName;
+
+        if (originalName != null && !originalName.isEmpty()) {
+            String inExt = inputExtension == null ? "" : inputExtension;
+            String outExt = outputExtension == null ? "" : outputExtension;
+
+            // If it already ends with the desired extension, keep it.
+            if (!outExt.isEmpty() && originalName.endsWith(outExt)) {
+                outputName = originalName;
+            }
+            // If it ends with the input extension, swap just that suffix.
+            else if (!inExt.isEmpty() && originalName.endsWith(inExt)) {
+                outputName =
+                    originalName.substring(0, originalName.length() - inExt.length()) + outExt;
+            }
+            // Fallback: replace the last extension segment, if any.
+            else if (!outExt.isEmpty()) {
+                int dotIndex = originalName.lastIndexOf('.');
+                if (dotIndex > 0) {
+                    outputName = originalName.substring(0, dotIndex) + outExt;
+                }
+            }
+        }
+
+        byte[] payload = outputStream.toByteArray();
+
+        // Compress payload depending on desired output extension
+        if (outputExtension != null) {
+            try {
+                if (outputExtension.equalsIgnoreCase(".gz")) {
+                    ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+                    try (CompressorOutputStream cos = new CompressorStreamFactory()
+                        .createCompressorOutputStream(CompressorStreamFactory.GZIP, compressed)) {
+                        cos.write(payload);
+                    }
+                    payload = compressed.toByteArray();
+                } else if (outputExtension.equalsIgnoreCase(".xz")) {
+                    ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+                    try (CompressorOutputStream cos = new CompressorStreamFactory()
+                        .createCompressorOutputStream(CompressorStreamFactory.XZ, compressed)) {
+                        cos.write(payload);
+                    }
+                    payload = compressed.toByteArray();
+                } else if (outputExtension.equalsIgnoreCase(".bz2")) {
+                    ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+                    try (CompressorOutputStream cos = new CompressorStreamFactory()
+                        .createCompressorOutputStream(CompressorStreamFactory.BZIP2, compressed)) {
+                        cos.write(payload);
+                    }
+                    payload = compressed.toByteArray();
+                }
+            } catch (CompressorException e) {
+                throw new IOException(
+                    String.format("Failed to compress document %s as %s", document.getPath(), outputExtension),
+                    e
+                );
+            }
+        }
 
         DUUIDocument temp = new DUUIDocument(
             outputName,
             builder.outputPath + "/" + outputName,
-            outputStream.toByteArray()
+            payload
         );
 
         builder
@@ -510,6 +647,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         long sizeStore = document.getSize();
         document.setBytes(new byte[]{});
         document.setSize(sizeStore);
+
         document.setUploadProgress(temp.getUploadProgress());
         document.setStatus(DUUIStatus.COMPLETED);
     }

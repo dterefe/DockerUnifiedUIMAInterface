@@ -1,23 +1,12 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
-import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
-import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.apache.uima.cas.CASException;
-import org.apache.uima.fit.factory.TypeSystemDescriptionFactory;
-import org.apache.uima.jcas.JCas;
-import org.apache.uima.resource.ResourceInitializationException;
-import org.apache.uima.resource.metadata.TypeSystemDescription;
-import org.javatuples.Triplet;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
-import org.texttechnologylab.duui.ReproducibleAnnotation;
-
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InvalidObjectException;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -28,6 +17,24 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.uima.cas.CASException;
+import org.apache.uima.fit.factory.TypeSystemDescriptionFactory;
+import org.apache.uima.jcas.JCas;
+import org.apache.uima.resource.ResourceInitializationException;
+import org.apache.uima.resource.metadata.TypeSystemDescription;
+import org.javatuples.Triplet;
+import org.jetbrains.annotations.NotNull;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.duui.ReproducibleAnnotation;
+
+import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 
 /**
  * The interface for the instance of each component that is executed in a pipeline.
@@ -40,6 +47,10 @@ public interface IDUUIInstantiatedPipelineComponent {
             .proxy(ProxySelector.getDefault())
             .connectTimeout(Duration.ofSeconds(1000)).build();
 
+    /**
+     * @return the non-null {@link DUUIPipelineComponent} configuration backing this instantiated component.
+     */
+    @NotNull
     public DUUIPipelineComponent getPipelineComponent();
     public Triplet<IDUUIUrlAccessible,Long,Long> getComponent();
     public void addComponent(IDUUIUrlAccessible item);
@@ -49,7 +60,7 @@ public interface IDUUIInstantiatedPipelineComponent {
     public String getTargetView();
     public String getUniqueComponentKey();
 
-    public int postTries = 50;
+    public static int REQUEST_TRIES = 50;
 
     /**
      * Returns the TypeSystem used for the DUUI component used.
@@ -60,10 +71,24 @@ public interface IDUUIInstantiatedPipelineComponent {
      */
     public static TypeSystemDescription getTypesystem(String uuid, IDUUIInstantiatedPipelineComponent comp) throws ResourceInitializationException {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
-        //System.out.printf("Address %s\n",queue.getValue0().generateURL()+ DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM);
+        DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
+        String driverName = pipelineComponent.getDriver() != null
+                ? pipelineComponent.getDriver().getClass().getSimpleName()
+                : "unknown-driver";
+        String componentKey = comp.getUniqueComponentKey() != null
+                ? comp.getUniqueComponentKey()
+                : "unknown-component";
+        String logPrefix = String.format("[%s][%s]", driverName, componentKey);
+
+        System.out.printf(
+                "%s Requesting typesystem from %s%s\n",
+                logPrefix,
+                queue.getValue0().generateURL(),
+                DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM
+        );
 
         int tries = 0;
-        while(tries < postTries) {
+        while(tries < REQUEST_TRIES) {
             tries++;
             try {
                 HttpRequest request = HttpRequest.newBuilder()
@@ -86,18 +111,51 @@ public interface IDUUIInstantiatedPipelineComponent {
                     return TypeSystemDescriptionFactory.createTypeSystemDescriptionFromPath(tmp.toURI().toString());
                 } else {
                     comp.addComponent(queue.getValue0());
-                    System.out.printf("[%s]: Endpoint did not provide typesystem, using default one...\n", uuid);
+                    System.err.printf(
+                            "%s Typesystem endpoint %s%s returned HTTP %d, using default typesystem instead.\n",
+                            logPrefix,
+                            queue.getValue0().generateURL(),
+                            DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
+                            resp.statusCode()
+                    );
                     return TypeSystemDescriptionFactory.createTypeSystemDescription();
                 }
             } catch (Exception e) {
-                System.out.printf("Cannot reach endpoint trying again %d/%d...\n", tries + 1, postTries);
+                System.err.printf(
+                        "%s Error while requesting typesystem from %s%s (try %d/%d): %s\n%s\n",
+                        logPrefix,
+                        queue.getValue0().generateURL(),
+                        DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
+                        tries,
+                        REQUEST_TRIES,
+                        e.toString(),
+                        ExceptionUtils.getStackTrace(e)
+                );
+                System.out.printf(
+                        "%s Cannot reach typesystem endpoint, trying again %d/%d...\n",
+                        logPrefix,
+                        tries + 1,
+                        REQUEST_TRIES
+                );
                 try {
                     Thread.sleep(comp.getPipelineComponent().getTimeout());
                 } catch (InterruptedException ex) {
+                    System.err.printf(
+                            "%s Sleep interrupted while waiting to retry typesystem request: %s\n",
+                            logPrefix,
+                            ex.toString()
+                    );
                     throw new RuntimeException(ex);
                 }
             }
         }
+        System.err.printf(
+                "%s Typesystem endpoint %s%s unreachable after %d tries.\n",
+                logPrefix,
+                queue.getValue0().generateURL(),
+                DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
+                REQUEST_TRIES
+        );
         throw new ResourceInitializationException(new Exception("Endpoint is unreachable!"));
     }
 
@@ -118,6 +176,14 @@ public interface IDUUIInstantiatedPipelineComponent {
 
         try {
             DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
+            String driverName = pipelineComponent.getDriver() != null
+                    ? pipelineComponent.getDriver().getClass().getSimpleName()
+                    : "unknown-driver";
+            String componentKey = comp.getUniqueComponentKey() != null
+                    ? comp.getUniqueComponentKey()
+                    : "unknown-component";
+            String logPrefix = String.format("[%s][%s]", driverName, componentKey);
+
             String viewName = pipelineComponent.getViewName();
             JCas viewJc;
             if(viewName == null) {
@@ -179,8 +245,8 @@ public interface IDUUIInstantiatedPipelineComponent {
             HttpResponse<byte[]> resp = null;
             boolean bRunning = true;
             while (bRunning) {
-                tries++;
                 try {
+                    tries++;
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
                             .timeout(Duration.ofSeconds(comp.getPipelineComponent().getTimeout()))
@@ -191,20 +257,47 @@ public interface IDUUIInstantiatedPipelineComponent {
                     break;
                 }
                 catch(Exception e) {
-    //                e.printStackTrace();
-                    System.out.printf("Cannot reach endpoint trying again %d/%d...\n",tries+1,postTries);
+                    System.out.printf(
+                            "%s Cannot reach endpoint, trying again %d/%d...\n",
+                            logPrefix,
+                            tries + 1,
+                            REQUEST_TRIES
+                    );
+                    System.err.printf(
+                            "%s Error while calling endpoint %s%s (try %d/%d): %s\n%s\n",
+                            logPrefix,
+                            queue.getValue0().generateURL(),
+                            DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
+                            tries,
+                            REQUEST_TRIES,
+                            e.toString(),
+                            ExceptionUtils.getStackTrace(e)
+                    );
+
                     try {
                         Thread.sleep(comp.getPipelineComponent().getTimeout());
                     } catch (InterruptedException ex) {
+                        System.err.printf(
+                                "%s Sleep interrupted while waiting to retry endpoint call: %s\n",
+                                logPrefix,
+                                ex.toString()
+                        );
                         throw new RuntimeException(ex);
                     }
-                    if(tries>postTries){
+                    if(tries>REQUEST_TRIES){
                         bRunning=false;
                     }
                 }
             }
             if(resp==null) {
-                throw new IOException("Could not reach endpoint after " + postTries + " tries!");
+                System.err.printf(
+                        "%s Could not reach endpoint %s%s after %d tries, aborting.\n",
+                        logPrefix,
+                        queue.getValue0().generateURL(),
+                        DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
+                        REQUEST_TRIES
+                );
+                throw new IOException("Could not reach endpoint after " + REQUEST_TRIES + " tries!");
             }
 
 
@@ -244,16 +337,37 @@ public interface IDUUIInstantiatedPipelineComponent {
                 if (!pipelineComponent.getIgnoringHTTP200Error()) {
                     throw new InvalidObjectException(String.format("Expected response 200, got %d: %s", resp.statusCode(), responseBody));
                 } else {
-                    System.err.println(String.format("Expected response 200, got %d: %s", resp.statusCode(), responseBody));
+                    System.err.println(String.format("%s Expected response 200, got %d: %s", logPrefix, resp.statusCode(), responseBody));
                 }
             }
         } catch (CASException e) {
             throw e;
         } catch (Exception e) {
             try {
+                System.err.printf(
+                        "[%s][%s] Unhandled exception while processing component: %s\n%s\n",
+                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriver() != null
+                                ? comp.getPipelineComponent().getDriver().getClass().getSimpleName()
+                                : "unknown-driver",
+                        comp.getUniqueComponentKey() != null
+                                ? comp.getUniqueComponentKey()
+                                : "unknown-component",
+                        e.toString(),
+                        ExceptionUtils.getStackTrace(e)
+                );
                 DocumentMetaData documentMetaData = DocumentMetaData.get(jc);
                 throw new PipelineComponentException(comp.getPipelineComponent(), documentMetaData, e);
             } catch (IllegalArgumentException ignored) {
+                System.err.printf(
+                        "[%s][%s] Could not retrieve DocumentMetaData from CAS while wrapping exception: %s\n",
+                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriver() != null
+                                ? comp.getPipelineComponent().getDriver().getClass().getSimpleName()
+                                : "unknown-driver",
+                        comp.getUniqueComponentKey() != null
+                                ? comp.getUniqueComponentKey()
+                                : "unknown-component",
+                        ignored.toString()
+                );
                 throw new PipelineComponentException(comp.getPipelineComponent(), e);
             }
         } finally {

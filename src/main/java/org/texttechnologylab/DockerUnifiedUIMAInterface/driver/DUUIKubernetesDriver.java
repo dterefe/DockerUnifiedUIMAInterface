@@ -266,7 +266,7 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         while (_active_components.containsKey(uuid.toString())) {  // Stelle sicher, dass ID nicht bereits existiert (?)
             uuid = UUID.randomUUID().toString();
         }
-        InstantiatedComponent comp = new InstantiatedComponent(component);  // Initialisiere Komponente
+        InstantiatedComponent comp = new InstantiatedComponent(component, uuid);  // Initialisiere Komponente
 
         String dockerImage = comp.getImageName();  // Image der Komponente als String
         int scale = comp.getScale(); // Anzahl der Replicas in dieser Kubernetes-Komponente
@@ -485,8 +485,9 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         private List<String> _labels;
         private String _uniqueComponentKey = "";
 
-        InstantiatedComponent(DUUIPipelineComponent comp) {
+        InstantiatedComponent(DUUIPipelineComponent comp, String uniqueComponentKey) {
             _component = comp;
+            _uniqueComponentKey = uniqueComponentKey;
             _image_name = comp.getDockerImageName();
             _parameters = comp.getParameters();
             _targetView = comp.getTargetView();

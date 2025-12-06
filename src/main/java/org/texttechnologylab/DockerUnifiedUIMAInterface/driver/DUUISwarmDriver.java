@@ -280,52 +280,35 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
         }
     }
 
-    private static class InstantiatedComponent implements IDUUIInstantiatedPipelineComponent {
+    private static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent>  {
         private final String _image_name;
         private String _service_id;
         private int _service_port;
         private final Boolean _keep_runnging_after_exit;
-        private final int _scale;
         private final String _fromLocalImage;
-        private final ConcurrentLinkedQueue<ComponentInstance> _components;
-        private final boolean _websocket;
-        private final int _ws_elements;
 
         private final List<String> _constraints = new ArrayList<>(0);
 
         private final String _reg_password;
         private final String _reg_username;
-        private final Map<String, String> _parameters;
-        private String _sourceView;
-        private String _targetView;
-        private DUUIPipelineComponent _component;
         private String sHost = "localhost";
-        private final String _uniqueComponentKey;
 
 
-        InstantiatedComponent(DUUIPipelineComponent comp, String uniqueComponentKey) {
-            _component = comp;
-            _uniqueComponentKey = uniqueComponentKey;
-            _image_name = comp.getDockerImageName();
+        InstantiatedComponent(DUUIPipelineComponent component, String uniqueComponentKey) {
+            super(component, uniqueComponentKey);
+
+            _image_name = component.getDockerImageName();
             if (_image_name == null) {
                 throw new InvalidParameterException("The image name was not set! This is mandatory for the DockerLocalDriver Class.");
             }
 
-            _parameters = comp.getParameters();
-            _targetView = comp.getTargetView();
-            _sourceView = comp.getSourceView();
-            _scale = comp.getScale(1);
-            _constraints.addAll(comp.getConstraints());
-            _components = new ConcurrentLinkedQueue<>();
+            _constraints.addAll(component.getConstraints());
 
-            _keep_runnging_after_exit = comp.getDockerRunAfterExit(false);
+            _keep_runnging_after_exit = component.getDockerRunAfterExit(false);
 
             _fromLocalImage = null;
-            _reg_password = comp.getDockerAuthPassword();
-            _reg_username = comp.getDockerAuthUsername();
-
-            _websocket = comp.isWebsocket();
-            _ws_elements = comp.getWebsocketElements();
+            _reg_password = component.getDockerAuthPassword();
+            _reg_username = component.getDockerAuthUsername();
         }
 
 
@@ -336,14 +319,6 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
 
         public String getHost() {
             return this.sHost;
-        }
-
-        public DUUIPipelineComponent getPipelineComponent() {
-            return _component;
-        }
-
-        public String getUniqueComponentKey() {
-            return _uniqueComponentKey;
         }
 
         public String getPassword() {
@@ -362,28 +337,12 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
             return _fromLocalImage;
         }
 
-        public boolean isWebsocket() {
-            return _websocket;
-        }
-
-        public int getWebsocketElements() {
-            return _ws_elements;
-        }
-
-
         public InstantiatedComponent initialise(String service_id, int container_port, IDUUICommunicationLayer layer, DUUISwarmDriver swarmDriver) throws IOException, InterruptedException {
 
             _service_id = service_id;
             _service_port = container_port;
-
-            if (_websocket) {
-                swarmDriver._wsclient = new DUUIWebsocketAlt(
-                    getServiceUrl().replaceFirst("http", "ws") + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS_WEBSOCKET, _ws_elements);
-            } else {
-                swarmDriver._wsclient = null;
-            }
             for (int i = 0; i < _scale; i++) {
-                _components.add(new ComponentInstance(getServiceUrl(), layer.copy(), swarmDriver._wsclient));
+                _components.add(new ComponentInstance(getServiceUrl(), layer.copy()));
 
             }
             return this;
@@ -392,7 +351,6 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
         public String getServiceUrl() {
             return format("http://" + getHost() + ":%d", _service_port);
         }
-
 
         public String getImageName() {
             return _image_name;
@@ -406,10 +364,6 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
             return _service_port;
         }
 
-        public int getScale() {
-            return _scale;
-        }
-
         public List<String> getConstraints() {
             return _constraints;
         }
@@ -418,120 +372,48 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
             return _keep_runnging_after_exit;
         }
 
-        public Map<String, String> getParameters() {
-            return _parameters;
-        }
-
-        public String getSourceView() {return _sourceView; }
-
-        public String getTargetView() {return _targetView; }
-
-        public Triplet<IDUUIUrlAccessible, Long, Long> getComponent() {
-            long mutexStart = System.nanoTime();
-            ComponentInstance inst = _components.poll();
-            while (inst == null) {
-                inst = _components.poll();
-            }
-            long mutexEnd = System.nanoTime();
-            return Triplet.with(inst, mutexStart, mutexEnd);
-        }
-
-        public void addComponent(IDUUIUrlAccessible item) {
-            _components.add((ComponentInstance) item);
-        }
     }
 
-    public static class Component {
-        private DUUIPipelineComponent component;
+    public static class Component extends IDUUIDriverInterface.ComponentBuilder<Component> {
 
         public Component(String globalRegistryImageName) throws URISyntaxException, IOException {
-            component = new DUUIPipelineComponent();
-            component.withDockerImageName(globalRegistryImageName);
+            super(new DUUIPipelineComponent());
+            _component.withDockerImageName(globalRegistryImageName);
         }
 
         public Component(DUUIPipelineComponent pComponent) {
-            component = pComponent;
-        }
-
-        public Component withDescription(String description) {
-            component.withDescription(description);
-            return this;
-        }
-
-        public Component withParameter(String key, String value) {
-            component.withParameter(key, value);
-            return this;
-        }
-
-        public Component withView(String viewName) {
-            component.withView(viewName);
-            return this;
-        }
-
-        public Component withSourceView(String viewName) {
-            component.withSourceView(viewName);
-            return this;
-        }
-
-        public Component withTargetView(String viewName) {
-            component.withTargetView(viewName);
-            return this;
-        }
-
-        public Component withScale(int scale) {
-            component.withScale(scale);
-            return this;
-        }
-
-        public Component withSegmentationStrategy(DUUISegmentationStrategy strategy) {
-            component.withSegmentationStrategy(strategy);
-            return this;
-        }
-
-        public <T extends DUUISegmentationStrategy> Component withSegmentationStrategy(Class<T> strategyClass) throws InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
-            component.withSegmentationStrategy(strategyClass.getDeclaredConstructor().newInstance());
-            return this;
+            super(pComponent);
         }
 
         public Component withConstraintHost(String sHost) {
-            component.withConstraint("node.hostname==" + sHost);
+            _component.withConstraint("node.hostname==" + sHost);
             return this;
         }
 
         public Component withConstraintLabel(String sKey, String sValue) {
-            component.withConstraint("node.labels." + sKey + "==" + sValue);
+            _component.withConstraint("node.labels." + sKey + "==" + sValue);
             return this;
         }
 
         public Component withConstraints(List<String> constraints) {
-            component.withConstraints(constraints);
+            _component.withConstraints(constraints);
             return this;
         }
 
         public DUUISwarmDriver.Component withRegistryAuth(String username, String password) {
-            component.withDockerAuth(username, password);
+            _component.withDockerAuth(username, password);
             return this;
         }
 
 
         public Component withRunningAfterDestroy(boolean run) {
-            component.withDockerRunAfterExit(run);
-            return this;
-        }
-
-        public Component withWebsocket(boolean b) {
-            component.withWebsocket(b);
-            return this;
-        }
-
-        public Component withWebsocket(boolean b, int elements) {
-            component.withWebsocket(b, elements);
+            _component.withDockerRunAfterExit(run);
             return this;
         }
 
         public DUUIPipelineComponent build() {
-            component.withDriver(DUUISwarmDriver.class);
-            return component;
+            _component.withDriver(DUUISwarmDriver.class);
+            return _component;
         }
     }
 }

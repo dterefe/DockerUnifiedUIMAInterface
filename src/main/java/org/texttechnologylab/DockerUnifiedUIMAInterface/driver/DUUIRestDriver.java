@@ -32,7 +32,6 @@ import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIFallbackCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import static org.texttechnologylab.DockerUnifiedUIMAInterface.driver.IDUUIRestDriver.sendWithRetries;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunicationLayer;
@@ -40,10 +39,106 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.xml.sax.SAXException;
 
-public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends IDUUIInstantiatedPipelineComponent> implements IDUUIRestDriver {
+/**
+ * Base class for REST-based drivers in DUUI. 
+ * 
+ * This class provides standard implementation for:
+ * - {@code get_communication_layer()} (previously {@code responsiveAfterTime()})
+ * - {@code get_typesystem()} 
+ * - {@code initReaderComponent()}
+ * - {@code run()}
+ * 
+ * and unifies similarities across REST-based drivers. It also defines an abstract {@code InstantiatedRestComponent} 
+ * to simplify its definition in subclasses.
+ * 
+ */
+public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends IDUUIInstantiatedPipelineComponent> implements IDUUIDriverInterface {
 
     protected Duration _timeout = Duration.ofMillis(10_000);
     protected DUUILuaContext _luaContext;
+    static int MAX_HTTP_RETRIES = 10;
+    static Duration RETRY_DELAY = Duration.ofMillis(2000);
+    static int BODY_PREVIEW_LIMIT = 500;
+ 
+    /**
+     * Helper to send a request with a built in retry-policy.
+     * 
+     * @param client HttpClient that sends the request
+     * @param request HttpRequest that is sent
+     * @param deadline Deadline after which results are ignored
+     * @param timeout Timeout applied to every request
+     * @param prefix Log prefix of the calling driver to enhance logging.
+     * @return  HttpResponse
+     * @throws Exception
+     */
+    static HttpResponse<byte[]> sendWithRetries(
+            HttpClient client,
+            HttpRequest request,
+            Instant deadline,
+            Duration timeout,
+            String prefix) throws Exception {
+        int attempts = 0;
+        while (Instant.now().isBefore(deadline)) {
+            try {
+                HttpResponse<byte[]> resp = client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
+                System.out.printf(
+                        "%s HTTP attempt #%d to %s succeeded with status %d%n",
+                        prefix,
+                        attempts + 1,
+                        request.uri(),
+                        resp.statusCode()
+                );
+                return resp;
+            } catch (Exception e) {
+                attempts++;
+                System.err.printf(
+                        "%s HTTP connection error on try #%d to %s: %s (%s)%n",
+                        prefix,
+                        attempts,
+                        request.uri(),
+                        e.getClass().getSimpleName(),
+                        e.getMessage()
+                );
+                if (e instanceof CompletionException ce && ce.getCause() != null) {
+                    System.err.printf(
+                            "%s CompletionException cause: %s (%s)%n",
+                            prefix,
+                            ce.getCause().getClass().getSimpleName(),
+                            ce.getCause().getMessage()
+                    );
+                }
+                if (attempts >= MAX_HTTP_RETRIES) {
+                    throw new CommunicationLayerException(format("%s The endpoint (%s) could not provide a response after #%d tries.",
+                        prefix, request.uri(), attempts
+                    ), e);
+                }
+                Thread.sleep(RETRY_DELAY.toMillis());
+            }
+        }
+        throw new TimeoutException(
+            format("%s The endpoint (%s) could not provide a response after %d milliseconds.",
+            prefix, request.uri(), timeout.toMillis()
+        ));
+    }
+
+    /**
+     * Helper to cut of long respone bodies.
+     * 
+     * @param body
+     * @param maxLen
+     * @param charset
+     * @return Truncated body
+     */
+    private static String preview(byte[] body, int maxLen, Charset charset) {
+        if (body == null || body.length == 0 || maxLen <= 0) {
+            return "";
+        }
+        String text = new String(body, charset);
+        if (text.length() > maxLen) {
+            return text.substring(0, maxLen) + "...";
+        }
+        return text;
+    }
 
     /**
      * Set Lua-Context
@@ -56,7 +151,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
     }
 
     /**
-     * Set Timeout
+     * Set Timeout in milliseconds
      *
      * @param timeout_ms
      * @return
@@ -70,6 +165,14 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
 
     abstract protected Map<String, IC> getActiveComponents();
     
+    /**
+     * Get the instantiated component by its UUID
+     * 
+     * @param uuid
+     * @return the instantiated component
+     * 
+     * @throws InvalidParameterException if the UUID is not valid
+     */
     protected IC getInstantiatedComponent(String uuid) {
         IC component = getActiveComponents().get(uuid);
         if (component == null) {
@@ -88,7 +191,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
     public void printConcurrencyGraph(String uuid) {
         IDUUIInstantiatedPipelineComponent component = getInstantiatedComponent(uuid);
         
-        System.out.printf("[DUUIDockerDriver][%s]: Maximum concurrency %d\n", uuid, component.getPipelineComponent().getScale());
+        System.out.printf("[%s][%s]: Maximum concurrency %d\n", this.getClass().getSimpleName(), uuid, component.getPipelineComponent().getScale());
     }
 
     protected record DUUICommunicationLayerRequestContext(
@@ -109,6 +212,13 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         }
     }
     
+    /**
+     * Creation of the communication layer based on the Driver and optional component verification.
+     *
+     * @param context Arguments for the communication layer request
+     * @return the communication layer
+     * @throws Exception
+     */
     public static IDUUICommunicationLayer get_communication_layer(DUUICommunicationLayerRequestContext context) throws Exception {
         String prefix = context.logPrefix();
         System.out.printf(
@@ -161,7 +271,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                     }
                     default -> {
                         int bodyLen = resp.body() != null ? resp.body().length : -1;
-                        String preview = IDUUIRestDriver.preview(resp.body(), BODY_PREVIEW_LIMIT, Charset.defaultCharset());
+                        String preview = preview(resp.body(), BODY_PREVIEW_LIMIT, Charset.defaultCharset());
                         System.err.printf("%s Got HTTP status: %d (body %d bytes)%n",
                                 prefix,
                                 resp.statusCode(),
@@ -206,6 +316,14 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         return layer;
     }
 
+    /**
+     * Verify that the component can be used with the communication layer.
+     *
+     * @param context Arguments for the communication layer request
+     * @param layer the communication layer
+     * @param prefix log prefix
+     * @throws Exception
+     */
     private static void verifyComponentCompatibility(
             DUUICommunicationLayerRequestContext context,
             IDUUICommunicationLayer layer,
@@ -257,7 +375,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             try {
                 layer.deserialize(context.jcas(), inputStream, "_InitialView");
             } catch (Exception e) {
-                String preview = IDUUIRestDriver.preview(resp.body(), BODY_PREVIEW_LIMIT, StandardCharsets.UTF_8);
+                String preview = preview(resp.body(), BODY_PREVIEW_LIMIT, StandardCharsets.UTF_8);
                 System.err.printf(
                         "%s Deserialization failed for %s; response preview: %s%n",
                         prefix,
@@ -269,7 +387,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             return;
         } else {
             int bodyLen = resp.body() != null ? resp.body().length : -1;
-            String preview = IDUUIRestDriver.preview(resp.body(), BODY_PREVIEW_LIMIT, StandardCharsets.UTF_8);
+            String preview = preview(resp.body(), BODY_PREVIEW_LIMIT, StandardCharsets.UTF_8);
             System.err.printf(
                     "%s Verification request to %s returned status %d (body %d bytes)%n",
                     prefix,
@@ -340,6 +458,10 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         IDUUIInstantiatedPipelineComponent.process(aCas, component, perf);
     }
 
+    /**
+     * Base class for REST-based instantiated components. 
+     * Provides general access methods to the {@code DUUIPipelineComponent}.
+     */
     abstract static class IDUUIInstantiatedRestComponent<InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent>> implements IDUUIInstantiatedPipelineComponent {
         
         protected final DUUIPipelineComponent _component;

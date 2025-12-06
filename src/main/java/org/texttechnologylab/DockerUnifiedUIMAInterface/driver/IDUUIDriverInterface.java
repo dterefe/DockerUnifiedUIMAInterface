@@ -107,6 +107,9 @@ public interface IDUUIDriverInterface {
      */
     public void shutdown();
 
+    /**
+     * Builder for DUUIPipelineComponent.
+     */
     abstract static class ComponentBuilder<Builder extends ComponentBuilder<Builder>> {
         final protected DUUIPipelineComponent _component;
 
@@ -114,60 +117,123 @@ public interface IDUUIDriverInterface {
             _component = component;
         }
 
+        /**
+         * Set the description of the component.
+         * 
+         * @param description
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withDescription(String description) {
             _component.withDescription(description);
             return (Builder) this;
         }
         
+        /**
+         * Set the name of the component.
+         * 
+         * @param name
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withName(String name) {
             _component.withName(name);
             return (Builder) this;
         }
 
+        /**
+         * Add a parameter to the component.
+         * 
+         * @param key
+         * @param value
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withParameter(String key, String value) {
             _component.withParameter(key, value);
             return (Builder) this;
         }
 
+        /**
+         * Start the given number of parallel instances (containers).
+         * @param scale Number of containers to start.
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withScale(int scale) {
             _component.withScale(scale);
             return (Builder) this;
         }
         
+        /**
+         * Set the maximum concurrency-level of each component by instantiating the multiple replicas per container.
+         * @param workers Number of replicas per container.
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withWorkers(int workers) {
             _component.withWorkers(workers);
             return (Builder) this;
         }
 
+        /**
+         * Set the view to be used by the component.
+         * 
+         * @param view
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withView(String view) {
             _component.withView(view);
             return (Builder) this;
         }
 
+        /**
+         * Set the source view to be used by the component.
+         * 
+         * @param sourceView
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withSourceView(String sourceView) {
             _component.withSourceView(sourceView);
             return (Builder) this;
         }
 
+        /**
+         * Set the target view to be used by the component.
+         * 
+         * @param targetView
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withTargetView(String targetView) {
             _component.withTargetView(targetView);
             return (Builder) this;
         }
 
+        /**
+         * Set the segmentation strategy to be used by the component.
+         * 
+         * @param strategy
+         * @return {@code this}
+         */
         @SuppressWarnings("unchecked")
         public Builder withSegmentationStrategy(DUUISegmentationStrategy strategy) {
             _component.withSegmentationStrategy(strategy);
             return (Builder) this;
         }
 
+        /**
+         * Set the segmentation strategy to be used by the component.
+         * 
+         * @param strategyClass
+         * @return {@code this}
+         * @throws InstantiationException
+         * @throws IllegalAccessException
+         * @throws NoSuchMethodException
+         * @throws InvocationTargetException
+         */
         @SuppressWarnings("unchecked")
         public <T extends DUUISegmentationStrategy> Builder withSegmentationStrategy(Class<T> strategyClass) 
             throws InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
@@ -175,6 +241,12 @@ public interface IDUUIDriverInterface {
             return (Builder) this;
         }
 
+        /**
+         * (Deprecated) Enable or disable websocket communication for this component.
+         * 
+         * @param websocket
+         * @return {@code this}
+         */
         @Deprecated
         @SuppressWarnings("unchecked")
         public Builder withWebsocket(boolean websocket) {
@@ -182,6 +254,13 @@ public interface IDUUIDriverInterface {
             return (Builder) this;
         }
 
+        /**
+         * (Deprecated) Enable or disable websocket communication for this component with a defined number of elements.
+         * 
+         * @param websocket
+         * @param elements
+         * @return {@code this}
+         */
         @Deprecated
         @SuppressWarnings("unchecked")
         public Builder withWebsocket(boolean websocket, int elements) {

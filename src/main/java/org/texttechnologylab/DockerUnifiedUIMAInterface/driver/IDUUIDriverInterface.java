@@ -1,5 +1,10 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
@@ -11,11 +16,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationL
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
 import org.xml.sax.SAXException;
-
-import java.io.IOException;
-import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Interface for all drivers
@@ -104,5 +106,89 @@ public interface IDUUIDriverInterface {
      * Shutting down the driver
      */
     public void shutdown();
+
+    abstract static class ComponentBuilder<Builder extends ComponentBuilder<Builder>> {
+        final protected DUUIPipelineComponent _component;
+
+        protected ComponentBuilder(DUUIPipelineComponent component) {
+            _component = component;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withDescription(String description) {
+            _component.withDescription(description);
+            return (Builder) this;
+        }
+        
+        @SuppressWarnings("unchecked")
+        public Builder withName(String name) {
+            _component.withName(name);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withParameter(String key, String value) {
+            _component.withParameter(key, value);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withScale(int scale) {
+            _component.withScale(scale);
+            return (Builder) this;
+        }
+        
+        @SuppressWarnings("unchecked")
+        public Builder withWorkers(int workers) {
+            _component.withWorkers(workers);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withView(String view) {
+            _component.withView(view);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withSourceView(String sourceView) {
+            _component.withSourceView(sourceView);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withTargetView(String targetView) {
+            _component.withTargetView(targetView);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public Builder withSegmentationStrategy(DUUISegmentationStrategy strategy) {
+            _component.withSegmentationStrategy(strategy);
+            return (Builder) this;
+        }
+
+        @SuppressWarnings("unchecked")
+        public <T extends DUUISegmentationStrategy> Builder withSegmentationStrategy(Class<T> strategyClass) 
+            throws InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
+            _component.withSegmentationStrategy(strategyClass.getDeclaredConstructor().newInstance());
+            return (Builder) this;
+        }
+
+        @Deprecated
+        @SuppressWarnings("unchecked")
+        public Builder withWebsocket(boolean websocket) {
+            _component.withWebsocket(websocket);
+            return (Builder) this;
+        }
+
+        @Deprecated
+        @SuppressWarnings("unchecked")
+        public Builder withWebsocket(boolean websocket, int elements) {
+            _component.withWebsocket(websocket, elements);
+            return (Builder) this;
+        }
+    }
+
 
 }

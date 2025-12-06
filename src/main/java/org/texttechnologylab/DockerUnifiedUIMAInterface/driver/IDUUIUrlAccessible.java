@@ -7,6 +7,14 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnecti
  * @author Alexander Leonhardt
  */
 public interface IDUUIUrlAccessible {
+
+    /**
+     * Returns the unique key of the DUUI-component instance.
+     * @return
+     */
+    public String getUniqueInstanceKey();
+
+
     /**
      * Returns the URL of the DUUI-component.
      * @return

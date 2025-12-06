@@ -291,6 +291,46 @@ public class DUUIDockerInterface {
     }
 
     /**
+     * Resolve a host URL for a published container port when the host
+     * port is already known (no container id required).
+     *
+     * @param hostPort published host port (on the Docker host)
+     * @return URL like "http://host:port" that is reachable from this process
+     * @throws IllegalStateException if no reachable host is found
+     */
+    public String getHostUrl(int hostPort) {
+        System.out.printf("[DUUIDockerInterface] Building container host URI for host port: %d%n", hostPort);
+
+        List<String> candidates = new ArrayList<>(List.of("localhost", "host.docker.internal"));
+
+        String dockerGatewayIp = getDockerHostIp();
+        if (dockerGatewayIp != null && !dockerGatewayIp.equals("127.0.0.1") && !dockerGatewayIp.isBlank()) {
+            candidates.add(dockerGatewayIp);
+        }
+
+        if (new File("/.dockerenv").exists()) {
+            try {
+                Network net = _docker.inspectNetworkCmd().withNetworkId("docker_gwbridge").exec();
+                String gw = net.getIpam().getConfig().get(0).getGateway();
+                if (gw != null && !gw.isBlank() && !candidates.contains(gw)) {
+                    candidates.add(gw);
+                }
+            } catch (Exception e) {
+                System.err.printf("[DUUIDockerInterface] ERROR Failed to read docker_gwbridge gateway: %s%n", e.getMessage());
+            }
+        }
+
+        for (String host : candidates) {
+            if (canConnectDebug(host, hostPort, 700)) {
+                return "http://" + host + ":" + hostPort;
+            }
+        }
+
+        throw new IllegalStateException("Could not reach container on any host IP: " + candidates);
+    }
+
+
+    /**
      * Look up which host IP/port Docker bound to a given container port,
      * and return it as an HTTP URL.
      *

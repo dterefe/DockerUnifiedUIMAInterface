@@ -1,39 +1,13 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
-import io.vertx.core.Future;
-import io.vertx.core.Vertx;
-import io.vertx.core.VertxOptions;
-import io.vertx.core.json.JsonObject;
-import org.apache.commons.compress.compressors.CompressorException;
-import org.apache.uima.cas.CASException;
-import org.apache.uima.jcas.JCas;
-import org.apache.uima.resource.ResourceInitializationException;
-import org.apache.uima.resource.metadata.TypeSystemDescription;
-import org.apache.uima.util.InvalidXMLException;
-import org.json.JSONObject;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
-import org.xml.sax.SAXException;
-import podman.client.PodmanClient;
-import podman.client.containers.ContainerCreateOptions;
-import podman.client.containers.ContainerDeleteOptions;
-import podman.client.containers.ContainerInspectOptions;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.lang.reflect.InvocationTargetException;
+import static java.lang.String.format;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
-import java.nio.file.Path;
 import java.security.InvalidParameterException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -41,24 +15,37 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static java.lang.String.format;
+import org.apache.uima.jcas.JCas;
+import org.apache.uima.util.InvalidXMLException;
 import static org.awaitility.Awaitility.await;
-import static org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.getLocalhost;
-import static org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver.responsiveAfterTime;
+import org.json.JSONObject;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver.ComponentInstance;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
+import org.xml.sax.SAXException;
+
+import io.vertx.core.Future;
+import io.vertx.core.Vertx;
+import io.vertx.core.VertxOptions;
+import io.vertx.core.json.JsonObject;
+import podman.client.PodmanClient;
+import podman.client.containers.ContainerCreateOptions;
+import podman.client.containers.ContainerDeleteOptions;
+import podman.client.containers.ContainerInspectOptions;
 
 /**
  * Driver for using a local Podman instance to run DUUI components
  *
  * @author Giuseppe Abrami
  */
-public class DUUIPodmanDriver implements IDUUIDriverInterface {
+public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDockerDriver.InstantiatedComponent> {
 
     private PodmanClient _interface = null;
     private HttpClient _client;
 
     private Vertx _vertx = null;
-    private DUUILuaContext _luaContext = null;
-    private int _container_timeout;
 
     private HashMap<String, DUUIDockerDriver.InstantiatedComponent> _active_components;
 
@@ -68,16 +55,16 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         VertxOptions vertxOptions = new VertxOptions().setPreferNativeTransport(true);
         _vertx = Vertx.vertx(vertxOptions);
         _client = HttpClient.newHttpClient();
+        _timeout = Duration.ofMillis(10_000);
+        _luaContext = null;
+
+        _active_components = new HashMap<>();
 
         System.out.printf("[PodmanDriver] Is Native Transport Enabled: %s\n", _vertx.isNativeTransportEnabled());
 
         PodmanClient.Options options = new PodmanClient.Options().setSocketPath(podmanSocketPath());
 
         _interface = PodmanClient.create(_vertx, options);
-        _container_timeout = 10;
-        _active_components = new HashMap<String, DUUIDockerDriver.InstantiatedComponent>();
-        _luaContext = null;
-
     }
 
     public static String podmanSocketPath() {
@@ -124,8 +111,8 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
     }
 
     @Override
-    public void setLuaContext(DUUILuaContext luaContext) {
-        this._luaContext = luaContext;
+    protected HashMap<String, DUUIDockerDriver.InstantiatedComponent> getActiveComponents() {
+        return _active_components;
     }
 
     @Override
@@ -194,12 +181,6 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-
-
-    }
-
-    @Override
-    public void printConcurrencyGraph(String uuid) {
 
     }
 
@@ -308,31 +289,36 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
 
                         final int iCopy = i;
                         final String uuidCopy = uuid;
-                        IDUUICommunicationLayer layer = responsiveAfterTime(
-                                containerUrl,
-                                jc,
-                                _container_timeout,
-                                _client,
-                                (msg) -> System.out.printf("[PodmanDriver][%s][Podman Replication %d/%d] %s\n",
-                                        uuidCopy, iCopy + 1, comp.getScale(), msg),
-                                _luaContext,
-                                skipVerification
+                        String prefix = String.format("[PodmanDriver][%s][DocPodmanker Replication %d/%d]"
+                            , uuidCopy.substring(0, 5) + "...", iCopy + 1, comp.getScale()
                         );
 
+                        DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
+                            containerUrl,
+                            jc,
+                            _timeout,
+                            _client,
+                            _luaContext,
+                            skipVerification,
+                            prefix
+                        );
+
+                        IDUUICommunicationLayer layer = get_communication_layer(requestContext);
+
                         System.out.printf(
-                                "[PodmanDriver][%s][Podman Replication %d/%d] Container for image %s is online (URL %s) and seems to understand DUUI V1 format!\n",
-                                uuid, i + 1, comp.getScale(), comp.getImageName(), containerUrl
+                                "%s Container for image %s is online (URL %s) and seems to understand DUUI V1 format!\n",
+                                prefix, comp.getImageName(), containerUrl
                         );
 
                         // Add one replica of the instantiated component per worker
                         for (int j = 0; j < comp.getWorkers(); j++) {
-                            comp.addInstance(
+                            comp.addComponent(
                                     new DUUIDockerDriver.ComponentInstance(
+                                            UUID.randomUUID().toString(),
                                             containerId,
+                                            containerUrl,
                                             port,
-                                            layer.copy(),
-                                            null,
-                                            containerUrl
+                                            layer.copy()
                                     )
                             );
                         }
@@ -391,41 +377,6 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
     }
 
     @Override
-    public TypeSystemDescription get_typesystem(String uuid) throws InterruptedException, IOException, SAXException, CompressorException, ResourceInitializationException {
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        return IDUUIInstantiatedPipelineComponent.getTypesystem(uuid, comp);
-    }
-
-    /**
-     * init reader component
-     * @param uuid
-     * @param filePath
-     * @return
-     */
-    @Override
-    public int initReaderComponent(String uuid, Path filePath) {
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        return IDUUIInstantiatedPipelineReaderComponent.initComponent(comp, filePath);
-    }
-
-    @Override
-    public void run(String uuid, JCas aCas, DUUIPipelineDocumentPerformance perf, DUUIComposer composer) throws CASException, PipelineComponentException, CompressorException, CommunicationLayerException, IOException {
-        long mutexStart = System.nanoTime();
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        IDUUIInstantiatedPipelineComponent.process(aCas, comp, perf);
-
-    }
-
-    @Override
     public boolean destroy(String uuid) {
         DUUIDockerDriver.InstantiatedComponent comp = _active_components.remove(uuid);
         if (comp == null) {
@@ -433,9 +384,9 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         }
         if (!comp.getRunningAfterExit()) {
             int counter = 1;
-            for (DUUIDockerDriver.ComponentInstance inst : comp.getInstances()) {
-                System.out.printf("[PodmanDriver][Replication %d/%d] Stopping docker container %s...\n", counter, comp.getInstances().size(), inst.getContainerId());
-                stop_container(inst.getContainerId(), true);
+            for (IDUUIUrlAccessible inst : comp.getTotalInstances()) {
+                System.out.printf("[PodmanDriver][Replication %d/%d] Stopping docker container %s...\n", counter, comp.getInstances().size(), ((ComponentInstance)inst).getContainerId());
+                stop_container(((ComponentInstance)inst).getContainerId(), true);
 
                 counter += 1;
             }
@@ -456,61 +407,15 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         }
     }
 
-    public static class Component {
-        private DUUIPipelineComponent _component;
+    public static class Component extends IDUUIDriverInterface.ComponentBuilder<Component>  {
 
         public Component(String target) throws URISyntaxException, IOException {
-            _component = new DUUIPipelineComponent();
+            super(new DUUIPipelineComponent());
             _component.withDockerImageName(target);
         }
 
         public Component(DUUIPipelineComponent pComponent) throws URISyntaxException, IOException {
-            _component = pComponent;
-        }
-
-        public DUUIPodmanDriver.Component withParameter(String key, String value) {
-            _component.withParameter(key, value);
-            return this;
-        }
-
-        public DUUIPodmanDriver.Component withView(String viewName) {
-            _component.withView(viewName);
-            return this;
-        }
-
-        public DUUIPodmanDriver.Component withSourceView(String viewName) {
-            _component.withSourceView(viewName);
-            return this;
-        }
-
-        public DUUIPodmanDriver.Component withTargetView(String viewName) {
-            _component.withTargetView(viewName);
-            return this;
-        }
-
-        public DUUIPodmanDriver.Component withDescription(String description) {
-            _component.withDescription(description);
-            return this;
-        }
-
-        /**
-         * Start the given number of parallel instances (containers).
-         * @param scale Number of containers to start.
-         * @return {@code this}
-         */
-        public DUUIPodmanDriver.Component withScale(int scale) {
-            _component.withScale(scale);
-            return this;
-        }
-
-        /**
-         * Set the maximum concurrency-level of each component by instantiating the multiple replicas per container.
-         * @param workers Number of replicas per container.
-         * @return {@code this}
-         */
-        public DUUIPodmanDriver.Component withWorkers(int workers) {
-            _component.withWorkers(workers);
-            return this;
+            super(pComponent);
         }
 
         public DUUIPodmanDriver.Component withRegistryAuth(String username, String password) {
@@ -537,25 +442,11 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
             return this;
         }
 
-        public DUUIPodmanDriver.Component withSegmentationStrategy(DUUISegmentationStrategy strategy) {
-            _component.withSegmentationStrategy(strategy);
-            return this;
-        }
-
-        public <T extends DUUISegmentationStrategy> DUUIPodmanDriver.Component withSegmentationStrategy(Class<T> strategyClass) throws InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
-            _component.withSegmentationStrategy(strategyClass.getDeclaredConstructor().newInstance());
-            return this;
-        }
-
         public DUUIPipelineComponent build() {
             _component.withDriver(DUUIPodmanDriver.class);
             return _component;
         }
 
-        public DUUIPodmanDriver.Component withName(String name) {
-            _component.withName(name);
-            return this;
-        }
     }
 
 }

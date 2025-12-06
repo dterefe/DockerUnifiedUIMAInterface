@@ -85,29 +85,18 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
     }
 
 
-    public static class Component {
-        private DUUIPipelineComponent component;
-        private AnalysisEngineDescription _engine;
+    public static class Component extends IDUUIDriverInterface.ComponentBuilder<Component> {
+        private final AnalysisEngineDescription _engine;
 
         public Component(AnalysisEngineDescription desc) throws IOException, SAXException, URISyntaxException {
-            component = new DUUIPipelineComponent();
-            component.withEngine(desc);
+            super(new DUUIPipelineComponent());
+            _component.withEngine(desc);
             _engine = desc;
         }
 
         public Component(DUUIPipelineComponent pComponent) throws IOException, SAXException, URISyntaxException, InvalidXMLException {
-            component = pComponent;
+            super(pComponent);
             _engine = pComponent.getEngine();
-        }
-
-        /**
-         * Set the maximum concurrency-level for this component by instantiating the given number of replicas.
-         * @param scale Number of replicas.
-         * @return {@code this}
-         */
-        public Component withScale(int scale) {
-            component.withScale(scale);
-            return this;
         }
 
         /**
@@ -119,17 +108,7 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
          * is not yet supported.
          */
         public Component withWorkers(int workers) {
-            component.withScale(workers);
-            return this;
-        }
-
-        public Component withParameter(String key, String value) {
-            component.withParameter(key, value);
-            return this;
-        }
-
-        public Component withDescription(String description) {
-            component.withDescription(description);
+            _component.withScale(workers);
             return this;
         }
 
@@ -180,12 +159,12 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
         }
 
         public DUUIPipelineComponent build() throws IOException, SAXException {
-            component.withDriver(DUUIUIMADriver.class);
-            return component;
+            _component.withDriver(DUUIUIMADriver.class);
+            return _component;
         }
 
         public Component withName(String name) {
-            component.withName(name);
+            _component.withName(name);
             return this;
         }
     }
@@ -203,7 +182,7 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
     }
 
     static private String[] extractNames(AnalysisEngineDescription engine, String uuid, int recursionDepth) throws InvalidXMLException {
-        List<String> lst = new ArrayList<String>();
+        List<String> lst = new ArrayList<>();
         System.out.println(format("[UIMADriver][DEBUG][%s] Dumping annotator layout and parameters:", uuid));
         String offset = "";
         for (int i = 0; i < recursionDepth; i++) {
@@ -212,7 +191,7 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
         if (engine.isPrimitive()) {
             lst.add(offset + engine.getAnnotatorImplementationName());
             offset += " ";
-            Map<String, ConfigurationParameter> val = new HashMap<String, ConfigurationParameter>();
+            Map<String, ConfigurationParameter> val = new HashMap<>();
 
             for (ConfigurationParameter param : engine.getAnalysisEngineMetaData().getConfigurationParameterDeclarations().getConfigurationParameters()) {
                 val.put(param.getName(), param);
@@ -227,7 +206,7 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
                 lst.add(offset + "Type: " + param.getType());
                 Object result = valuesName.getValue();
                 switch (param.getType()) {
-                    case ConfigurationParameter.TYPE_FLOAT:
+                    case ConfigurationParameter.TYPE_FLOAT -> {
                         if (param.isMultiValued()) {
                             String serialized = "[";
                             for (float inner : (float[]) result) {
@@ -238,8 +217,8 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
                         } else {
                             lst.add(offset + "Value: " + String.valueOf((float) result));
                         }
-                        break;
-                    case ConfigurationParameter.TYPE_STRING:
+                    }
+                    case ConfigurationParameter.TYPE_STRING -> {
                         if (param.isMultiValued()) {
                             String serialized = "[";
                             for (String inner : (String[]) result) {
@@ -250,8 +229,8 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
                         } else {
                             lst.add(offset + "Value: " + (String) result);
                         }
-                        break;
-                    case ConfigurationParameter.TYPE_BOOLEAN:
+                    }
+                    case ConfigurationParameter.TYPE_BOOLEAN -> {
                         if (param.isMultiValued()) {
                             String serialized = "[";
                             for (Boolean inner : (Boolean[]) result) {
@@ -262,8 +241,8 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
                         } else {
                             lst.add(offset + "Value: " + String.valueOf((Boolean) result));
                         }
-                        break;
-                    case ConfigurationParameter.TYPE_INTEGER:
+                    }
+                    case ConfigurationParameter.TYPE_INTEGER -> {
                         if (param.isMultiValued()) {
                             String serialized = "[";
                             for (Integer inner : (Integer[]) result) {
@@ -274,9 +253,8 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
                         } else {
                             lst.add(offset + "Value: " + String.valueOf((Integer) result));
                         }
-                        break;
-                    default:
-                        throw new InvalidXMLException();
+                    }
+                    default -> throw new InvalidXMLException();
                 }
                 lst.add("");
             }

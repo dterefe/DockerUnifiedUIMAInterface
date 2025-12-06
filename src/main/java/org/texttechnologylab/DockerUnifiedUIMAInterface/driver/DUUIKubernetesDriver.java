@@ -8,8 +8,8 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
-import java.nio.file.Path;
 import java.security.InvalidParameterException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -18,23 +18,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.compress.compressors.CompressorException;
-import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
-import org.apache.uima.resource.ResourceInitializationException;
-import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.InvalidXMLException;
-import org.javatuples.Triplet;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
 import org.xml.sax.SAXException;
 
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -54,15 +44,13 @@ import static io.fabric8.kubernetes.client.impl.KubernetesClientImpl.logger;
  *
  * @author Markos Genios, Filip Fitzermann
  */
-public class DUUIKubernetesDriver implements IDUUIDriverInterface {
+public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, DUUIKubernetesDriver.InstantiatedComponent> {
 
     private final KubernetesClient _kube_client;
 
-    private HashMap<String, InstantiatedComponent> _active_components;
-    private DUUILuaContext _luaContext;
+    private final HashMap<String, InstantiatedComponent> _active_components;
     private final DUUIDockerInterface _interface;
-    private HttpClient _client;
-    private int _container_timeout;
+    private final HttpClient _client;
 
     private int iScaleBuffer = 0;
 
@@ -80,7 +68,7 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
 
         _interface = new DUUIDockerInterface();
 
-        _container_timeout = 1000;
+        _timeout = Duration.ofMillis(1_000);
         _client = HttpClient.newHttpClient();
 
         _active_components = new HashMap<>();
@@ -101,8 +89,8 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
     }
 
     @Override
-    public void setLuaContext(DUUILuaContext luaContext) {
-        _luaContext = luaContext;
+    protected Map<String, InstantiatedComponent> getActiveComponents() {
+        return _active_components;
     }
 
     @Override
@@ -301,12 +289,27 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
 //            });
         final String uuidCopy = uuid;
         IDUUICommunicationLayer layer = null;
+        
+        String prefix = String.format("[DUUIKubernetesDriver][%s][Replicas %d]", uuidCopy.substring(0, 5) + "...", comp.getScale());
+        String kubeUrl = _interface.getHostUrl(port);
 
         try {
+
+
+
+            DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
+                kubeUrl,
+                jc,
+                _timeout,
+                _client,
+                _luaContext,
+                skipVerification,
+                prefix
+            );
+
             System.out.println("Port " + port);
-            layer = DUUIDockerDriver.responsiveAfterTime("http://localhost:" + port, jc, _container_timeout, _client, (msg) -> {
-                System.out.printf("[KubernetesDriver][%s][%d Replicas] %s\n", uuidCopy, comp.getScale(), msg);
-            }, _luaContext, skipVerification);
+            layer = get_communication_layer(requestContext);
+
         } catch (Exception e) {
             deleteDeployment("a" + uuid);
             deleteService("a" + uuid);
@@ -314,7 +317,9 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         }
 
 
-        System.out.printf("[KubernetesDriver][%s][%d Replicas] Service for image %s is online (URL http://localhost:%d) and seems to understand DUUI V1 format!\n", uuid, comp.getScale(), comp.getImageName(), port);
+        System.out.printf("%s Service for image %s is online (URL %s) and seems to understand DUUI V1 format!\n", 
+            prefix, comp.getImageName(), kubeUrl
+        );
 
         comp.initialise(port, layer, this);
         Thread.sleep(500);
@@ -350,49 +355,6 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         }
     }
 
-    @Override
-    public void printConcurrencyGraph(String uuid) {
-
-    }
-
-    @Override
-    public TypeSystemDescription get_typesystem(String uuid) throws InterruptedException, IOException, SAXException, CompressorException, ResourceInitializationException {
-        InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        return IDUUIInstantiatedPipelineComponent.getTypesystem(uuid, comp);
-    }
-
-    /**
-     * init reader component
-     * @param uuid
-     * @param filePath
-     * @return
-     */
-    @Override
-    public int initReaderComponent(String uuid, Path filePath) {
-        InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        return IDUUIInstantiatedPipelineReaderComponent.initComponent(comp, filePath);
-    }
-
-    @Override
-    public void run(String uuid, JCas aCas, DUUIPipelineDocumentPerformance perf, DUUIComposer composer) throws CASException, PipelineComponentException, CompressorException, IOException, InterruptedException, SAXException, CommunicationLayerException {
-        InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-
-        if (comp.isWebsocket()) {
-            IDUUIInstantiatedPipelineComponent.process_handler(aCas, comp, perf);
-        } else {
-            IDUUIInstantiatedPipelineComponent.process(aCas, comp, perf);
-        }
-    }
-
     /**
      * Deletes both the deployment and the service from the kubernetes cluster, if they exist.
      *
@@ -424,91 +386,60 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
      *
      * @author Markos Genios
      */
-    public static class ComponentInstance implements IDUUIUrlAccessible {
-        private String _pod_ip;
-        private IDUUICommunicationLayer _communicationLayer;
-
-        /**
-         * Constructor.
-         *
-         * @param pod_ip
-         * @param communicationLayer
-         */
-        public ComponentInstance(String pod_ip, IDUUICommunicationLayer communicationLayer) {
-            _pod_ip = pod_ip;
-            _communicationLayer = communicationLayer;
+    private static record ComponentInstance(
+            String _container_id,
+            String _pod_ip,
+            IDUUICommunicationLayer _communicationLayer
+    ) implements IDUUIUrlAccessible {
+        @Override
+        public String getUniqueInstanceKey() {
+            return _container_id;
         }
 
-        /**
-         * @return
-         */
-        public IDUUICommunicationLayer getCommunicationLayer() {
-            return _communicationLayer;
-        }
         @Override
         public String generateURL() {
             return _pod_ip;
         }
+        
+        @Override
+        public IDUUICommunicationLayer getCommunicationLayer() {
+            return _communicationLayer;
+        }
     }
 
-    static class InstantiatedComponent implements IDUUIInstantiatedPipelineComponent {
+    protected static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent> {
 
         private String _image_name;
         private int _service_port;
+
         private boolean _gpu;
-        private final ConcurrentLinkedQueue<ComponentInstance> _components;
         private boolean _keep_running_after_exit;
-        private int _scale;
         private boolean _withImageFetching;
-        private Map<String, String> _parameters;
-        private String _sourceView;
-        private String _targetView;
-        private DUUIPipelineComponent _component;
 
-        private final boolean _websocket;
-
-        private int _ws_elements;  // Dieses Attribut wird irgendwie dem _wsclient-String am Ende angeheftet. Ka wieso.
         private List<String> _labels;
-        private String _uniqueComponentKey = "";
 
-        InstantiatedComponent(DUUIPipelineComponent comp, String uniqueComponentKey) {
-            _component = comp;
-            _uniqueComponentKey = uniqueComponentKey;
-            _image_name = comp.getDockerImageName();
-            _parameters = comp.getParameters();
-            _targetView = comp.getTargetView();
-            _sourceView = comp.getSourceView();
+        InstantiatedComponent(DUUIPipelineComponent component, String uniqueComponentKey) {
+            super(component, uniqueComponentKey);
+
+            _image_name = component.getDockerImageName();
             if (_image_name == null) {
                 throw new InvalidParameterException("The image name was not set! This is mandatory for the DockerLocalDriver Class.");
             }
-            _withImageFetching = comp.getDockerImageFetching(false);
+            
+            _withImageFetching = component.getDockerImageFetching(false);
+            _gpu = component.getDockerGPU(false);
+            _keep_running_after_exit = component.getDockerRunAfterExit(false);
 
-            _scale = comp.getScale(1);
-
-            _gpu = comp.getDockerGPU(false);
-
-            _labels = comp.getConstraints();
-
-            _keep_running_after_exit = comp.getDockerRunAfterExit(false);
-
-            _components = new ConcurrentLinkedQueue<>();
-
-            _ws_elements = comp.getWebsocketElements();
-
-            _websocket = comp.isWebsocket();
+            
+            _labels = component.getConstraints();
         }
 
         public InstantiatedComponent initialise(int service_port, IDUUICommunicationLayer layer, DUUIKubernetesDriver kubeDriver) throws IOException, InterruptedException {
             _service_port = service_port;
 
-            if (_websocket) {
-                kubeDriver._wsclient = new DUUIWebsocketAlt(
-                    getServiceUrl().replaceFirst("http", "ws") + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS_WEBSOCKET, _ws_elements);
-            } else {
-                kubeDriver._wsclient = null;
-            }
             for (int i = 0; i < _scale; i++) {
-                _components.add(new ComponentInstance(getServiceUrl(), layer.copy(), kubeDriver._wsclient));
+                String _container_id = UUID.randomUUID().toString();
+                _components.add(new ComponentInstance(_container_id, getServiceUrl(), layer.copy()));
 
             }
             return this;
@@ -519,44 +450,6 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
          */
         public String getServiceUrl() {
             return format("http://localhost:%d", _service_port);
-        }
-
-        /**
-         * @return pipeline component.
-         */
-        @Override
-        public DUUIPipelineComponent getPipelineComponent() {
-            return _component;
-        }
-
-        @Override
-        public Triplet<IDUUIUrlAccessible, Long, Long> getComponent() {
-            long mutexStart = System.nanoTime();
-            ComponentInstance inst = _components.poll();
-            while (inst == null) {
-                inst = _components.poll();
-            }
-            long mutexEnd = System.nanoTime();
-            return Triplet.with(inst, mutexStart, mutexEnd);
-        }
-
-        @Override
-        public void addComponent(IDUUIUrlAccessible item) {
-            _components.add((ComponentInstance) item);
-        }
-
-        @Override
-        public Map<String, String> getParameters() {
-            return _parameters;
-        }
-
-        public String getSourceView() {return _sourceView; }
-
-        public String getTargetView() {return _targetView; }
-
-        @Override
-        public String getUniqueComponentKey() {
-            return _uniqueComponentKey;
         }
 
         public boolean getRunningAfterExit() {
@@ -571,27 +464,12 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         }
 
         /**
-         * @return number of processes/threads/pods
-         */
-        public int getScale() {
-            return _scale;
-        }
-
-        /**
          * sets the service port.
          *
          * @param servicePort
          */
         public void set_service_port(int servicePort) {
             this._service_port = servicePort;
-        }
-
-        public int getWebsocketElements() {
-            return _ws_elements;
-        }
-
-        public boolean isWebsocket() {
-            return _websocket;
         }
 
         /**

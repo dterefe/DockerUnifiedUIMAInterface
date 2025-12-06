@@ -17,7 +17,10 @@ public interface IDUUIUrlAccessible {
      * Returns the connection handler for accessing connectors.
      * @return
      */
-    public IDUUIConnectionHandler getHandler();
+    @Deprecated
+    default IDUUIConnectionHandler getHandler() {
+        throw new UnsupportedOperationException("Connection handler is not available for this component.");
+    }
 
     /**
      * Returns the communication layer.

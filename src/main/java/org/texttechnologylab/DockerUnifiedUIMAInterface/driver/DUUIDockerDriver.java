@@ -14,8 +14,6 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIFallbackCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
@@ -49,7 +47,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
 import static java.lang.String.format;
-import static org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.getLocalhost;
 
 /**
  * Interface for all drivers
@@ -68,7 +65,6 @@ interface ResponsiveMessageCallback {
 public class DUUIDockerDriver implements IDUUIDriverInterface {
     private DUUIDockerInterface _interface;
     private HttpClient _client;
-    private IDUUIConnectionHandler _wsclient;
 
     private HashMap<String, InstantiatedComponent> _active_components;
     private int _container_timeout;
@@ -578,23 +574,17 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
     public static class ComponentInstance implements IDUUIUrlAccessible {
         private String _container_id;
         private int _port;
-        private IDUUIConnectionHandler _handler;
         private IDUUICommunicationLayer _communicationLayer;
         private String _baseUrl;
 
         public ComponentInstance(String id, int port, IDUUICommunicationLayer communicationLayer) {
-            this(id, port, communicationLayer, null, DUUIComposer.getLocalhost() + ":" + port);
+            this(id, port, communicationLayer, DUUIComposer.getLocalhost() + ":" + port);
         }
 
-        public ComponentInstance(String id, int port, IDUUICommunicationLayer layer, IDUUIConnectionHandler handler) {
-            this(id, port, layer, handler, DUUIComposer.getLocalhost() + ":" + port);
-        }
-
-        public ComponentInstance(String id, int port, IDUUICommunicationLayer layer, IDUUIConnectionHandler handler, String baseUrl) {
+        public ComponentInstance(String id, int port, IDUUICommunicationLayer layer, String baseUrl) {
             _container_id = id;
             _port = port;
             _communicationLayer = layer;
-            _handler = handler;
             _baseUrl = baseUrl;
         }
 
@@ -622,9 +612,6 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
             return _container_id;
         }
 
-        public IDUUIConnectionHandler getHandler() {
-            return _handler;
-        }
     }
 
     static class InstantiatedComponent implements IDUUIInstantiatedPipelineComponent {

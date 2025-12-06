@@ -1,12 +1,26 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
-import io.fabric8.kubernetes.api.model.*;
-import io.fabric8.kubernetes.api.model.apps.Deployment;
-import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
-import io.fabric8.kubernetes.client.DefaultKubernetesClient;
-import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.kubernetes.client.KubernetesClientBuilder;
+import java.io.IOException;
+import static java.lang.String.format;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.net.URISyntaxException;
+import java.net.http.HttpClient;
+import java.nio.file.Path;
+import java.security.InvalidParameterException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
@@ -17,28 +31,23 @@ import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.xml.sax.SAXException;
 
-import java.io.IOException;
-import java.net.InterfaceAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
-import java.net.URISyntaxException;
-import java.net.http.HttpClient;
-import java.nio.file.Path;
-import java.security.InvalidParameterException;
-import java.util.*;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
-
+import io.fabric8.kubernetes.api.model.IntOrString;
+import io.fabric8.kubernetes.api.model.NodeSelectorRequirement;
+import io.fabric8.kubernetes.api.model.NodeSelectorTerm;
+import io.fabric8.kubernetes.api.model.Service;
+import io.fabric8.kubernetes.api.model.ServiceBuilder;
+import io.fabric8.kubernetes.api.model.apps.Deployment;
+import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
+import io.fabric8.kubernetes.client.DefaultKubernetesClient;
+import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import static io.fabric8.kubernetes.client.impl.KubernetesClientImpl.logger;
-import static java.lang.String.format;
 
 /**
  * Driver for the running of components in Kubernetes
@@ -54,8 +63,6 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
     private final DUUIDockerInterface _interface;
     private HttpClient _client;
     private int _container_timeout;
-
-    private IDUUIConnectionHandler _wsclient;
 
     private int iScaleBuffer = 0;
 
@@ -419,7 +426,6 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
      */
     public static class ComponentInstance implements IDUUIUrlAccessible {
         private String _pod_ip;
-        private IDUUIConnectionHandler _handler;
         private IDUUICommunicationLayer _communicationLayer;
 
         /**
@@ -439,29 +445,9 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         public IDUUICommunicationLayer getCommunicationLayer() {
             return _communicationLayer;
         }
-
-        /**
-         * Constructor
-         * Sets:
-         *
-         * @param pod_ip
-         * @param layer
-         * @param handler
-         * @author Markos Genios
-         */
-        public ComponentInstance(String pod_ip, IDUUICommunicationLayer layer, IDUUIConnectionHandler handler) {
-            _pod_ip = pod_ip;
-            _communicationLayer = layer;
-            _handler = handler;
-        }
-
         @Override
         public String generateURL() {
             return _pod_ip;
-        }
-
-        public IDUUIConnectionHandler getHandler() {
-            return _handler;
         }
     }
 
@@ -632,8 +618,7 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
      *
      * @author Markos Genios
      */
-    public static class Component {
-        private DUUIPipelineComponent _component;  // Dieses Attribut wird letztlich der Methode "instantiate" übergeben.
+    public static class Component extends IDUUIDriverInterface.ComponentBuilder<Component> {
 
         /**
          * Constructor. Creates Instance of Class Component.
@@ -643,7 +628,7 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
          * @throws IOException
          */
         public Component(String globalRegistryImageName) throws URISyntaxException, IOException {
-            _component = new DUUIPipelineComponent();
+            super(new DUUIPipelineComponent());
             _component.withDockerImageName(globalRegistryImageName);
         }
 
@@ -663,37 +648,6 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         }
 
         /**
-         * Sets the number of processes.
-         *
-         * @param scale
-         * @return
-         */
-        public Component withScale(int scale) {
-            _component.withScale(scale);
-            return this;
-        }
-
-        public Component withParameter(String key, String value) {
-            _component.withParameter(key, value);
-            return this;
-        }
-
-        public Component withView(String viewName) {
-            _component.withView(viewName);
-            return this;
-        }
-
-        public Component withSourceView(String viewName) {
-            _component.withSourceView(viewName);
-            return this;
-        }
-
-        public Component withTargetView(String viewName) {
-            _component.withTargetView(viewName);
-            return this;
-        }
-
-        /**
          * Builds the component.
          *
          * @return
@@ -701,11 +655,6 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
         public DUUIPipelineComponent build() {
             _component.withDriver(DUUIKubernetesDriver.class);
             return _component;
-        }
-
-        public Component withName(String name) {
-            _component.withName(name);
-            return this;
         }
     }
 }

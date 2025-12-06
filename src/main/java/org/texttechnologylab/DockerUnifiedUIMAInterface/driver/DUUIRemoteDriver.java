@@ -10,8 +10,6 @@ import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUICompressionHelper;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
@@ -30,6 +28,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
+
 /**
  *
  * @author Alexander Leonhardt
@@ -37,35 +37,33 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class DUUIRemoteDriver implements IDUUIDriverInterface {
     private HashMap<String, InstantiatedComponent> _components;
     private HttpClient _client;
-    private IDUUIConnectionHandler _wsclient = null;
     private DUUICompressionHelper _helper;
     private DUUILuaContext _luaContext;
 
 
-    public static class Component {
-        private DUUIPipelineComponent component;
+    public static class Component extends IDUUIDriverInterface.ComponentBuilder<Component>  {
 
         public Component(String url) throws URISyntaxException, IOException {
-            component = new DUUIPipelineComponent();
-            component.withUrl(url);
+            super(new DUUIPipelineComponent());
+            _component.withUrl(url);
         }
 
         public Component(String... url) throws URISyntaxException, IOException {
-            component = new DUUIPipelineComponent();
+            super(new DUUIPipelineComponent());
             List<String> pList = new ArrayList<>();
             for (String s : url) {
                 pList.add(s);
             }
-            component.withUrls(pList);
+            _component.withUrls(pList);
         }
 
         public Component(List<String> urls) throws URISyntaxException, IOException {
-            component = new DUUIPipelineComponent();
-            component.withUrls(urls);
+            super(new DUUIPipelineComponent());
+            _component.withUrls(urls);
         }
 
         public Component(DUUIPipelineComponent pComponent) throws URISyntaxException, IOException {
-            component = pComponent;
+            super(pComponent);
         }
 
 
@@ -83,78 +81,18 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
                             "To achieve component-level concurrency, supply multiple (different) URL endpoints " +
                             "to the constructor instead!%n"
             );
-            component.withWorkers(scale);
-            return this;
-        }
-
-        /**
-         * Set the maximum concurrency-level for this component by instantiating the given number of replicas per URL.
-         * @param workers Number of replicas per given URL.
-         * @return {@code this}
-         */
-        public Component withWorkers(int workers) {
-            component.withWorkers(workers);
+            _component.withWorkers(scale);
             return this;
         }
 
         public Component withIgnoring200Error(boolean bValue) {
-            component.withIgnoringHTTP200Error(bValue);
-            return this;
-        }
-
-        public Component withDescription(String description) {
-            component.withDescription(description);
-            return this;
-        }
-
-        public Component withParameter(String key, String value) {
-            component.withParameter(key, value);
-            return this;
-        }
-
-        public Component withView(String viewName) {
-            component.withView(viewName);
-            return this;
-        }
-
-        public Component withSourceView(String viewName) {
-            component.withSourceView(viewName);
-            return this;
-        }
-
-        public Component withTargetView(String viewName) {
-            component.withTargetView(viewName);
-            return this;
-        }
-
-        public Component withWebsocket(boolean b) {
-            component.withWebsocket(b);
-            return this;
-        }
-
-        public Component withWebsocket(boolean b, int elements) {
-            component.withWebsocket(b, elements);
-            return this;
-        }
-
-        public Component withSegmentationStrategy(DUUISegmentationStrategy strategy) {
-            component.withSegmentationStrategy(strategy);
-            return this;
-        }
-
-        public <T extends DUUISegmentationStrategy> Component withSegmentationStrategy(Class<T> strategyClass) throws InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
-            component.withSegmentationStrategy(strategyClass.getDeclaredConstructor().newInstance());
+            _component.withIgnoringHTTP200Error(bValue);
             return this;
         }
 
         public DUUIPipelineComponent build() {
-            component.withDriver(DUUIRemoteDriver.class);
-            return component;
-        }
-
-        public Component withName(String name) {
-            component.withName(name);
-            return this;
+            _component.withDriver(DUUIRemoteDriver.class);
+            return _component;
         }
     }
 
@@ -164,18 +102,10 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
 
     private static class ComponentInstance implements IDUUIUrlAccessible {
         String _url;
-        IDUUIConnectionHandler _handler;
         IDUUICommunicationLayer _communication_layer;
 
         ComponentInstance(String val, IDUUICommunicationLayer layer) {
             _url = val;
-            _communication_layer = layer;
-            _handler = null;
-        }
-
-        ComponentInstance(String val, IDUUICommunicationLayer layer, IDUUIConnectionHandler handler) {
-            _url = val;
-            _handler = handler;
             _communication_layer = layer;
         }
 
@@ -187,91 +117,30 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
             return _url;
         }
 
-        public IDUUIConnectionHandler getHandler() {
-            return _handler;
-        }
     }
 
-    private static class InstantiatedComponent implements IDUUIInstantiatedPipelineComponent {
+    private static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent> {
+        
         private final List<String> _urls;
-        private int _maximum_concurrency;
-        private ConcurrentLinkedQueue<ComponentInstance> _components;
-        private final String _uniqueComponentKey;
-        private Map<String, String> _parameters;
-        private String _sourceView;
-        private String _targetView;
-        private final DUUIPipelineComponent _component;
-        private boolean _websocket;
-        private int _ws_elements;
 
-        public Triplet<IDUUIUrlAccessible, Long, Long> getComponent() {
-            long mutexStart = System.nanoTime();
-            ComponentInstance inst = _components.poll();
-            while (inst == null) {
-                inst = _components.poll();
-            }
-            long mutexEnd = System.nanoTime();
-            return Triplet.with(inst, mutexStart, mutexEnd);
-        }
+        public InstantiatedComponent(DUUIPipelineComponent component, String uniqueComponentKey) {
+            super(component, uniqueComponentKey);
 
-        public void addComponent(IDUUIUrlAccessible item) {
-            _components.add((ComponentInstance) item);
-        }
-
-
-        public InstantiatedComponent(DUUIPipelineComponent comp, String uniqueComponentKey) {
-            _component = comp;
-            _uniqueComponentKey = uniqueComponentKey;
-            _urls = comp.getUrl();
-            if (_urls == null || _urls.size() == 0) {
+            _urls = component.getUrl();
+            if (_urls == null || _urls.isEmpty()) {
                 throw new InvalidParameterException("Missing parameter URL in the pipeline component descriptor");
             }
-
-            _parameters = comp.getParameters();
-            _targetView = comp.getTargetView();
-            _sourceView = comp.getSourceView();
-
-            _maximum_concurrency = comp.getWorkers(1);
-            _components = new ConcurrentLinkedQueue<>();
-            _websocket = comp.isWebsocket();
-            _ws_elements = comp.getWebsocketElements();
         }
 
-        public DUUIPipelineComponent getPipelineComponent() {
-            return _component;
-        }
-
-        public String getUniqueComponentKey() {
-            return _uniqueComponentKey;
-        }
-
+        @Override
         public int getScale() {
-            return _maximum_concurrency;
-        }
-
-        public int getWorkers() {
-            return _maximum_concurrency;
+            return getWorkers();
         }
 
         public List<String> getUrls() {
             return _urls;
         }
 
-        public Map<String, String> getParameters() {
-            return _parameters;
-        }
-
-        public String getSourceView() {return _sourceView; }
-
-        public String getTargetView() {return _targetView; }
-
-        public boolean isWebsocket() {
-            return _websocket;
-        }
-
-        public int getWebsocketElements() {
-            return _ws_elements;
-        }
     }
 
     public DUUIRemoteDriver(int timeout) {
@@ -308,18 +177,6 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
         for (String url : comp.getUrls()) {
             if (shutdown.get()) return null;
 
-            /**
-             * @see
-             * @edited
-             * Dawit Terefe
-             *
-             * Starts the websocket connection.
-             */
-            if (comp.isWebsocket()) {
-                String websocketUrl = url.replaceFirst("http", "ws")
-                    + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS_WEBSOCKET;
-                _wsclient = new DUUIWebsocketAlt(websocketUrl, comp.getWebsocketElements());
-            }
             IDUUICommunicationLayer layer = DUUIDockerDriver.responsiveAfterTime(url, jc, 100000, _client, (msg) -> {
                 System.out.printf("[RemoteDriver][%s] %s\n", uuidCopy, msg);
             }, _luaContext, skipVerification);
@@ -330,15 +187,7 @@ public class DUUIRemoteDriver implements IDUUIDriverInterface {
                 added_communication_layer = true;
             }
             for (int i = 0; i < comp.getWorkers(); i++) {
-                /**
-                 * @see
-                 * @edited
-                 * Dawit Terefe
-                 *
-                 * Saves websocket client in ComponentInstance for
-                 * retrieval in process_handler-function.
-                 */
-                comp.addComponent(new ComponentInstance(url, layer.copy(), _wsclient));
+                comp.addComponent(new ComponentInstance(url, layer.copy()));
             }
             _components.put(uuid, comp);
             System.out.printf("[RemoteDriver][%s] Remote URL %s is online and seems to understand DUUI V1 format!\n", uuid, url);

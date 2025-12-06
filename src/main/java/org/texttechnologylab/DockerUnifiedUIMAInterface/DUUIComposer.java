@@ -44,7 +44,6 @@ import org.apache.uima.util.InvalidXMLException;
 import org.luaj.vm2.Globals;
 import org.luaj.vm2.lib.jse.JsePlatform;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.composer.DUUISegmentedWorker;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPipelineComponent;
@@ -849,9 +848,6 @@ public class DUUIComposer {
     public static final String V1_COMPONENT_ENDPOINT_TYPESYSTEM = "/v1/typesystem";
     public static final String V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER = "/v1/communication_layer";
 
-    public static List<IDUUIConnectionHandler> _clients = new ArrayList<>(); // Saves Websocket-Clients.
-    private boolean _connection_open = false; // Let connection open for multiple consecutive use.
-
     public enum DebugLevel {
         TRACE,
         DEBUG,
@@ -998,9 +994,9 @@ public class DUUIComposer {
      * @param open
      * @return this, for method chaining
      */
+    @Deprecated
     public DUUIComposer withOpenConnection(boolean open) {
-        _connection_open = open;
-        return this;
+        throw new RuntimeException("withOpenConnection is deprecated and has no effect anymore!");
     }
 
     /**
@@ -2057,11 +2053,6 @@ public class DUUIComposer {
         if (_storage != null) {
             addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down storage.");
             _storage.shutdown();
-        }
-
-
-        if (!_connection_open) {
-            _clients.forEach(IDUUIConnectionHandler::close);
         }
 
         try {

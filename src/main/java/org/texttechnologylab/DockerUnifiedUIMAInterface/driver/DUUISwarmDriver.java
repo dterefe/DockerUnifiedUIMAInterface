@@ -14,6 +14,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
@@ -42,7 +43,6 @@ import static java.lang.String.format;
 public class DUUISwarmDriver implements IDUUIDriverInterface {
     private final DUUIDockerInterface _interface;
     private HttpClient _client;
-    private IDUUIConnectionHandler _wsclient;
     private final HashMap<String, DUUISwarmDriver.InstantiatedComponent> _active_components;
     private int _container_timeout;
     private DUUILuaContext _luaContext;
@@ -260,30 +260,23 @@ public class DUUISwarmDriver implements IDUUIDriverInterface {
 
     private static class ComponentInstance implements IDUUIUrlAccessible {
         String _host;
-        IDUUIConnectionHandler _handler;
         IDUUICommunicationLayer _communication_layer;
 
-        public ComponentInstance(String url, IDUUICommunicationLayer layer) {
+        public ComponentInstance(String url) {
             _host = url;
-            _communication_layer = layer;
         }
 
         public IDUUICommunicationLayer getCommunicationLayer() {
             return _communication_layer;
         }
 
-        public ComponentInstance(String url, IDUUICommunicationLayer layer, IDUUIConnectionHandler handler) {
+        public ComponentInstance(String url, IDUUICommunicationLayer layer) {
             _host = url;
             _communication_layer = layer;
-            _handler = handler;
         }
 
         public String generateURL() {
             return _host;
-        }
-
-        public IDUUIConnectionHandler getHandler() {
-            return _handler;
         }
     }
 

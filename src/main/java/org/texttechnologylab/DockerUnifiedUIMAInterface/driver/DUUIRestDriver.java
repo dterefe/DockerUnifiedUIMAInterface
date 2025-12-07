@@ -67,15 +67,19 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
      * @param request HttpRequest that is sent
      * @param deadline Deadline after which results are ignored
      * @param timeout Timeout applied to every request
+     * @param retryDelay Delay before resending failed request
+     * @param max_http_retries Amount of retries on failed request. 
      * @param prefix Log prefix of the calling driver to enhance logging.
      * @return  HttpResponse
      * @throws Exception
      */
-    static HttpResponse<byte[]> sendWithRetries(
+    public static HttpResponse<byte[]> sendWithRetries(
             HttpClient client,
             HttpRequest request,
             Instant deadline,
             Duration timeout,
+            Duration retryDelay,
+            int max_http_retries,
             String prefix) throws Exception {
         int attempts = 0;
         while (Instant.now().isBefore(deadline)) {
@@ -107,12 +111,12 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                             ce.getCause().getMessage()
                     );
                 }
-                if (attempts >= MAX_HTTP_RETRIES) {
+                if (attempts >= max_http_retries) {
                     throw new CommunicationLayerException(format("%s The endpoint (%s) could not provide a response after #%d tries.",
                         prefix, request.uri(), attempts
                     ), e);
                 }
-                Thread.sleep(RETRY_DELAY.toMillis());
+                Thread.sleep(retryDelay.toMillis());
             }
         }
         throw new TimeoutException(
@@ -120,6 +124,16 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             prefix, request.uri(), timeout.toMillis()
         ));
     }
+
+    static HttpResponse<byte[]> sendWithRetries(
+        HttpClient client,
+        HttpRequest request,
+        Instant deadline,
+        Duration timeout,
+        String prefix) throws Exception {
+        return sendWithRetries(client, request, deadline, timeout, RETRY_DELAY, MAX_HTTP_RETRIES, prefix);
+    }
+
 
     /**
      * Helper to cut of long respone bodies.
@@ -462,7 +476,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
      * Base class for REST-based instantiated components. 
      * Provides general access methods to the {@code DUUIPipelineComponent}.
      */
-    abstract static class IDUUIInstantiatedRestComponent<InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent>> implements IDUUIInstantiatedPipelineComponent {
+    abstract static class IDUUIInstantiatedRestComponent<IC extends IDUUIInstantiatedRestComponent<IC>> implements IDUUIInstantiatedPipelineComponent {
         
         protected final DUUIPipelineComponent _component;
 

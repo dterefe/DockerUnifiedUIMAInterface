@@ -1,8 +1,9 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
-import java.io.IOException;
 import static java.lang.String.format;
+
+import java.io.IOException;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.security.InvalidParameterException;
@@ -19,7 +20,6 @@ import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 
@@ -211,13 +211,13 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
     }
 
     private static record ComponentInstance(
-            String _container_id,
+            String _identifier,
             String _host, 
             IDUUICommunicationLayer _communicationLayer
     ) implements IDUUIUrlAccessible {
         @Override
         public String getUniqueInstanceKey() {
-            return _container_id;
+            return _identifier;
         }
 
         @Override
@@ -231,7 +231,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
         }
     }
 
-    protected static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent>  {
+    protected static class InstantiatedComponent extends DUUIRestDriver.IDUUIInstantiatedRestComponent<InstantiatedComponent>  {
         private final String _image_name;
         private String _service_id;
         private int _service_port;
@@ -293,8 +293,12 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             _service_id = service_id;
             _service_port = container_port;
             for (int i = 0; i < _scale; i++) {
-                String _container_id = UUID.randomUUID().toString();
-                _components.add(new ComponentInstance(_container_id, getServiceUrl(), layer.copy()));
+                String instanceIdentifier = "%s-%s-Replica-%d".formatted(
+                    getName(),                          
+                    _uniqueComponentKey.substring(0, 5),
+                    i + 1                               
+                );
+                _components.add(new ComponentInstance(instanceIdentifier, getServiceUrl(), layer.copy()));
 
             }
             return this;

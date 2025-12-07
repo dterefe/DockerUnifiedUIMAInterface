@@ -17,7 +17,6 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUICompressionHelper;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
 
 /**
  *
@@ -91,8 +90,13 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
                 added_communication_layer = true;
             }
             for (int i = 0; i < comp.getWorkers(); i++) {
-                String instance_id = UUID.randomUUID().toString();
-                comp.addComponent(new ComponentInstance(instance_id, url, layer.copy()));
+                String instanceIdentifier = "%s-%s-Endpoint-%d-Worker-%d".formatted(
+                    comp.getName(),
+                    uuidCopy.substring(0, 5),
+                    endpointIndex,
+                    i + 1 
+                );
+                comp.addComponent(new ComponentInstance(instanceIdentifier, url, layer.copy()));
             }
             _components.put(uuid, comp);
             System.out.printf("[RemoteDriver][%s] Remote URL %s is online and seems to understand DUUI V1 format!\n", uuid, url);
@@ -169,13 +173,13 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
 
 
     private static record ComponentInstance(
-            String _host_id,
+            String _identifier,
             String _url, 
             IDUUICommunicationLayer _communicationLayer
     ) implements IDUUIUrlAccessible {
         @Override
         public String getUniqueInstanceKey() {
-            return _host_id;
+            return _identifier;
         }
 
         @Override
@@ -189,7 +193,7 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
         }
     }
 
-    protected static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent> {
+    protected static class InstantiatedComponent extends DUUIRestDriver.IDUUIInstantiatedRestComponent<InstantiatedComponent> {
         
         private final List<String> _urls;
 

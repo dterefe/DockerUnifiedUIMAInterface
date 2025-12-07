@@ -1,8 +1,10 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
-import java.io.IOException;
+import static io.fabric8.kubernetes.client.impl.KubernetesClientImpl.logger;
 import static java.lang.String.format;
+
+import java.io.IOException;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
@@ -24,7 +26,6 @@ import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
 import org.xml.sax.SAXException;
 
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -37,7 +38,6 @@ import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.DefaultKubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
-import static io.fabric8.kubernetes.client.impl.KubernetesClientImpl.logger;
 
 /**
  * Driver for the running of components in Kubernetes
@@ -387,13 +387,13 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
      * @author Markos Genios
      */
     private static record ComponentInstance(
-            String _container_id,
+            String _identifier,
             String _pod_ip,
             IDUUICommunicationLayer _communicationLayer
     ) implements IDUUIUrlAccessible {
         @Override
         public String getUniqueInstanceKey() {
-            return _container_id;
+            return _identifier;
         }
 
         @Override
@@ -407,7 +407,7 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
         }
     }
 
-    protected static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent> {
+    protected static class InstantiatedComponent extends DUUIRestDriver.IDUUIInstantiatedRestComponent<InstantiatedComponent> {
 
         private String _image_name;
         private int _service_port;
@@ -438,8 +438,12 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
             _service_port = service_port;
 
             for (int i = 0; i < _scale; i++) {
-                String _container_id = UUID.randomUUID().toString();
-                _components.add(new ComponentInstance(_container_id, getServiceUrl(), layer.copy()));
+                String instanceIdentifier = "%s-%s-Pod-%d".formatted(
+                    getName(),                          
+                    _uniqueComponentKey.substring(0, 5),
+                    i + 1                               
+                );
+                _components.add(new ComponentInstance(instanceIdentifier, getServiceUrl(), layer.copy()));
 
             }
             return this;

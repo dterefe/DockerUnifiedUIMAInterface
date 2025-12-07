@@ -1,9 +1,11 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import static java.lang.String.format;
+import static org.awaitility.Awaitility.await;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import static java.lang.String.format;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.security.InvalidParameterException;
@@ -17,7 +19,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.InvalidXMLException;
-import static org.awaitility.Awaitility.await;
 import org.json.JSONObject;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
@@ -287,10 +288,10 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
                         String containerUrl = resolveHostUrl(port);
 
-                        final int iCopy = i;
+                        final int iCopy = i + 1;
                         final String uuidCopy = uuid;
                         String prefix = String.format("[PodmanDriver][%s][DocPodmanker Replication %d/%d]"
-                            , uuidCopy.substring(0, 5) + "...", iCopy + 1, comp.getScale()
+                            , uuidCopy.substring(0, 5) + "...", iCopy, comp.getScale()
                         );
 
                         DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
@@ -312,9 +313,15 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
                         // Add one replica of the instantiated component per worker
                         for (int j = 0; j < comp.getWorkers(); j++) {
+                            String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
+                                comp.getName(),
+                                uuidCopy.substring(0, 5),
+                                iCopy,
+                                j + 1 
+                            );
                             comp.addComponent(
                                     new DUUIDockerDriver.ComponentInstance(
-                                            UUID.randomUUID().toString(),
+                                            instanceIdentifier,
                                             containerId,
                                             containerUrl,
                                             port,

@@ -1,9 +1,10 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
+import static java.lang.String.format;
+
 import java.io.IOException;
 import java.io.StringWriter;
-import static java.lang.String.format;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.security.InvalidParameterException;
@@ -21,7 +22,6 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.TypeSystemUtil;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRestDriver.IDUUIInstantiatedRestComponent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.xml.sax.SAXException;
@@ -62,7 +62,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
      * @throws UIMAException
      * @throws SAXException
      */
-    public DUUIDockerDriver(int timeout) throws IOException, UIMAException, SAXException {
+    public DUUIDockerDriver(int timeout) throws IOException {
         _interface = new DUUIDockerInterface();
         _client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeout)).build();
         
@@ -99,7 +99,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
     @Override
     public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws InterruptedException, PipelineComponentException {
         String uuid = UUID.randomUUID().toString();
-        while (_active_components.containsKey(uuid.toString())) {
+        while (_active_components.containsKey(uuid)) {
             uuid = UUID.randomUUID().toString();
         }
 
@@ -109,7 +109,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
         // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
         if (comp.getImageFetching()) {
             if (comp.getUsername() != null) {
-                System.out.printf("[DUUIDockerDriver] Attempting image %s download from secure remote registry\n", comp.getImageName());
+                System.out.printf("[DUUIDockerDriver] Attempting image %s download from secure remote registry %n", comp.getImageName());
             }
             try {
                 _interface.pullImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
@@ -124,20 +124,20 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
                 return null;
             }
 
-            System.out.printf("[DUUIDockerDriver] Pulled image with id %s\n", comp.getImageName());
+            System.out.printf("[DUUIDockerDriver] Pulled image with id %s%n", comp.getImageName());
         } else {
 //            _interface.pullImage(comp.getImageName());
             if (!_interface.hasLocalImage(comp.getImageName())) {
                 throw new InvalidParameterException(format("Could not find local docker image \"%s\". Did you misspell it or forget with .withImageFetching() to fetch it from remote registry?", comp.getImageName()));
             }
         }
-        System.out.printf("[DUUIDockerDriver] Assigned new pipeline component unique id %s\n", uuid);
+        System.out.printf("[DUUIDockerDriver] Assigned new pipeline component unique id %s%n", uuid);
         String digest = _interface.getDigestFromImage(comp.getImageName());
         comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
-        System.out.printf("[DUUIDockerDriver] Transformed image %s to pinnable image name %s\n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
+        System.out.printf("[DUUIDockerDriver] Transformed image %s to pinnable image name %s%n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
 
         _active_components.put(uuid, comp);
-        // TODO: Fragen, was hier genau gemacht wird.
+
         for (int i = 0; i < comp.getScale(); i++) {
             if (shutdown.get()) {
                 return null;
@@ -153,9 +153,9 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
 
                 String containerURL = _interface.getHostUrl(containerid, 9714);
 
-                final int iCopy = i;
+                final int iCopy = i + 1;
                 final String uuidCopy = uuid;
-                String prefix = String.format("[DUUIDockerDriver][%s][Docker Replication %d/%d]", uuidCopy.substring(0, 5) + "...", iCopy + 1, comp.getScale());
+                String prefix = String.format("[DUUIDockerDriver][%s][Replica %d/%d]", uuidCopy.substring(0, 5) + "...", iCopy, comp.getScale());
 
                 DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
                     containerURL,
@@ -169,13 +169,19 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
 
                 IDUUICommunicationLayer layer = get_communication_layer(requestContext);
 
-                System.out.printf("%s Container for image %s is online (URL %s) and seems to understand DUUI V1 format!\n", 
-                    prefix, uuid, i + 1, comp.getScale(), comp.getImageName(), containerURL
+                System.out.printf("%s Container for image %s is online (URL %s) and seems to understand DUUI V1 format!%n", 
+                    prefix, comp.getImageName(), containerURL
                 );
 
-                /// Add one replica of the instantiated component per worker
+                // Add one replica of the instantiated component per worker
                 for (int j = 0; j < comp.getWorkers(); j++) {
-                    comp.addComponent(new ComponentInstance(UUID.randomUUID().toString(), containerid, containerURL, port, layer));
+                    String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
+                        comp.getName(),
+                        uuidCopy.substring(0, 5),
+                        iCopy,
+                        j + 1 
+                    );
+                    comp.addComponent(new ComponentInstance(instanceIdentifier, containerid, containerURL, port, layer));
                 }
             } catch (Exception e) {
                 //_interface.stop_container(containerid);
@@ -212,7 +218,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
         if (!comp.getRunningAfterExit()) {
             int counter = 1;
             for (IDUUIUrlAccessible inst : comp.getTotalInstances()) {
-                System.out.printf("[DUUIDockerDriver][Replication %d/%d] Stopping docker container %s...\n", counter, comp.getTotalInstances().size(), ((ComponentInstance)inst).getContainerId());
+                System.out.printf("[DUUIDockerDriver][Replication %d/%d] Stopping docker container %s...%n", counter, comp.getTotalInstances().size(), ((ComponentInstance)inst).getContainerId());
                 _interface.stop_container(((ComponentInstance)inst).getContainerId());
                 counter += 1;
             }
@@ -222,7 +228,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
     }
 
     static record ComponentInstance(
-            String _uuid,
+            String _identifier,
             String _container_id,
             String _host, 
             int _port,
@@ -230,7 +236,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
     ) implements IDUUIUrlAccessible {
         @Override
         public String getUniqueInstanceKey() {
-            return _uuid;
+            return _identifier;
         }
 
         public String getContainerId() {
@@ -256,7 +262,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
         }
     }
 
-    protected static class InstantiatedComponent extends IDUUIInstantiatedRestComponent<InstantiatedComponent> {
+    protected static class InstantiatedComponent extends DUUIRestDriver.IDUUIInstantiatedRestComponent<InstantiatedComponent> {
         
         private String _image_name;
         private String _reg_password;

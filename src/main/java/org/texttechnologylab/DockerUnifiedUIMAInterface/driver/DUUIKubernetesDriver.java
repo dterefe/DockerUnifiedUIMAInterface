@@ -437,7 +437,7 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
         public InstantiatedComponent initialise(int service_port, IDUUICommunicationLayer layer, DUUIKubernetesDriver kubeDriver) throws IOException, InterruptedException {
             _service_port = service_port;
 
-            for (int i = 0; i < _scale; i++) {
+            for (int i = 0; i < getScale(); i++) {
                 String instanceIdentifier = "%s-%s-Pod-%d".formatted(
                     getName(),                          
                     _uniqueComponentKey.substring(0, 5),

@@ -15,7 +15,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.cas.CASException;
@@ -51,12 +53,48 @@ public interface IDUUIInstantiatedPipelineComponent {
     public DUUIPipelineComponent getPipelineComponent();
     public Triplet<IDUUIUrlAccessible,Long,Long> getComponent();
     public void addComponent(IDUUIUrlAccessible item);
-
-    public Map<String,String> getParameters();
-    public String getSourceView();
-    public String getTargetView();
     public String getUniqueComponentKey();
 
+    default String getName() {
+        return getPipelineComponent().getName();
+    }
+
+    default String getDescription() {
+        return getPipelineComponent().getDescription();
+    }
+
+    default int getScale() {
+        return getPipelineComponent().getScale(1);
+    }
+
+    default int getWorkers() {
+        return getPipelineComponent().getWorkers(1);
+    }
+
+    default Map<String, String> getParameters() {
+        return getPipelineComponent().getParameters();
+    }
+
+    default String getSourceView() {
+        return getPipelineComponent().getSourceView();
+    }
+
+    default String getTargetView() {
+        return getPipelineComponent().getTargetView();
+    }
+
+    default long getTimeout() {
+        return getPipelineComponent().getTimeout();
+    }
+
+    default int getFinalizedRepresentationHash() {
+        return getPipelineComponent().getFinalizedRepresentationHash();
+    }
+
+    default String getFinalizedRepresentation() {
+        return getPipelineComponent().getFinalizedRepresentation();
+    }
+    
     public static int REQUEST_TRIES = 50;
 
     /**
@@ -78,82 +116,81 @@ public interface IDUUIInstantiatedPipelineComponent {
         String logPrefix = String.format("[%s][%s]", driverName, componentKey);
 
         System.out.printf(
-                "%s Requesting typesystem from %s%s\n",
+                "%s Requesting typesystem from %s%s%n",
                 logPrefix,
                 queue.getValue0().generateURL(),
                 DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM
         );
+        
+        try {
+    
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM))
+                    .timeout(Duration.ofSeconds(comp.getTimeout()))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .GET()
+                    .build();
+    
+            Duration componentTimeout = Duration.ofSeconds(comp.getTimeout());
+            Instant deadline = Instant.now().plus(componentTimeout);
+            
+            HttpResponse<byte[]> resp = DUUIRestDriver.sendWithRetries(
+                    _client,
+                    request,
+                    deadline,
+                    componentTimeout,
+                    logPrefix
+            );
+            
 
-        int tries = 0;
-        while(tries < REQUEST_TRIES) {
-            tries++;
-            try {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM))
-                        .version(HttpClient.Version.HTTP_1_1)
-                        .GET()
-                        .build();
-                HttpResponse<byte[]> resp = _client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
-                if (resp.statusCode() == 200) {
-                    String body = new String(resp.body(), Charset.defaultCharset());
-                    File tmp = File.createTempFile("duui.composer", "_type");
-                    tmp.deleteOnExit();
-                    FileWriter writer = new FileWriter(tmp);
+            if (resp == null) {
+                throw new IOException("No response from typesystem endpoint.");
+            }
+
+            if (resp.statusCode() == 200) {
+                String body = new String(resp.body(), Charset.defaultCharset());
+                File tmp = File.createTempFile("duui.composer", "_type");
+                tmp.deleteOnExit();
+                try (FileWriter writer = new FileWriter(tmp)) {
                     writer.write(body);
                     writer.flush();
-                    writer.close();
-                    comp.addComponent(queue.getValue0());
-
 
                     return TypeSystemDescriptionFactory.createTypeSystemDescriptionFromPath(tmp.toURI().toString());
-                } else {
-                    comp.addComponent(queue.getValue0());
-                    System.err.printf(
-                            "%s Typesystem endpoint %s%s returned HTTP %d, using default typesystem instead.\n",
-                            logPrefix,
-                            queue.getValue0().generateURL(),
-                            DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
-                            resp.statusCode()
-                    );
-                    return TypeSystemDescriptionFactory.createTypeSystemDescription();
                 }
-            } catch (Exception e) {
+            } else {
                 System.err.printf(
-                        "%s Error while requesting typesystem from %s%s (try %d/%d): %s\n%s\n",
+                        "%s Typesystem endpoint %s%s returned HTTP %d, using default typesystem instead.%n",
                         logPrefix,
                         queue.getValue0().generateURL(),
                         DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
-                        tries,
-                        REQUEST_TRIES,
-                        e.toString(),
-                        ExceptionUtils.getStackTrace(e)
+                        resp.statusCode()
                 );
-                System.out.printf(
-                        "%s Cannot reach typesystem endpoint, trying again %d/%d...\n",
-                        logPrefix,
-                        tries + 1,
-                        REQUEST_TRIES
-                );
-                try {
-                    Thread.sleep(comp.getPipelineComponent().getTimeout());
-                } catch (InterruptedException ex) {
-                    System.err.printf(
-                            "%s Sleep interrupted while waiting to retry typesystem request: %s\n",
-                            logPrefix,
-                            ex.toString()
-                    );
-                    throw new RuntimeException(ex);
-                }
+                return TypeSystemDescriptionFactory.createTypeSystemDescription();
             }
-        }
-        System.err.printf(
-                "%s Typesystem endpoint %s%s unreachable after %d tries.\n",
+        } catch (Exception e) {
+            System.err.printf(
+                "%s Typesystem endpoint %s%s unreachable after %d tries: %s %n %s %n",
                 logPrefix,
                 queue.getValue0().generateURL(),
                 DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
-                REQUEST_TRIES
-        );
-        throw new ResourceInitializationException(new Exception("Endpoint is unreachable!"));
+                REQUEST_TRIES,
+                e.getClass().getSimpleName(),
+                e.getMessage()
+            
+            );
+
+            throw new ResourceInitializationException(new Exception(String.format(
+                "%s Typesystem endpoint %s%s unreachable after %d tries: %s %n %s %n",
+                logPrefix,
+                queue.getValue0().generateURL(),
+                DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
+                REQUEST_TRIES,
+                e.getClass().getSimpleName(),
+                e.getMessage()
+            )));
+        } finally {
+            comp.addComponent(queue.getValue0());
+        }
     }
 
 
@@ -170,16 +207,18 @@ public interface IDUUIInstantiatedPipelineComponent {
 
         IDUUICommunicationLayer layer = queue.getValue0().getCommunicationLayer();
         long serializeStart = System.nanoTime();
+        
+        DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
+        String driverName = pipelineComponent.getDriverSimpleName() != null
+                ? pipelineComponent.getDriverSimpleName()
+                : "unknown-driver";
+        String componentKey = comp.getUniqueComponentKey() != null
+                ? comp.getUniqueComponentKey()
+                : "unknown-component";
+
+        String logPrefix = String.format("[%s][%s]", driverName, componentKey);
 
         try {
-            DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
-            String driverName = pipelineComponent.getDriverSimpleName() != null
-                    ? pipelineComponent.getDriverSimpleName()
-                    : "unknown-driver";
-            String componentKey = comp.getUniqueComponentKey() != null
-                    ? comp.getUniqueComponentKey()
-                    : "unknown-component";
-            String logPrefix = String.format("[%s][%s]", driverName, componentKey);
 
             String viewName = pipelineComponent.getViewName();
             JCas viewJc;
@@ -219,7 +258,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                 );
 
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
-                ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
+                ann.setDescription(comp.getFinalizedRepresentation());
                 ann.setCompression(DUUIPipelineComponent.compressionMethod);
                 ann.setTimestamp(System.nanoTime());
                 ann.setPipelineName(perf.getRunKey());
@@ -238,57 +277,51 @@ public interface IDUUIInstantiatedPipelineComponent {
             long serializeEnd = System.nanoTime();
 
             long annotatorStart = serializeEnd;
-            int tries = 0;
-            HttpResponse<byte[]> resp = null;
-            boolean bRunning = true;
-            while (bRunning) {
-                try {
-                    tries++;
-                    HttpRequest request = HttpRequest.newBuilder()
-                            .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
-                            .timeout(Duration.ofSeconds(comp.getPipelineComponent().getTimeout()))
-                            .POST(HttpRequest.BodyPublishers.ofByteArray(ok))
-                            .version(HttpClient.Version.HTTP_1_1)
-                            .build();
-                    resp = _client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
-                    break;
-                }
-                catch(Exception e) {
-                    System.out.printf(
-                            "%s Cannot reach endpoint, trying again %d/%d...\n",
-                            logPrefix,
-                            tries + 1,
-                            REQUEST_TRIES
-                    );
-                    System.err.printf(
-                            "%s Error while calling endpoint %s%s (try %d/%d): %s\n%s\n",
-                            logPrefix,
-                            queue.getValue0().generateURL(),
-                            DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
-                            tries,
-                            REQUEST_TRIES,
-                            e.toString(),
-                            ExceptionUtils.getStackTrace(e)
-                    );
 
-                    try {
-                        Thread.sleep(comp.getPipelineComponent().getTimeout());
-                    } catch (InterruptedException ex) {
-                        System.err.printf(
-                                "%s Sleep interrupted while waiting to retry endpoint call: %s\n",
-                                logPrefix,
-                                ex.toString()
-                        );
-                        throw new RuntimeException(ex);
-                    }
-                    if(tries>REQUEST_TRIES){
-                        bRunning=false;
-                    }
-                }
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
+                .timeout(Duration.ofSeconds(comp.getTimeout()))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(ok))
+                .version(HttpClient.Version.HTTP_1_1)
+                .build();
+
+            Duration componentTimeout = Duration.ofSeconds(comp.getTimeout());
+            Instant deadline = Instant.now().plus(componentTimeout);
+            HttpResponse<byte[]> resp = null;
+
+            try {
+                resp = DUUIRestDriver.sendWithRetries(
+                    _client, 
+                    request, 
+                    deadline, 
+                    componentTimeout, 
+                    componentTimeout, 
+                    REQUEST_TRIES, 
+                    logPrefix
+                );
+            } catch (IOException | TimeoutException e) {
+                System.err.printf(
+                        "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
+                        logPrefix,
+                        queue.getValue0().generateURL(),
+                        DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
+                        REQUEST_TRIES
+                );
+
+                throw e;
+            } catch (Exception e) {
+                System.err.printf(
+                        "%s Fatal error during process request, aborting: %s %s %n",
+                        logPrefix,
+                        e.getCause().getClass().getSimpleName(),
+                        e.getCause().getMessage()
+                );
+                throw e;
             }
+
             if(resp==null) {
                 System.err.printf(
-                        "%s Could not reach endpoint %s%s after %d tries, aborting.\n",
+                        "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
                         logPrefix,
                         queue.getValue0().generateURL(),
                         DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
@@ -308,12 +341,12 @@ public interface IDUUIInstantiatedPipelineComponent {
                 long deserializeEnd = System.nanoTime();
 
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
-                ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
+                ann.setDescription(comp.getFinalizedRepresentation());
                 ann.setCompression(DUUIPipelineComponent.compressionMethod);
                 ann.setTimestamp(System.nanoTime());
                 ann.setPipelineName(perf.getRunKey());
                 ann.addToIndexes();
-                perf.addData(serializeEnd-serializeStart,deserializeEnd-deserializeStart,annotatorEnd-annotatorStart,queue.getValue2()-queue.getValue1(),deserializeEnd-queue.getValue1(), String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()), sizeArray, jc, null);
+                perf.addData(serializeEnd-serializeStart,deserializeEnd-deserializeStart,annotatorEnd-annotatorStart,queue.getValue2()-queue.getValue1(),deserializeEnd-queue.getValue1(), String.valueOf(comp.getFinalizedRepresentationHash()), sizeArray, jc, null);
 
             } else {
                 ByteArrayInputStream st = new ByteArrayInputStream(resp.body());
@@ -328,7 +361,8 @@ public interface IDUUIInstantiatedPipelineComponent {
 
                     String error = "Expected response 200, got " + resp.statusCode() + ": " + responseBody;
 
-                    perf.addData(serializeEnd - serializeStart, deserializeEnd - deserializeStart, annotatorEnd - annotatorStart, queue.getValue2() - queue.getValue1(), deserializeEnd - queue.getValue1(), String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()), sizeArray, jc, error);
+
+                    perf.addData(serializeEnd - serializeStart, deserializeEnd - deserializeStart, annotatorEnd - annotatorStart, queue.getValue2() - queue.getValue1(), deserializeEnd - queue.getValue1(), String.valueOf(comp.getFinalizedRepresentationHash()), sizeArray, jc, error);
                 }
 
                 if (!pipelineComponent.getIgnoringHTTP200Error()) {
@@ -339,16 +373,13 @@ public interface IDUUIInstantiatedPipelineComponent {
             }
         } catch (CASException e) {
             throw e;
+        } catch (IOException | TimeoutException e ) {
+            throw new PipelineComponentException(pipelineComponent, e);
         } catch (Exception e) {
             try {
                 System.err.printf(
-                        "[%s][%s] Unhandled exception while processing component: %s\n%s\n",
-                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriverSimpleName() != null
-                                ? comp.getPipelineComponent().getDriverSimpleName()
-                                : "unknown-driver",
-                        comp.getUniqueComponentKey() != null
-                                ? comp.getUniqueComponentKey()
-                                : "unknown-component",
+                        "%s Unhandled exception while processing component: %s%n%s%n",
+                        logPrefix,
                         e.toString(),
                         ExceptionUtils.getStackTrace(e)
                 );
@@ -356,13 +387,8 @@ public interface IDUUIInstantiatedPipelineComponent {
                 throw new PipelineComponentException(comp.getPipelineComponent(), documentMetaData, e);
             } catch (IllegalArgumentException ignored) {
                 System.err.printf(
-                        "[%s][%s] Could not retrieve DocumentMetaData from CAS while wrapping exception: %s\n",
-                        comp.getPipelineComponent() != null && comp.getPipelineComponent().getDriverSimpleName() != null
-                                ? comp.getPipelineComponent().getDriverSimpleName()
-                                : "unknown-driver",
-                        comp.getUniqueComponentKey() != null
-                                ? comp.getUniqueComponentKey()
-                                : "unknown-component",
+                        "%s Could not retrieve DocumentMetaData from CAS while wrapping exception: %s%n",
+                        logPrefix,
                         ignored.toString()
                 );
                 throw new PipelineComponentException(comp.getPipelineComponent(), e);

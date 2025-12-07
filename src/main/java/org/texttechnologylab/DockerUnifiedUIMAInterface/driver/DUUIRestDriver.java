@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.commons.compress.compressors.CompressorException;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.resource.ResourceInitializationException;
@@ -105,18 +106,29 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                 );
                 if (e instanceof CompletionException ce && ce.getCause() != null) {
                     System.err.printf(
-                            "%s CompletionException cause: %s (%s)%n",
+                            "%s Error while calling endpoint: %s (%s)%n %s %n",
                             prefix,
                             ce.getCause().getClass().getSimpleName(),
-                            ce.getCause().getMessage()
+                            ce.getCause().getMessage(),
+                            ExceptionUtils.getStackTrace(e)
                     );
                 }
                 if (attempts >= max_http_retries) {
-                    throw new CommunicationLayerException(format("%s The endpoint (%s) could not provide a response after #%d tries.",
+                    throw new IOException(format("%s The endpoint (%s) could not provide a response after #%d tries.",
                         prefix, request.uri(), attempts
                     ), e);
                 }
-                Thread.sleep(retryDelay.toMillis());
+
+                try {
+                    Thread.sleep(retryDelay.toMillis());
+                } catch (InterruptedException ex) {
+                    System.err.printf(
+                            "%s Sleep interrupted while waiting to retry endpoint call: %s\n",
+                            prefix,
+                            ex.toString()
+                    );
+                    throw new RuntimeException(ex);
+                }
             }
         }
         throw new TimeoutException(
@@ -481,15 +493,6 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         protected final DUUIPipelineComponent _component;
 
         protected String _uniqueComponentKey;
-        protected String name;
-        protected String description;
-
-        protected int _scale;
-        protected int _workers;
-        protected Map<String, String> _parameters;
-
-        protected String _sourceView;
-        protected String _targetView;
 
         protected final ConcurrentLinkedQueue<IDUUIUrlAccessible> _components;
         protected final ConcurrentHashMap<String, IDUUIUrlAccessible> _total_instances;
@@ -499,26 +502,10 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             _component = component;
             _uniqueComponentKey = uuid;
 
-            name = component.getName();
-            description = component.getDescription();
-
-            _parameters = component.getParameters();
-            _scale = component.getScale(1);
-            _workers = component.getWorkers(1);
-
             _components = new ConcurrentLinkedQueue<>();
             _total_instances = new ConcurrentHashMap<>();
-            
         }
-
-        public String getName() {
-            return name;
-        }
-
-        public String getDescription() {
-            return description;
-        }
-
+        
         @Override
         public String getUniqueComponentKey() {
             return _uniqueComponentKey;
@@ -552,29 +539,6 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
 
         protected ConcurrentLinkedQueue<IDUUIUrlAccessible> getInstances() {
             return _components;
-        }
-
-        public int getScale() {
-            return _scale;
-        }
-
-        public int getWorkers() {
-            return _workers;
-        }
-
-        @Override
-        public Map<String, String> getParameters() {
-            return _parameters;
-        }
-
-        @Override
-        public String getSourceView() {
-            return _sourceView;
-        }
-
-        @Override
-        public String getTargetView() {
-            return _targetView;
         }
 
         @Deprecated

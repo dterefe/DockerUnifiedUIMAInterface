@@ -292,7 +292,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
 
             _service_id = service_id;
             _service_port = container_port;
-            for (int i = 0; i < _scale; i++) {
+            for (int i = 0; i < getScale(); i++) {
                 String instanceIdentifier = "%s-%s-Replica-%d".formatted(
                     getName(),                          
                     _uniqueComponentKey.substring(0, 5),

@@ -32,6 +32,9 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 
 import static java.lang.String.format;
@@ -158,6 +161,8 @@ class BuildImageProgress extends BuildImageResultCallback {
  * This is the general docker interface which interacts with the docker daemon.
  */
 public class DUUIDockerInterface {
+
+    private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIDockerInterface.class);
     /**
      * The connection to the docker client.
      */
@@ -760,23 +765,42 @@ public class DUUIDockerInterface {
      * @throws InterruptedException
      */
     public String run(String imageid, List<String> env, boolean gpu, boolean autoremove, int portContainer, Integer portHost, boolean mapDaemon) throws InterruptedException {
+        LOG.debug(
+                "[DUUIDockerInterface] Preparing to run image %s (gpu=%s, autoremove=%s, portContainer=%d, portHost=%s, mapDaemon=%s)%n",
+                imageid,
+                gpu,
+                autoremove,
+                portContainer,
+                String.valueOf(portHost),
+                mapDaemon
+        );
+
         HostConfig cfg = new HostConfig()
                 .withPublishAllPorts(true);
 
         if (autoremove) {
             cfg = cfg.withAutoRemove(true);
+            LOG.debug("[DUUIDockerInterface] Enabled auto-remove for container of image %s%n", imageid);
         }
         if (gpu) {
             cfg = cfg.withDeviceRequests(ImmutableList.of(new DeviceRequest()
                 .withCapabilities(ImmutableList.of(ImmutableList.of("gpu")))));
+            LOG.debug("[DUUIDockerInterface] Enabled GPU device request for image %s%n", imageid);
         }
 
         if (!Objects.isNull(portHost) && portHost > 0) {
             cfg.withPortBindings(new PortBinding(new Ports.Binding(null, String.valueOf(portHost)), new ExposedPort(portContainer)));
+            LOG.debug(
+                    "[DUUIDockerInterface] Bound host port %d to container port %d for image %s%n",
+                    portHost,
+                    portContainer,
+                    imageid
+            );
         }
 
         if (mapDaemon) {
             cfg = cfg.withBinds(Bind.parse("/var/run/docker.sock:/var/run/docker.sock"));
+            LOG.debug("[DUUIDockerInterface] Mapped Docker daemon socket into container for image %s%n", imageid);
         }
 
         CreateContainerCmd cmd = _docker.createContainerCmd(imageid)
@@ -785,10 +809,19 @@ public class DUUIDockerInterface {
 
         if (!Objects.isNull(env) && !env.isEmpty()) {
             cmd = cmd.withEnv(env);
+            LOG.debug(
+                    "[DUUIDockerInterface] Added %d environment variables to container for image %s%n",
+                    env.size(),
+                    imageid
+            );
         }
 
         CreateContainerResponse feedback = cmd.exec();
+        LOG.debug("[DUUIDockerInterface] Created container %s for image %s%n", feedback.getId(), imageid);
+
         _docker.startContainerCmd(feedback.getId()).exec();
+        LOG.debug("[DUUIDockerInterface] Started container %s for image %s%n", feedback.getId(), imageid);
+
         return feedback.getId();
     }
 

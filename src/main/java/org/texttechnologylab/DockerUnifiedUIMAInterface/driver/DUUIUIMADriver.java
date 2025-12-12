@@ -1,11 +1,23 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import java.io.IOException;
+import java.net.URISyntaxException;
+import java.nio.file.Path;
+import java.security.InvalidParameterException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.UIMAException;
 import org.apache.uima.analysis_engine.AnalysisEngine;
 import org.apache.uima.analysis_engine.AnalysisEngineDescription;
-import org.apache.uima.analysis_engine.AnalysisEngineProcessException;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.cas.CASRuntimeException;
 import org.apache.uima.fit.factory.AnalysisEngineFactory;
@@ -20,20 +32,11 @@ import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
 import org.xml.sax.SAXException;
-
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.nio.file.Path;
-import java.security.InvalidParameterException;
-import java.util.*;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-import static java.lang.String.format;
 
 /**
  *
@@ -42,10 +45,21 @@ import static java.lang.String.format;
 public class DUUIUIMADriver implements IDUUIDriverInterface {
     private HashMap<String, InstantiatedComponent> _engines;
     private boolean _enable_debug;
+    private DUUILogger logger = DUUILogContext.getLogger();
 
     public DUUIUIMADriver() {
         _engines = new HashMap<String, InstantiatedComponent>();
         _enable_debug = false;
+    }
+
+    @Override
+    public DUUILogger logger() {
+        return logger;
+    }
+
+    @Override
+    public void setLogger(DUUILogger logger) {
+        this.logger = (logger != null) ? logger : DUUILogContext.getLogger();
     }
 
     public void setLuaContext(DUUILuaContext luaContext) {
@@ -139,8 +153,9 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
 
         public void describeAnalysisEngine() throws InvalidXMLException {
             String[] names = extractNames(_engine, 0);
+            DUUILogger log = DUUILogContext.getLogger();
             for (String i : names) {
-                System.out.println(i);
+                log.debug("%s", i);
             }
         }
 
@@ -178,12 +193,13 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
         if (component == null) {
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
-        System.out.printf("[UIMADriver][%s]: Maximum concurrency %d\n", uuid, component.getEngines().size());
+        logger().info("[UIMADriver][%s]: Maximum concurrency %d\n", uuid, component.getEngines().size());
     }
 
-    static private String[] extractNames(AnalysisEngineDescription engine, String uuid, int recursionDepth) throws InvalidXMLException {
+    String[] extractNames(AnalysisEngineDescription engine, String uuid, int recursionDepth) throws InvalidXMLException {
         List<String> lst = new ArrayList<>();
-        System.out.println(format("[UIMADriver][DEBUG][%s] Dumping annotator layout and parameters:", uuid));
+
+        logger.debug("[UIMADriver][%s] Dumping annotator layout and parameters:", uuid);
         String offset = "";
         for (int i = 0; i < recursionDepth; i++) {
             offset += "  ";
@@ -263,7 +279,7 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
             for (String x : spec.keySet()) {
                 ResourceSpecifier res = spec.get(x);
                 if (res instanceof AnalysisEngineDescription) {
-                    for (String inner : DUUIUIMADriver.extractNames((AnalysisEngineDescription) res, uuid, recursionDepth + 1)) {
+                    for (String inner : extractNames((AnalysisEngineDescription) res, uuid, recursionDepth + 1)) {
                         lst.add(inner);
                     }
                     lst.add("");
@@ -289,12 +305,12 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
         if (scale == null) {
             scale = 1;
         }
-        System.out.printf("[UIMADriver] Assigned new pipeline component unique id %s\n", uuid);
+        logger().info("[UIMADriver] Assigned new pipeline component unique id %s\n", uuid);
 
         if (_enable_debug) {
             String[] values = extractNames(analysis_engine_desc, uuid, 0);
             for (String x : values) {
-                System.out.println(x);
+                logger().debug(x);
             }
         }
         InstantiatedComponent comp = new InstantiatedComponent(component);
@@ -306,12 +322,12 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
                 if (!skipVerification) {
                     ana.process(jc);
                 }
-                System.out.printf("[UIMADriver][%s][Replication %d/%d] Instantiated native UIMA Analysis Engine Annotator %s without problems\n", uuid, i + 1, scale, annotator);
+                logger().info("[UIMADriver][%s][Replication %d/%d] Instantiated native UIMA Analysis Engine Annotator %s without problems\n", uuid, i + 1, scale, annotator);
             } else {
                 if (!skipVerification) {
                     ana.process(jc);
                 }
-                System.out.printf("[UIMADriver][%s][Replication %d/%d] Instantiated native UIMA Analysis Engine without problems\n", uuid, i + 1, scale);
+                logger().info("[UIMADriver][%s][Replication %d/%d] Instantiated native UIMA Analysis Engine without problems\n", uuid, i + 1, scale);
             }
             comp.add(ana);
         }

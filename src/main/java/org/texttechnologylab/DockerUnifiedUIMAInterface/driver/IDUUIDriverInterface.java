@@ -15,6 +15,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
 import org.xml.sax.SAXException;
@@ -25,6 +27,23 @@ import org.xml.sax.SAXException;
  * @author Alexander Leonhardt
  */
 public interface IDUUIDriverInterface {
+
+    /**
+     * @return the logger associated with this driver. Defaults to the
+     *         logger from {@link DUUILogContext} if not overridden.
+     */
+    default DUUILogger logger() {
+        return DUUILogContext.getLogger();
+    }
+
+    /**
+     * Inject a logger for this driver. By default this sets the logger
+     * in {@link DUUILogContext} so that static helpers can use it.
+     */
+    default void setLogger(DUUILogger logger) {
+        DUUILogContext.setLogger(logger);
+    }
+
     /**
      * Method for defining the Lua context to be used, which determines the transfer type between Composer and components.
      * @see DUUILuaContext

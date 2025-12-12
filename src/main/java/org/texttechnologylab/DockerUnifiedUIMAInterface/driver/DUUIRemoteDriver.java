@@ -17,6 +17,7 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUICompressionHelper;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 
 /**
  *
@@ -61,47 +62,49 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
         }
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
-        final String uuidCopy = uuid;
-        boolean added_communication_layer = false;
-        int endpointIndex = 0;
+        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+            final String uuidCopy = uuid;
+            boolean added_communication_layer = false;
+            int endpointIndex = 0;
 
-        for (String url : comp.getUrls()) {
-            if (shutdown.get()) return null;
+            for (String url : comp.getUrls()) {
+                if (shutdown.get()) return null;
 
-            endpointIndex++;
-            String prefix = String.format("[DUUIRemoteDriver][%s][Endpoint %d/%d]", uuidCopy.substring(0, 5) + "...", endpointIndex, comp.getUrls().size());
+                endpointIndex++;
+                String prefix = comp.prefix(endpointIndex);
 
-            DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
-                url,
-                jc,
-                _timeout,
-                _client,
-                _luaContext,
-                skipVerification,
-                prefix
-            );
-
-            IDUUICommunicationLayer layer = get_communication_layer(requestContext);
-
-            // Request to get input_output
-            // {"inputs": ["de.sentence.tudarmstadt",...], "outputs": ["de.sentence.token",...]}
-            // /v1/details/input_output
-            if (!added_communication_layer) {
-                added_communication_layer = true;
-            }
-            for (int i = 0; i < comp.getWorkers(); i++) {
-                String instanceIdentifier = "%s-%s-Endpoint-%d-Worker-%d".formatted(
-                    comp.getName(),
-                    uuidCopy.substring(0, 5),
-                    endpointIndex,
-                    i + 1 
+                DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
+                    url,
+                    jc,
+                    _timeout,
+                    _client,
+                    _luaContext,
+                    skipVerification,
+                    prefix
                 );
-                comp.addComponent(new ComponentInstance(instanceIdentifier, url, layer.copy()));
-            }
-            _components.put(uuid, comp);
-            System.out.printf("[RemoteDriver][%s] Remote URL %s is online and seems to understand DUUI V1 format!\n", uuid, url);
 
-            System.out.printf("[RemoteDriver][%s] Maximum concurrency for this endpoint %d\n", uuid, comp.getWorkers());
+                IDUUICommunicationLayer layer = get_communication_layer(requestContext);
+
+                // Request to get input_output
+                // {"inputs": ["de.sentence.tudarmstadt",...], "outputs": ["de.sentence.token",...]}
+                // /v1/details/input_output
+                if (!added_communication_layer) {
+                    added_communication_layer = true;
+                }
+                for (int i = 0; i < comp.getWorkers(); i++) {
+                    String instanceIdentifier = "%s-%s-Endpoint-%d-Worker-%d".formatted(
+                        comp.getName(),
+                        uuidCopy.substring(0, 5),
+                        endpointIndex,
+                        i + 1 
+                    );
+                    comp.addComponent(new ComponentInstance(instanceIdentifier, url, layer.copy()));
+                }
+                _components.put(uuid, comp);
+                logger().info("[%s] Remote URL %s is online and seems to understand DUUI V1 format!", uuid, url);
+
+                logger().info("[%s] Maximum concurrency for this endpoint %d", uuid, comp.getWorkers());
+            }
         }
 
         return shutdown.get() ? null : uuid;
@@ -204,6 +207,15 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
             if (_urls == null || _urls.isEmpty()) {
                 throw new InvalidParameterException("Missing parameter URL in the pipeline component descriptor");
             }
+        }
+
+        @Override
+        protected String prefix(int endpointIndex) {
+            return String.format("[DUUIRemoteDriver][%s][Endpoint %d/%d]", 
+                _uniqueComponentKey.substring(0, 5) + "...", 
+                endpointIndex, 
+                getUrls().size()
+            );
         }
 
         @Override

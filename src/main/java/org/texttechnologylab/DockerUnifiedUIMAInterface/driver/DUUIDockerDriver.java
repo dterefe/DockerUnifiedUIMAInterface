@@ -24,6 +24,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 import org.xml.sax.SAXException;
 
 /**
@@ -103,91 +104,93 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
             uuid = UUID.randomUUID().toString();
         }
 
-
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
-        // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
-        if (comp.getImageFetching()) {
-            if (comp.getUsername() != null) {
-                System.out.printf("[DUUIDockerDriver] Attempting image %s download from secure remote registry %n", comp.getImageName());
-            }
-            try {
-                _interface.pullImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
-            } catch (ImagePullException imagePullException) {
-                System.err.printf("[DUUIDockerDriver] Failed to pull image %s: %s%n", comp.getImageName(), imagePullException.getMessage());
-                throw new PipelineComponentException(
-                        format("Failed to pull docker image %s", comp.getImageName()),
-                        imagePullException
-                );
-            }
-            if (shutdown.get()) {
-                return null;
-            }
-
-            System.out.printf("[DUUIDockerDriver] Pulled image with id %s%n", comp.getImageName());
-        } else {
-//            _interface.pullImage(comp.getImageName());
-            if (!_interface.hasLocalImage(comp.getImageName())) {
-                throw new InvalidParameterException(format("Could not find local docker image \"%s\". Did you misspell it or forget with .withImageFetching() to fetch it from remote registry?", comp.getImageName()));
-            }
-        }
-        System.out.printf("[DUUIDockerDriver] Assigned new pipeline component unique id %s%n", uuid);
-        String digest = _interface.getDigestFromImage(comp.getImageName());
-        comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
-        System.out.printf("[DUUIDockerDriver] Transformed image %s to pinnable image name %s%n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
-
-        _active_components.put(uuid, comp);
-
-        for (int i = 0; i < comp.getScale(); i++) {
-            if (shutdown.get()) {
-                return null;
-            }
-
-            String containerid = _interface.run(comp.getPipelineComponent().getDockerImageName(), comp.getEnv(), comp.usesGPU(), true, 9714, false);
-            int port = _interface.extract_port_mapping(containerid);  // Dieser port hier ist im allgemeinen nicht (bzw nie) der Port 9714 aus dem Input.
-
-            try {
-                if (port == 0) {
-                    throw new UnknownError("Could not read the container port!");
+        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+            // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
+            if (comp.getImageFetching()) {
+                if (comp.getUsername() != null) {
+                    logger().info("[DUUIDockerDriver] Attempting image %s download from secure remote registry %n", comp.getImageName());
                 }
-
-                String containerURL = _interface.getHostUrl(containerid, 9714);
-
-                final int iCopy = i + 1;
-                final String uuidCopy = uuid;
-                String prefix = String.format("[DUUIDockerDriver][%s][Replica %d/%d]", uuidCopy.substring(0, 5) + "...", iCopy, comp.getScale());
-
-                DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
-                    containerURL,
-                    jc,
-                    _timeout,
-                    _client,
-                    _luaContext,
-                    skipVerification,
-                    prefix
-                );
-
-                IDUUICommunicationLayer layer = get_communication_layer(requestContext);
-
-                System.out.printf("%s Container for image %s is online (URL %s) and seems to understand DUUI V1 format!%n", 
-                    prefix, comp.getImageName(), containerURL
-                );
-
-                // Add one replica of the instantiated component per worker
-                for (int j = 0; j < comp.getWorkers(); j++) {
-                    String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
-                        comp.getName(),
-                        uuidCopy.substring(0, 5),
-                        iCopy,
-                        j + 1 
+                try {
+                    _interface.pullImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
+                } catch (ImagePullException imagePullException) {
+                    logger().debug("[DUUIDockerDriver] Failed to pull image %s: %s%n", comp.getImageName(), imagePullException.getMessage());
+                    throw new PipelineComponentException(
+                            format("Failed to pull docker image %s", comp.getImageName()),
+                            imagePullException
                     );
-                    comp.addComponent(new ComponentInstance(instanceIdentifier, containerid, containerURL, port, layer));
                 }
-            } catch (Exception e) {
-                //_interface.stop_container(containerid);
-                //throw e;
+                if (shutdown.get()) {
+                    return null;
+                }
+
+                logger().info("[DUUIDockerDriver] Pulled image with id %s%n", comp.getImageName());
+            } else {
+    //            _interface.pullImage(comp.getImageName());
+                if (!_interface.hasLocalImage(comp.getImageName())) {
+                    throw new InvalidParameterException(format("Could not find local docker image \"%s\". Did you misspell it or forget with .withImageFetching() to fetch it from remote registry?", comp.getImageName()));
+                }
+            }
+            logger().info("[DUUIDockerDriver] Assigned new pipeline component unique id %s%n", uuid);
+            String digest = _interface.getDigestFromImage(comp.getImageName());
+            comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
+            logger().info("[DUUIDockerDriver] Transformed image %s to pinnable image name %s%n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
+
+            _active_components.put(uuid, comp);
+
+            for (int i = 0; i < comp.getScale(); i++) {
+                if (shutdown.get()) {
+                    return null;
+                }
+
+                String containerid = _interface.run(comp.getPipelineComponent().getDockerImageName(), comp.getEnv(), comp.usesGPU(), true, 9714, false);
+                int port = _interface.extract_port_mapping(containerid);  // Dieser port hier ist im allgemeinen nicht (bzw nie) der Port 9714 aus dem Input.
+
+                try {
+                    if (port == 0) {
+                        throw new UnknownError("Could not read the container port!");
+                    }
+
+                    String containerURL = _interface.getHostUrl(containerid, 9714);
+
+                    final int iCopy = i + 1;
+                    final String uuidCopy = uuid;
+                    String prefix = String.format("[DUUIDockerDriver][%s][Replica %d/%d]", uuidCopy.substring(0, 5) + "...", iCopy, comp.getScale());
+
+                    DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
+                        containerURL,
+                        jc,
+                        _timeout,
+                        _client,
+                        _luaContext,
+                        skipVerification,
+                        prefix
+                    );
+
+                    IDUUICommunicationLayer layer = get_communication_layer(requestContext);
+
+                    logger().info("%s Container for image %s is online (URL %s) and seems to understand DUUI V1 format!%n", 
+                        prefix, comp.getImageName(), containerURL
+                    );
+
+                    // Add one replica of the instantiated component per worker
+                    for (int j = 0; j < comp.getWorkers(); j++) {
+                        String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
+                            comp.getName(),
+                            uuidCopy.substring(0, 5),
+                            iCopy,
+                            j + 1 
+                        );
+                        comp.addComponent(new ComponentInstance(instanceIdentifier, containerid, containerURL, port, layer));
+                    }
+                } catch (Exception e) {
+                    //_interface.stop_container(containerid);
+                    //throw e;
+                }
             }
         }
+
         return shutdown.get() ? null : uuid;
     }
 

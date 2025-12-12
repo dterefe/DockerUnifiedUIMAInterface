@@ -30,6 +30,9 @@ import org.jetbrains.annotations.NotNull;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
 
@@ -95,6 +98,22 @@ public interface IDUUIInstantiatedPipelineComponent {
         return getPipelineComponent().getFinalizedRepresentation();
     }
     
+    /**
+     * @return the logger associated with this instantiated component. Defaults
+     *         to the logger from {@link DUUILogContext} if not overridden.
+     */
+    default DUUILogger logger() {
+        return DUUILogContext.getLogger();
+    }
+
+    /**
+     * Inject a logger for this instantiated component. By default this sets the
+     * logger in {@link DUUILogContext} so that static helpers can use it.
+     */
+    default void setLogger(DUUILogger logger) {
+        DUUILogContext.setLogger(logger);
+    }
+
     public static int REQUEST_TRIES = 50;
 
     /**
@@ -106,17 +125,11 @@ public interface IDUUIInstantiatedPipelineComponent {
      */
     public static TypeSystemDescription getTypesystem(String uuid, IDUUIInstantiatedPipelineComponent comp) throws ResourceInitializationException {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
-        DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
-        String driverName = pipelineComponent.getDriverSimpleName() != null
-                ? pipelineComponent.getDriverSimpleName()
-                : "unknown-driver";
-        String componentKey = comp.getUniqueComponentKey() != null
-                ? comp.getUniqueComponentKey()
-                : "unknown-component";
-        String logPrefix = String.format("[%s][%s]", driverName, componentKey);
 
-        System.out.printf(
-                "%s Requesting typesystem from %s%s%n",
+        String logPrefix = String.format("[%s]", queue.getValue0().getUniqueInstanceKey());
+
+        comp.logger().info(
+                "%s Requesting typesystem from %s%s",
                 logPrefix,
                 queue.getValue0().generateURL(),
                 DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM
@@ -141,9 +154,14 @@ public interface IDUUIInstantiatedPipelineComponent {
                     componentTimeout,
                     logPrefix
             );
-            
 
             if (resp == null) {
+                comp.logger().warn(
+                        "%s Typesystem endpoint %s%s did not return a response.",
+                        logPrefix,
+                        queue.getValue0().generateURL(),
+                        DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM
+                );
                 throw new IOException("No response from typesystem endpoint.");
             }
 
@@ -154,12 +172,11 @@ public interface IDUUIInstantiatedPipelineComponent {
                 try (FileWriter writer = new FileWriter(tmp)) {
                     writer.write(body);
                     writer.flush();
-
-                    return TypeSystemDescriptionFactory.createTypeSystemDescriptionFromPath(tmp.toURI().toString());
                 }
+                return TypeSystemDescriptionFactory.createTypeSystemDescriptionFromPath(tmp.toURI().toString());
             } else {
-                System.err.printf(
-                        "%s Typesystem endpoint %s%s returned HTTP %d, using default typesystem instead.%n",
+                comp.logger().warn(
+                        "%s Typesystem endpoint %s%s returned HTTP %d, using default typesystem instead.",
                         logPrefix,
                         queue.getValue0().generateURL(),
                         DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
@@ -168,15 +185,13 @@ public interface IDUUIInstantiatedPipelineComponent {
                 return TypeSystemDescriptionFactory.createTypeSystemDescription();
             }
         } catch (Exception e) {
-            System.err.printf(
-                "%s Typesystem endpoint %s%s unreachable after %d tries: %s %n %s %n",
+            comp.logger().error(
+                "%s %s while requesting typesystem from %s%s: %n%s",
                 logPrefix,
+                e.toString(),
                 queue.getValue0().generateURL(),
                 DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM,
-                REQUEST_TRIES,
-                e.getClass().getSimpleName(),
-                e.getMessage()
-            
+                ExceptionUtils.getStackTrace(e)
             );
 
             throw new ResourceInitializationException(new Exception(String.format(
@@ -209,44 +224,60 @@ public interface IDUUIInstantiatedPipelineComponent {
         long serializeStart = System.nanoTime();
         
         DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
-        String driverName = pipelineComponent.getDriverSimpleName() != null
-                ? pipelineComponent.getDriverSimpleName()
-                : "unknown-driver";
-        String componentKey = comp.getUniqueComponentKey() != null
-                ? comp.getUniqueComponentKey()
-                : "unknown-component";
 
-        String logPrefix = String.format("[%s][%s]", driverName, componentKey);
+        String logPrefix = String.format("[%s]", queue.getValue0().getUniqueInstanceKey());
 
-        try {
+        try (var ignored = comp.logger().withContext(DUUIEvent.Context.from(perf, comp, queue.getValue0().getUniqueInstanceKey()))) {
 
             String viewName = pipelineComponent.getViewName();
             JCas viewJc;
             if(viewName == null) {
                 viewJc = jc;
+                
+                comp.logger().debug("%s No JCas view provided", logPrefix);
             }
             else {
                 try {
                     viewJc = jc.getView(viewName);
+
+                    comp.logger().debug("%s Using JCas view: '%s'", logPrefix, viewName);
                 }
                 catch(CASException e) {
                     if(pipelineComponent.getCreateViewFromInitialView()) {
                         viewJc = jc.createView(viewName);
                         viewJc.setDocumentText(jc.getDocumentText());
                         viewJc.setDocumentLanguage(jc.getDocumentLanguage());
+
+                        comp.logger().debug("%s %s caused by JCas view: '%s'. Created from inital view.", 
+                        logPrefix, e, viewName);
                     }
                     else {
+                        comp.logger().debug("%s %s caused by JCas view: '%s'. Did not create from inital view.", 
+                        logPrefix, e, viewName);
                         throw e;
                     }
                 }
             }
 
             if (layer.supportsProcess()) {
+                comp.logger().debug(
+                        "%s Using direct layer.process() with sourceView='%s' and targetView='%s'.",
+                        logPrefix,
+                        comp.getSourceView(),
+                        comp.getTargetView()
+                );
+
                 JCas sourceCas = viewJc.getView(comp.getSourceView());
                 JCas targetCas;
                 try {
                     targetCas = viewJc.getView(comp.getTargetView());
                 } catch (CASException e) {
+                    comp.logger().debug(
+                            "%s %s while getting target view '%s'. Creating new view.",
+                            logPrefix,
+                            e.toString(),
+                            comp.getTargetView()
+                    );
                     targetCas = viewJc.createView(comp.getTargetView());
                 }
 
@@ -255,6 +286,11 @@ public interface IDUUIInstantiatedPipelineComponent {
                         new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
                         comp.getParameters(),
                         targetCas
+                );
+
+                comp.logger().debug(
+                        "%s Finished layer.process().",
+                        logPrefix
                 );
 
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
@@ -270,6 +306,11 @@ public interface IDUUIInstantiatedPipelineComponent {
             ByteArrayOutputStream out = new ByteArrayOutputStream(1024*1024);
 
             // Invoke Lua serialize()
+            comp.logger().debug("%s Serializing JCas (sourceView=%s, parameters %s)",
+                 logPrefix,
+                 comp.getSourceView(),
+                 comp.getParameters()
+            );
             layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
 
             byte[] ok = out.toByteArray();
@@ -290,6 +331,13 @@ public interface IDUUIInstantiatedPipelineComponent {
             HttpResponse<byte[]> resp = null;
 
             try {
+                comp.logger().debug(
+                    "%s Sending process request to %s (headers=%s)",
+                    logPrefix,
+                    request.uri(),
+                    request.headers().map()
+                );
+
                 resp = DUUIRestDriver.sendWithRetries(
                     _client, 
                     request, 
@@ -300,7 +348,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                     logPrefix
                 );
             } catch (IOException | TimeoutException e) {
-                System.err.printf(
+                comp.logger().debug(
                         "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
                         logPrefix,
                         queue.getValue0().generateURL(),
@@ -310,7 +358,7 @@ public interface IDUUIInstantiatedPipelineComponent {
 
                 throw e;
             } catch (Exception e) {
-                System.err.printf(
+                comp.logger().debug(
                         "%s Fatal error during process request, aborting: %s %s %n",
                         logPrefix,
                         e.getCause().getClass().getSimpleName(),
@@ -320,7 +368,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             }
 
             if(resp==null) {
-                System.err.printf(
+                comp.logger().debug(
                         "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
                         logPrefix,
                         queue.getValue0().generateURL(),
@@ -336,7 +384,12 @@ public interface IDUUIInstantiatedPipelineComponent {
                 long annotatorEnd = System.nanoTime();
                 long deserializeStart = annotatorEnd;
 
-                    layer.deserialize(viewJc, st, comp.getTargetView());
+                comp.logger().debug("%s Deserializing JCas (targetView=%s)",
+                    logPrefix,
+                    comp.getTargetView()
+                );
+                
+                layer.deserialize(viewJc, st, comp.getTargetView());
 
                 long deserializeEnd = System.nanoTime();
 
@@ -361,14 +414,16 @@ public interface IDUUIInstantiatedPipelineComponent {
 
                     String error = "Expected response 200, got " + resp.statusCode() + ": " + responseBody;
 
-
                     perf.addData(serializeEnd - serializeStart, deserializeEnd - deserializeStart, annotatorEnd - annotatorStart, queue.getValue2() - queue.getValue1(), deserializeEnd - queue.getValue1(), String.valueOf(comp.getFinalizedRepresentationHash()), sizeArray, jc, error);
                 }
 
                 if (!pipelineComponent.getIgnoringHTTP200Error()) {
                     throw new InvalidObjectException(String.format("Expected response 200, got %d: %s", resp.statusCode(), responseBody));
                 } else {
-                    System.err.println(String.format("%s Expected response 200, got %d: %s", logPrefix, resp.statusCode(), responseBody));
+                    comp.logger().debug(
+                        DUUIEvent.Context.from(perf, comp, queue.getValue0().getUniqueInstanceKey(), responseBody),
+                        String.format("%s Expected response 200, got %d", logPrefix, resp.statusCode())
+                    );
                 }
             }
         } catch (CASException e) {
@@ -377,7 +432,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             throw new PipelineComponentException(pipelineComponent, e);
         } catch (Exception e) {
             try {
-                System.err.printf(
+                comp.logger().debug(
                         "%s Unhandled exception while processing component: %s%n%s%n",
                         logPrefix,
                         e.toString(),
@@ -386,7 +441,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                 DocumentMetaData documentMetaData = DocumentMetaData.get(jc);
                 throw new PipelineComponentException(comp.getPipelineComponent(), documentMetaData, e);
             } catch (IllegalArgumentException ignored) {
-                System.err.printf(
+                comp.logger().debug(
                         "%s Could not retrieve DocumentMetaData from CAS while wrapping exception: %s%n",
                         logPrefix,
                         ignored.toString()

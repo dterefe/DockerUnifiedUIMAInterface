@@ -22,6 +22,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 
 /**
  *
@@ -82,7 +83,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
                 _withSwarmVisualizer = _interface.run("dockersamples/visualizer", false, true, 8080, port, true);
             }
             int port_mapping = _interface.extract_port_mapping(_withSwarmVisualizer, 8080);
-            System.out.printf("[DUUISwarmDriver] Running visualizer on address http://" + getHostname() + ":%d\n", port_mapping);
+            logger().info("[DUUISwarmDriver] Running visualizer on address http://" + getHostname() + ":%d%n", port_mapping);
             Thread.sleep(1500);
         }
         return this;
@@ -113,84 +114,85 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             throw new InvalidParameterException("This node is not a Docker Swarm Manager, thus cannot create and schedule new services!");
         }
         DUUISwarmDriver.InstantiatedComponent comp = new DUUISwarmDriver.InstantiatedComponent(component, uuid);
+        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+            if (_interface.getLocalImage(comp.getImageName()) == null) {
+                // If image is not available try to pull it
+                try {
+                    _interface.pullImage(comp.getImageName(), null, null);
+                } catch (ImagePullException e) {
+                    throw new PipelineComponentException(format("Failed to pull docker image %s", comp.getImageName()), e);
+                }
+                if (shutdown.get()) {
+                    return null;
+                }
+            }
 
-        if (_interface.getLocalImage(comp.getImageName()) == null) {
-            // If image is not available try to pull it
+            if (comp.isBackedByLocalImage()) {
+                logger().info("[DockerSwarmDriver] Attempting to push local image %s to remote image registry %s%n", comp.getLocalImageName(), comp.getImageName());
+                if (comp.getUsername() != null && comp.getPassword() != null) {
+                    logger().debug("[DockerSwarmDriver] Using provided password and username to authentificate against the remote registry");
+                }
+                _interface.push_image(comp.getImageName(), comp.getLocalImageName(), comp.getUsername(), comp.getPassword());
+            }
+            logger().info("[DockerSwarmDriver] Assigned new pipeline component unique id %s%n", uuid);
+
+            String digest = _interface.getDigestFromImage(comp.getImageName());
+            comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
+            logger().info("[DockerSwarmDriver] Transformed image %s to pinnable image name %s%n", comp.getImageName(), digest);
+
+            String serviceid = _interface.run_service(digest, comp.getScale(), comp.getConstraints());
+
+            int port = _interface.extract_service_port_mapping(serviceid);
+
+            logger().info("[DockerSwarmDriver][%s] Started service, waiting for it to become responsive...%n", uuid);
+
+            if (port == 0) {
+                throw new UnknownError("Could not read the service port!");
+            }
+            final String uuidCopy = uuid;
+            IDUUICommunicationLayer layer = null;
+            String prefix = String.format("[DockerSwarmDriver][%s][Replicas %d]", uuidCopy.substring(0, 5) + "...", comp.getScale());
+            String swarmUrl = _interface.getHostUrl(port);
+
             try {
-                _interface.pullImage(comp.getImageName(), null, null);
-            } catch (ImagePullException e) {
-                throw new PipelineComponentException(format("Failed to pull docker image %s", comp.getImageName()), e);
-            }
-            if (shutdown.get()) {
-                return null;
-            }
-        }
+                if (shutdown.get()) {
+                    return null;
+                }
 
-        if (comp.isBackedByLocalImage()) {
-            System.out.printf("[DockerSwarmDriver] Attempting to push local image %s to remote image registry %s\n", comp.getLocalImageName(), comp.getImageName());
-            if (comp.getUsername() != null && comp.getPassword() != null) {
-                System.out.println("[DockerSwarmDriver] Using provided password and username to authentificate against the remote registry");
-            }
-            _interface.push_image(comp.getImageName(), comp.getLocalImageName(), comp.getUsername(), comp.getPassword());
-        }
-        System.out.printf("[DockerSwarmDriver] Assigned new pipeline component unique id %s\n", uuid);
 
-        String digest = _interface.getDigestFromImage(comp.getImageName());
-        comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
-        System.out.printf("[DockerSwarmDriver] Transformed image %s to pinnable image name %s\n", comp.getImageName(), digest);
+                DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
+                    swarmUrl,
+                    jc,
+                    _timeout,
+                    _client,
+                    _luaContext,
+                    skipVerification,
+                    prefix
+                );
 
-        String serviceid = _interface.run_service(digest, comp.getScale(), comp.getConstraints());
-
-        int port = _interface.extract_service_port_mapping(serviceid);
-
-        System.out.printf("[DockerSwarmDriver][%s] Started service, waiting for it to become responsive...\n", uuid);
-
-        if (port == 0) {
-            throw new UnknownError("Could not read the service port!");
-        }
-        final String uuidCopy = uuid;
-        IDUUICommunicationLayer layer = null;
-        String prefix = String.format("[DockerSwarmDriver][%s][Replicas %d]", uuidCopy.substring(0, 5) + "...", comp.getScale());
-        String swarmUrl = _interface.getHostUrl(port);
-
-        try {
-            if (shutdown.get()) {
-                return null;
+                layer = get_communication_layer(requestContext);
+            } catch (Exception e) {
+                _interface.rm_service(serviceid);
+                throw e;
             }
 
-
-            DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
-                swarmUrl,
-                jc,
-                _timeout,
-                _client,
-                _luaContext,
-                skipVerification,
-                prefix
+            logger().info("%s Service for image %s is online (URL %s) and seems to understand DUUI V1 format!%n",
+                prefix, comp.getImageName(), swarmUrl
             );
 
-            layer = get_communication_layer(requestContext);
-        } catch (Exception e) {
-            _interface.rm_service(serviceid);
-            throw e;
+            comp.initialise(serviceid, port, layer, this);
+            Thread.sleep(500);
+
+            _active_components.put(uuid, comp);
         }
-
-        System.out.printf("%s Service for image %s is online (URL %s) and seems to understand DUUI V1 format!\n", 
-            prefix, comp.getImageName(), swarmUrl
-        );
-
-        comp.initialise(serviceid, port, layer, this);
-        Thread.sleep(500);
-
-        _active_components.put(uuid, comp);
-
+        
         return shutdown.get() ? null : uuid;
     }
 
     @Override
     public void shutdown() {
         if (_withSwarmVisualizer != null) {
-            System.out.println("[DUUISwarmDriver] Shutting down swarm visualizer now!");
+            logger().info("[DUUISwarmDriver] Shutting down swarm visualizer now!");
             _interface.stop_container(_withSwarmVisualizer);
             _withSwarmVisualizer = null;
         }
@@ -203,7 +205,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the Swarm Driver");
         }
         if (!comp.getRunningAfterExit()) {
-            System.out.printf("[DockerSwarmDriver] Stopping service %s...\n", comp.getServiceId());
+            logger().info("[DockerSwarmDriver] Stopping service %s...\n", comp.getServiceId());
             _interface.rm_service(comp.getServiceId());
         }
 
@@ -215,6 +217,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             String _host, 
             IDUUICommunicationLayer _communicationLayer
     ) implements IDUUIUrlAccessible {
+
         @Override
         public String getUniqueInstanceKey() {
             return _identifier;
@@ -229,6 +232,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
         public IDUUICommunicationLayer getCommunicationLayer() {
             return _communicationLayer;
         }
+        
     }
 
     protected static class InstantiatedComponent extends DUUIRestDriver.IDUUIInstantiatedRestComponent<InstantiatedComponent>  {

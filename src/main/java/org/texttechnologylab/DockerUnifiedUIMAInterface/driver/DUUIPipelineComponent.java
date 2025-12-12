@@ -89,7 +89,7 @@ public class DUUIPipelineComponent {
         try {
             return classLoader.getResourceAsStream("git.properties").toString();
         } catch (NullPointerException e) {
-            System.err.println("Could not find resource \"git.properties\"!");
+            // If no version information is available, fall back to a defined default.
             return "undefined";
         }
     }
@@ -435,7 +435,6 @@ public class DUUIPipelineComponent {
 
     public DUUIPipelineComponent __internalPinDockerImage(String imageName, String pinName) {
         if(pinName==null) {
-            System.err.println("Could not add the digest since this image has not been pushed and pulled from a registry V2");
             _options.put(dockerImageName,imageName);
             return this;
         }

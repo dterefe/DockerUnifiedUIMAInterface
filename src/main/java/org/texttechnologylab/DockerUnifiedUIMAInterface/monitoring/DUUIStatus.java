@@ -14,12 +14,14 @@ public class DUUIStatus {
     public static final String INPUT = "Input";
     public static final String INSTANTIATING = "Instantiating";
     public static final String OUTPUT = "Output";
+    public static final String PROCESS = "Process";
     public static final String SETUP = "Setup";
     public static final String SHUTDOWN = "Shutdown";
     public static final String SKIPPED = "Skipped";
     public static final String IMAGE_START = "Starting";
     public static final String UNKNOWN = "Unknown";
     public static final String WAITING = "Waiting";
+
 
     /**
      * Checks wether the given status is any of the Status names provided as options.

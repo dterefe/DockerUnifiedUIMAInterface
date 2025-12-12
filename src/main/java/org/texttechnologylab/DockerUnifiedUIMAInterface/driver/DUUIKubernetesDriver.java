@@ -26,6 +26,9 @@ import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.xml.sax.SAXException;
 
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -109,9 +112,12 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
      */
     public static void createDeployment(String name, String image, int replicas, List<String> labels) {
 
+        DUUILogger log = DUUILogContext.getLogger();
+
         if (labels.isEmpty()) {
             labels = List.of("disktype=all");
-            System.out.println("(KubernetesDriver) defaulting to label disktype=all");
+            
+            log.debug("Defaulting to label disktype=all");
         }
 
         List<NodeSelectorTerm> terms = getNodeSelectorTerms(labels);
@@ -263,68 +269,66 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
         }
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);  // Initialisiere Komponente
 
-        String dockerImage = comp.getImageName();  // Image der Komponente als String
-        int scale = comp.getScale(); // Anzahl der Replicas in dieser Kubernetes-Komponente
+        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp))) {
+            String dockerImage = comp.getImageName();  // Image der Komponente als String
+            int scale = comp.getScale(); // Anzahl der Replicas in dieser Kubernetes-Komponente
 
-        Service service;
-        try {
-            /**
-             * Add "a" in front of the name, because according to the kubernetes-rules the names must start
-             * with alphabetical character (must not start with digit)
-             */
-            createDeployment("a" + uuid, dockerImage, scale + getScaleBuffer(), comp.getLabels());  // Erstelle Deployment
-            service = createService("a" + uuid);  // Erstelle service und gebe diesen zurück
-        } catch (Exception e) {
-            deleteDeployment("a" + uuid);
-            deleteService("a" + uuid);
-            throw e;
-        }
-        if (shutdown.get()) return null;
+            Service service;
+            try {
+                /**
+                 * Add "a" in front of the name, because according to the kubernetes-rules the names must start
+                 * with alphabetical character (must not start with digit)
+                 */
+                createDeployment("a" + uuid, dockerImage, scale + getScaleBuffer(), comp.getLabels());  // Erstelle Deployment
+                service = createService("a" + uuid);  // Erstelle service und gebe diesen zurück
+            } catch (Exception e) {
+                deleteDeployment("a" + uuid);
+                deleteService("a" + uuid);
+                throw e;
+            }
+            if (shutdown.get()) return null;
 
-        int port = service.getSpec().getPorts().get(0).getNodePort();  // NodePort
-//            service.getSpec().getPorts().forEach(p->{
-//                System.out.println("Node-port: "+p.getNodePort());
-//                System.out.println("Port: "+p.getPort());
-//                System.out.println("Target-port: "+p.getTargetPort());
-//            });
-        final String uuidCopy = uuid;
-        IDUUICommunicationLayer layer = null;
-        
-        String prefix = String.format("[DUUIKubernetesDriver][%s][Replicas %d]", uuidCopy.substring(0, 5) + "...", comp.getScale());
-        String kubeUrl = _interface.getHostUrl(port);
+            int port = service.getSpec().getPorts().get(0).getNodePort();  // NodePort
+            final String uuidCopy = uuid;
+            IDUUICommunicationLayer layer = null;
+            
+            String prefix = comp.prefix(0);
+            String kubeUrl = _interface.getHostUrl(port);
 
-        try {
+            try {
 
 
 
-            DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
-                kubeUrl,
-                jc,
-                _timeout,
-                _client,
-                _luaContext,
-                skipVerification,
-                prefix
+                DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
+                    kubeUrl,
+                    jc,
+                    _timeout,
+                    _client,
+                    _luaContext,
+                    skipVerification,
+                    prefix
+                );
+
+                logger().debug("%s Port %d", prefix, port);
+                layer = get_communication_layer(requestContext);
+
+            } catch (Exception e) {
+                deleteDeployment("a" + uuid);
+                deleteService("a" + uuid);
+                throw e;
+            }
+
+
+            logger().info("%s Service for image %s is online (URL %s) and seems to understand DUUI V1 format!\n",
+                prefix, comp.getImageName(), kubeUrl
             );
 
-            System.out.println("Port " + port);
-            layer = get_communication_layer(requestContext);
+            comp.initialise(port, layer, this);
+            Thread.sleep(500);
 
-        } catch (Exception e) {
-            deleteDeployment("a" + uuid);
-            deleteService("a" + uuid);
-            throw e;
+            _active_components.put(uuid, comp);
         }
-
-
-        System.out.printf("%s Service for image %s is online (URL %s) and seems to understand DUUI V1 format!\n", 
-            prefix, comp.getImageName(), kubeUrl
-        );
-
-        comp.initialise(port, layer, this);
-        Thread.sleep(500);
-
-        _active_components.put(uuid, comp);
+        
         return shutdown.get() ? null : uuid;
     }
 
@@ -447,6 +451,11 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
 
             }
             return this;
+        }
+        
+        @Override
+        protected String prefix(int ignored) {
+            return String.format("[%s][Replicas %d]", _uniqueComponentKey.substring(0, 5) + "...", getScale());
         }
 
         /**

@@ -1,9 +1,10 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface;
 
+import static java.lang.String.format;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import static java.lang.String.format;
 import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +22,7 @@ import java.util.Set;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,7 +59,10 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionDBReade
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIMonitor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEventObserver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.IDUUIStorageBackend;
@@ -121,6 +126,7 @@ class DUUIWorker extends Thread {
      */
     @Override
     public void run() {
+        DUUILogContext.setLogger(composer.getLogger());
         int num = _threadsAlive.addAndGet(1);
         while (true) {
             JCas object = null;
@@ -270,6 +276,8 @@ class DUUIWorkerAsyncReader extends Thread {
      */
     @Override
     public void run() {
+        DUUILogContext.setLogger(composer.getLogger());
+        DUUILogger log = DUUILogContext.getLogger();
         int num = _threadsAlive.addAndGet(1);
         while (true) {
             long waitTimeStart = System.nanoTime();
@@ -310,6 +318,7 @@ class DUUIWorkerAsyncReader extends Thread {
                 waitTimeEnd - waitTimeStart,
                 _jc,
                 trackErrorDocs);
+            
             for (DUUIComposer.PipelinePart i : _flow) {
                 try {
                     // Segment document for each item in the pipeline separately
@@ -333,7 +342,7 @@ class DUUIWorkerAsyncReader extends Thread {
                                 if (pStrategie.hasDebug()) {
                                     int iLeft = pStrategie.getSegments();
                                     DocumentMetaData dmd = DocumentMetaData.get(_jc);
-                                    System.out.println(dmd.getDocumentId() + " Left: " + iLeft);
+                                    log.debug("%s Left: %d", dmd.getDocumentId(), iLeft);
                                 }
 
 
@@ -350,9 +359,11 @@ class DUUIWorkerAsyncReader extends Thread {
 
                 } catch (Exception e) {
                     //Ignore errors at the moment
-                    e.printStackTrace();
-                    System.err.println(e.getMessage());
-                    System.out.println("Thread continues work with next document!");
+                    log.error(
+                            "Unhandled exception in DUUIWorker: %s%n%s",
+                            e.toString(),
+                            org.apache.commons.lang3.exception.ExceptionUtils.getStackTrace(e)
+                    );
                     break;
                 }
             }
@@ -407,6 +418,9 @@ class DUUIWorkerAsyncProcessor extends Thread {
      */
     @Override
     public void run() {
+        DUUILogContext.setLogger(composer.getLogger());
+        DUUILogger log = DUUILogContext.getLogger();
+
         int num = _threadsAlive.addAndGet(1);
         do {
             long waitTimeStart = System.nanoTime();
@@ -466,7 +480,7 @@ class DUUIWorkerAsyncProcessor extends Thread {
                                 if (pStrategie.hasDebug()) {
                                     int iLeft = pStrategie.getSegments();
                                     DocumentMetaData dmd = DocumentMetaData.get(_jc);
-                                    System.out.println(dmd.getDocumentId() + " Left: " + iLeft);
+                                    log.debug("%s Left: %d", dmd.getDocumentId(), iLeft);
                                 }
 
 
@@ -483,11 +497,12 @@ class DUUIWorkerAsyncProcessor extends Thread {
 
                 } catch (Exception e) {
                     //Ignore errors at the moment
-                    e.printStackTrace();
                     if (!(e instanceof IOException)) {
-                        System.err.println(e.getMessage());
-                        e.printStackTrace();
-                        System.out.println("Thread continues work with next document!");
+                        log.error(
+                                "Unhandled exception in DUUIWorkerAsyncProcessor: %s%n%s",
+                                e.toString(),
+                                org.apache.commons.lang3.exception.ExceptionUtils.getStackTrace(e)
+                        );
                         break;
                     }
                 }
@@ -555,7 +570,6 @@ class DUUIWorkerDocumentReader extends Thread {
      */
     @Override
     public void run() {
-
         composer.addEvent(
             DUUIEvent.Sender.COMPOSER,
             String.format("[DUUIWorkerDocumentReader] Thread %s started, %d threads are active.",
@@ -872,6 +886,18 @@ public class DUUIComposer {
     private AtomicInteger progress = new AtomicInteger(0);
 
     /**
+     * Default logger used by the composer, drivers and components
+     * when no more specific logger has been injected.
+     */
+    private final DUUILogger logger;
+
+    /**
+     * Observers that are notified asynchronously whenever a new
+     * {@link DUUIEvent} is added via {@link #addEvent(DUUIEvent)}.
+     */
+    private final CopyOnWriteArrayList<DUUIEventObserver> eventObservers = new CopyOnWriteArrayList<>();
+
+    /**
      * Composer constructor.
      * @throws URISyntaxException
      */
@@ -888,6 +914,7 @@ public class DUUIComposer {
         _hasShutdown = false;
         _shutdownAtomic = new AtomicBoolean(false);
         _instantiatedPipeline = new Vector<>();
+        logger = this::addEvent;
         _minimalTypesystem = TypeSystemDescriptionFactory
             .createTypeSystemDescriptionFromPath(
                 Objects.requireNonNull(
@@ -914,6 +941,58 @@ public class DUUIComposer {
         });
 
         Runtime.getRuntime().addShutdownHook(_shutdownHook);
+    }
+
+    /**
+     * @return the default logger associated with this composer.
+     */
+    public DUUILogger getLogger() {
+        return logger;
+    }
+
+    /**
+     * Registers an event observer that will be notified asynchronously
+     * whenever {@link #addEvent(DUUIEvent)} is called.
+     *
+     * @param observer observer to register
+     */
+    public void addEventObserver(DUUIEventObserver observer) {
+        if (observer != null) {
+            eventObservers.add(observer);
+        }
+    }
+
+    /**
+     * Unregisters a previously registered event observer.
+     *
+     * @param observer observer to remove
+     */
+    public void removeEventObserver(DUUIEventObserver observer) {
+        if (observer != null) {
+            eventObservers.remove(observer);
+        }
+    }
+
+    /**
+     * Dispatches the given event to all registered observers using
+     * asynchronous tasks. Exceptions in observers are caught and ignored
+     * so they do not affect the main processing flow.
+     *
+     * @param event event to dispatch
+     */
+    protected void notifyEventObservers(DUUIEvent event) {
+        if (event == null || eventObservers.isEmpty()) {
+            return;
+        }
+        for (DUUIEventObserver observer : eventObservers) {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    observer.onEvent(event);
+                } catch (Throwable ignored) {
+                    // Observer failures must not impact main processing.
+                }
+            });
+        }
     }
 
     public static String getLocalhost() {
@@ -1008,6 +1087,7 @@ public class DUUIComposer {
      * @return this, for method chaining
      */
     public DUUIComposer addDriver(IDUUIDriverInterface driver) {
+        driver.setLogger(logger);
         driver.setLuaContext(_context);
         _drivers.put(driver.getClass().getCanonicalName(), driver);
         return this;
@@ -1023,6 +1103,7 @@ public class DUUIComposer {
      */
     public DUUIComposer addDriver(IDUUIDriverInterface... drivers) {
         for (IDUUIDriverInterface driver : drivers) {
+            driver.setLogger(logger);
             driver.setLuaContext(_context);
             _drivers.put(driver.getClass().getCanonicalName(), driver);
         }
@@ -2298,11 +2379,7 @@ public class DUUIComposer {
      */
     public void addEvent(DUUIEvent.Sender sender, String message, DebugLevel debugLevel) {
         DUUIEvent event = new DUUIEvent(sender, message, debugLevel);
-        events.add(event);
-        if (event.getDebugLevel().compareTo(this.debugLevel) <= 0
-            && !this.debugLevel.equals(DebugLevel.NONE)) {
-            System.out.println(event);
-        }
+        addEvent(event);
     }
 
     /**
@@ -2312,6 +2389,19 @@ public class DUUIComposer {
      */
     public void addEvent(DUUIEvent.Sender sender, String message) {
         addEvent(sender, message, DebugLevel.DEBUG);
+    }
+
+    /**
+     * Adds an event to the composer.
+     * @param event     DUUIEvent object
+     */
+    protected void addEvent(DUUIEvent event) {
+        events.add(event);
+        if (event.getDebugLevel().compareTo(this.debugLevel) <= 0
+            && !this.debugLevel.equals(DebugLevel.NONE)) {
+            System.out.println(event);
+        }
+        notifyEventObservers(event);
     }
 
     public Set<DUUIDocument> getDocuments() {

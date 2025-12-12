@@ -37,6 +37,9 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationL
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.xml.sax.SAXException;
 
@@ -53,13 +56,25 @@ import org.xml.sax.SAXException;
  * to simplify its definition in subclasses.
  * 
  */
-public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends IDUUIInstantiatedPipelineComponent> implements IDUUIDriverInterface {
+public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends IDUUIInstantiatedPipelineComponent> implements IDUUIDriverInterface {
 
     protected Duration _timeout = Duration.ofMillis(10_000);
     protected DUUILuaContext _luaContext;
     static int MAX_HTTP_RETRIES = 10;
     static Duration RETRY_DELAY = Duration.ofMillis(2000);
     static int BODY_PREVIEW_LIMIT = 500;
+
+    private DUUILogger logger = DUUILogContext.getLogger();
+
+    @Override
+    public DUUILogger logger() {
+        return logger;
+    }
+
+    @Override
+    public void setLogger(DUUILogger logger) {
+        this.logger = (logger != null) ? logger : DUUILogContext.getLogger();
+    }
  
     /**
      * Helper to send a request with a built in retry-policy.
@@ -75,18 +90,19 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
      * @throws Exception
      */
     public static HttpResponse<byte[]> sendWithRetries(
-            HttpClient client,
-            HttpRequest request,
-            Instant deadline,
-            Duration timeout,
-            Duration retryDelay,
-            int max_http_retries,
-            String prefix) throws Exception {
+        HttpClient client,
+        HttpRequest request,
+        Instant deadline,
+        Duration timeout,
+        Duration retryDelay,
+        int max_http_retries,
+        String prefix) throws Exception {
+        DUUILogger log = DUUILogContext.getLogger();
         int attempts = 0;
         while (Instant.now().isBefore(deadline)) {
             try {
                 HttpResponse<byte[]> resp = client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
-                System.out.printf(
+                log.debug(
                         "%s HTTP attempt #%d to %s succeeded with status %d%n",
                         prefix,
                         attempts + 1,
@@ -96,7 +112,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                 return resp;
             } catch (Exception e) {
                 attempts++;
-                System.err.printf(
+                log.error(
                         "%s HTTP connection error on try #%d to %s: %s (%s)%n",
                         prefix,
                         attempts,
@@ -105,7 +121,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                         e.getMessage()
                 );
                 if (e instanceof CompletionException ce && ce.getCause() != null) {
-                    System.err.printf(
+                    log.debug(
                             "%s Error while calling endpoint: %s (%s)%n %s %n",
                             prefix,
                             ce.getCause().getClass().getSimpleName(),
@@ -122,7 +138,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                 try {
                     Thread.sleep(retryDelay.toMillis());
                 } catch (InterruptedException ex) {
-                    System.err.printf(
+                    log.error(
                             "%s Sleep interrupted while waiting to retry endpoint call: %s\n",
                             prefix,
                             ex.toString()
@@ -189,7 +205,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         return (T) this;
     }
 
-    abstract protected Map<String, IC> getActiveComponents();
+    abstract protected Map<String, Ic> getActiveComponents();
     
     /**
      * Get the instantiated component by its UUID
@@ -199,8 +215,8 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
      * 
      * @throws InvalidParameterException if the UUID is not valid
      */
-    protected IC getInstantiatedComponent(String uuid) {
-        IC component = getActiveComponents().get(uuid);
+    protected Ic getInstantiatedComponent(String uuid) {
+        Ic component = getActiveComponents().get(uuid);
         if (component == null) {
             throw new InvalidParameterException("[" + this.getClass().getSimpleName() + "] Invalid UUID, this component has not been instantiated by the driver");
         }
@@ -217,7 +233,11 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
     public void printConcurrencyGraph(String uuid) {
         IDUUIInstantiatedPipelineComponent component = getInstantiatedComponent(uuid);
         
-        System.out.printf("[%s][%s]: Maximum concurrency %d\n", this.getClass().getSimpleName(), uuid, component.getPipelineComponent().getScale());
+        logger().info("[%s][%s]: Maximum concurrency %d\n",
+            this.getClass().getSimpleName(), 
+            uuid, 
+            component.getPipelineComponent().getScale()
+        );
     }
 
     protected record DUUICommunicationLayerRequestContext(
@@ -245,9 +265,9 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
      * @return the communication layer
      * @throws Exception
      */
-    public static IDUUICommunicationLayer get_communication_layer(DUUICommunicationLayerRequestContext context) throws Exception {
+    public IDUUICommunicationLayer get_communication_layer(DUUICommunicationLayerRequestContext context) throws Exception {
         String prefix = context.logPrefix();
-        System.out.printf(
+        logger().info(
                 "%s Initializing communication layer for %s (timeout=%d ms, skipVerification=%b)%n",
                 prefix,
                 context.url(),
@@ -276,35 +296,45 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                     case 200 -> {
                         String body2 = new String(resp.body(), Charset.defaultCharset());
                         try {
-                            System.out.printf("%s Component lua communication layer, loading...%n", prefix);
+                            logger().info("%s Component lua communication layer, loading...%n", prefix);
+
+                            logger().debug(
+                                DUUIEvent.Context.lua(context.url() + DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER, body2),
+                                "%s Received lua file body", prefix
+                            );
+                            
                             IDUUICommunicationLayer lua_com = new DUUILuaCommunicationLayer(body2, "requester", context.luaContext());
                             layer = lua_com;
-                            System.out.printf("%s Component lua communication layer, loaded.%n", prefix);
+                            logger().info("%s Component lua communication layer, loaded.%n", prefix);
                             communicationLayerRetrieved = true;
                             break OUTER;
                         } catch (Exception e) {
                             fatal_error = true;
-                            throw new Exception(
+                            Exception nr = new Exception(
                                 format("%s Component provided a lua script which is not runnable.",
                                 prefix
                             ), e);
+
+                            logger().error("%s: %s", nr.getCause(), nr.getMessage());
+
+                            throw nr;
                         }
                     }
                     case 404 -> {
-                        System.out.printf("%s Component provided no own communication layer implementation using fallback.%n", prefix);
+                        logger().error("%s Component provided no own communication layer implementation using fallback.%n", prefix);
                         communicationLayerRetrieved = true;
                         break OUTER;
                     }
                     default -> {
                         int bodyLen = resp.body() != null ? resp.body().length : -1;
                         String preview = preview(resp.body(), BODY_PREVIEW_LIMIT, Charset.defaultCharset());
-                        System.err.printf("%s Got HTTP status: %d (body %d bytes)%n",
+                        logger().error("%s Got HTTP status: %d (body %d bytes)%n",
                                 prefix,
                                 resp.statusCode(),
                                 bodyLen
                         );
                         if (!preview.isEmpty()) {
-                            System.err.printf("%s Response preview: %s%n", prefix, preview);
+                            logger().error("%s Response preview: %s%n", prefix, preview);
                         }
                     }
                 }
@@ -333,7 +363,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             throw new TimeoutException(format("The Container did not provide one succesful answer in %d milliseconds", context.timeout().toMillis()));
         }
         if (context.skipVerification()) {
-            System.out.printf("%s skipVerification=true, returning early.%n", prefix);
+            logger().info("%s skipVerification=true, returning early.%n", prefix);
             return layer;
         }
 
@@ -350,7 +380,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
      * @param prefix log prefix
      * @throws Exception
      */
-    private static void verifyComponentCompatibility(
+    private void verifyComponentCompatibility(
             DUUICommunicationLayerRequestContext context,
             IDUUICommunicationLayer layer,
             String prefix) throws Exception {
@@ -359,10 +389,17 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             //TODO: Make this accept options to better check the instantiation!
             layer.serialize(context.jcas(), stream, null, "_InitialView");
         } catch (Exception e) {
-            e.printStackTrace();
+            DUUILogger log = DUUILogContext.getLogger();
+            log.error(
+                    "%s The serialization step of the communication layer fails for implementing class %s%n%s",
+                    prefix,
+                    layer.getClass().getCanonicalName(),
+                    ExceptionUtils.getStackTrace(e)
+            );
             throw new Exception(
                 format("%s The serialization step of the communication layer fails for implementing class %s", 
-                prefix, layer.getClass().getCanonicalName())
+                prefix, layer.getClass().getCanonicalName()),
+                e
             );
         }
 
@@ -377,7 +414,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         try {
             resp = context.client().sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
         } catch (Exception e) {
-            System.err.printf(
+            logger().error(
                     "%s Verification request to %s failed: %s (%s)%n",
                     prefix,
                     request.uri(),
@@ -386,7 +423,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             );
             if (e instanceof CompletionException && ((CompletionException) e).getCause() != null) {
                 Throwable cause = ((CompletionException) e).getCause();
-                System.err.printf(
+                logger().error(
                         "%s Verification CompletionException cause: %s (%s)%n",
                         prefix,
                         cause.getClass().getSimpleName(),
@@ -402,7 +439,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                 layer.deserialize(context.jcas(), inputStream, "_InitialView");
             } catch (Exception e) {
                 String preview = preview(resp.body(), BODY_PREVIEW_LIMIT, StandardCharsets.UTF_8);
-                System.err.printf(
+                logger().error(
                         "%s Deserialization failed for %s; response preview: %s%n",
                         prefix,
                         request.uri(),
@@ -414,7 +451,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         } else {
             int bodyLen = resp.body() != null ? resp.body().length : -1;
             String preview = preview(resp.body(), BODY_PREVIEW_LIMIT, StandardCharsets.UTF_8);
-            System.err.printf(
+            logger().error(
                     "%s Verification request to %s returned status %d (body %d bytes)%n",
                     prefix,
                     request.uri(),
@@ -422,7 +459,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
                     bodyLen
             );
             if (!preview.isEmpty()) {
-                System.err.printf("%s Verification response preview: %s%n", prefix, preview);
+                logger().error("%s Verification response preview: %s%n", prefix, preview);
             }
             throw new Exception(format("The container returned response with code %d for %s", resp.statusCode(), request.uri()));
         }
@@ -497,6 +534,8 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
         protected final ConcurrentLinkedQueue<IDUUIUrlAccessible> _components;
         protected final ConcurrentHashMap<String, IDUUIUrlAccessible> _total_instances;
 
+        private DUUILogger logger = DUUILogContext.getLogger();
+
         public IDUUIInstantiatedRestComponent(DUUIPipelineComponent component, String uuid) {
 
             _component = component;
@@ -506,6 +545,24 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, IC>, IC extends
             _total_instances = new ConcurrentHashMap<>();
         }
         
+        protected String prefix(int replicaIndex) {
+            return String.format("[%s][%s][Replica %d/%d]", 
+                getPipelineComponent().getDriverSimpleName(),
+                _uniqueComponentKey.substring(0, 5) + "...",
+                replicaIndex,
+                getScale()
+            );
+        }
+
+        @Override
+        public DUUILogger logger() {
+            return logger;
+        }
+
+        @Override
+        public void setLogger(DUUILogger logger) {
+            this.logger = (logger != null) ? logger : DUUILogContext.getLogger();
+        }
         @Override
         public String getUniqueComponentKey() {
             return _uniqueComponentKey;

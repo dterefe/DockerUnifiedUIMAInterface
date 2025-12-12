@@ -55,7 +55,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     private final int skipped;
 
     private DUUIEvent.Context context(String documentId, String status) {
-        return DUUIEvent.Context.reader(documentId, this, status);
+        return DUUIEvent.Context.reader(documentId, status);
     }
 
     private DUUIDocumentReader(Builder builder) {
@@ -86,11 +86,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         loadedDocuments = new ConcurrentLinkedQueue<>();
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.INPUT,
-                this.getClass()
-            ),
+            DUUIStatus.INPUT,
             "Processing %d files.",
             documentQueue.size()
         );
@@ -131,19 +127,13 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
     private void removeSmallFiles() {
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.INPUT,
-                this.getClass()),
+            DUUIStatus.INPUT,
             "Skip files smaller than %d bytes.",
             builder.minimumDocumentSize
         );
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.INPUT,
-                this.getClass()),
+            DUUIStatus.INPUT,
             "Number of files before skipping %d.",
             preProcessor.size()
         );
@@ -154,10 +144,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             .collect(Collectors.toList());
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.INPUT,
-                this.getClass()),
+            DUUIStatus.INPUT,
             "Number of files after skipping %d.",
             preProcessor.size()
         );
@@ -170,10 +157,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             .collect(Collectors.toList());
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.INPUT,
-                this.getClass()),
+            DUUIStatus.INPUT,
             "Sorted files by size in ascending order"
         );
     }
@@ -182,10 +166,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         if (builder.outputHandler == null) return;
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.OUTPUT,
-                this.getClass()),
+            DUUIStatus.OUTPUT,
             "Checking output location %s for existing documents.",
             builder.outputPath
         );
@@ -207,20 +188,14 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         if (documentsInTarget.isEmpty()) {
             composer.getLogger().info(
-                DUUIEvent.Context.of(
-                Sender.READER,
                 DUUIStatus.OUTPUT,
-                this.getClass()),
                 "Found 0 documents in output location. Keeping all files from input location."
             );
             return;
         }
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.OUTPUT,
-                this.getClass()),
+            DUUIStatus.OUTPUT,
             "Found %d documents in output location. Checking against %d documents in input location.",
             documentsInTarget.size(),
             preProcessor.size()
@@ -251,10 +226,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         }
 
         composer.getLogger().info(
-            DUUIEvent.Context.of(
-                Sender.READER,
-                DUUIStatus.OUTPUT,
-                this.getClass()),
+            DUUIStatus.OUTPUT,
             "Removed %d documents from input location that are already present in output location. Keeping %d",
             removedCounter,
             preProcessor.size()
@@ -284,6 +256,8 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             return null;
         }
 
+        pCas.reset();
+
         DUUIDocument document = pollDocument();
         if (document == null) return null;
         document.setStartedAt();
@@ -308,15 +282,6 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             timer.getDuration()
         );
 
-        composer.getLogger().debug(
-            context(
-                document.getPath(),
-                DUUIStatus.DESERIALIZE
-            ),
-            "Deserializing document %s",
-            document.getPath()
-        );
-
         timer.restart();
 
         if (decodedDocument != null) {
@@ -326,7 +291,6 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                 composer.getLogger().debug(
                     DUUIEvent.Context.readerError(
                         document.getPath(),
-                        this,
                         ExceptionUtils.getStackTrace(e)
                     ),
                     "Failed to deserialize XMI for document %s, falling back to plain text: %s",
@@ -375,6 +339,9 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             }
         }
 
+        // Initialize marker and baseline annotation records after deserialization
+        document.initializeMarker(pCas);
+
         if (builder.language != null && !builder.language.isEmpty()) {
             pCas.setDocumentLanguage(builder.language);
         }
@@ -384,104 +351,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
     @Override
     public void getNextCas(JCas pCas) {
-        if (composer.shouldShutdown()) {
-            return;
-        }
-
-        DUUIDocument document = pollDocument();
-        if (document == null) return;
-        document.setStartedAt();
-
-        Timer timer = new Timer();
-
-        timer.start();
-        InputStream decodedDocument = decodeDocument(document, timer);
-        timer.stop();
-
-        document.setDurationDecode(timer.getDuration());
-
-        document.setStatus(DUUIStatus.DESERIALIZE);
-
-        composer.getLogger().info(
-            context(
-                document.getPath(),
-                DUUIStatus.DECODE
-            ),
-            "Document %s decoded after %d ms",
-            document.getPath(),
-            timer.getDuration()
-        );
-
-        composer.getLogger().debug(
-            context(
-                document.getPath(),
-                DUUIStatus.DESERIALIZE
-            ),
-            "Deserializing document %s",
-            document.getPath()
-        );
-
-        timer.restart();
-
-        if (decodedDocument != null) {
-            try {
-                XmiCasDeserializer.deserialize(decodedDocument, pCas.getCas(), true);
-            } catch (Exception e) {
-                composer.getLogger().debug(
-                    DUUIEvent.Context.readerError(
-                        document.getPath(),
-                        this,
-                        ExceptionUtils.getStackTrace(e)
-                    ),
-                    "Failed to deserialize XMI for document %s, falling back to plain text: %s",
-                    document.getPath(),
-                    e.toString()
-                );
-                pCas.setDocumentText(document.getText().trim());
-            }
-        } else {
-            composer.getLogger().debug(
-                context(
-                    document.getPath(),
-                    DUUIStatus.DESERIALIZE
-                ),
-                "Decoded content for document %s is unavailable, using raw text representation if present.",
-                document.getPath()
-            );
-            pCas.setDocumentText(document.getText().trim());
-        }
-
-        timer.stop();
-        composer.getLogger().info(
-            context(
-                document.getPath(),
-                DUUIStatus.DESERIALIZE
-            ),
-            "Document %s deserialized after %d ms",
-            document.getPath(),
-            timer.getDuration()
-        );
-
-        document.setDurationDeserialize(timer.getDuration());
-        document.setStatus(DUUIStatus.WAITING);
-
-        if (builder.addMetadata) {
-            if (JCasUtil.select(pCas, DocumentMetaData.class).isEmpty()) {
-                DocumentMetaData metadata = DocumentMetaData.create(pCas);
-                metadata.setDocumentId(document.getName());
-                metadata.setDocumentTitle(document.getName());
-                metadata.setDocumentUri(document.getPath());
-                metadata.addToIndexes();
-            } else {
-                DocumentMetaData metaData = JCasUtil.selectSingle(pCas, DocumentMetaData.class);
-                metaData.setDocumentUri(document.getPath());
-                metaData.addToIndexes();
-            }
-        }
-
-        if (builder.language != null && !builder.language.isEmpty()) {
-            pCas.setDocumentLanguage(builder.language);
-        }
+        getNextDocument(pCas);
     }
 
     private DUUIDocument pollDocument() {
@@ -506,14 +376,15 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             try {
                 polled = builder.inputHandler.readDocument(document.getPath());
             } catch (IOException exception) {
-                composer.addEvent(
-                    DUUIEvent.Sender.READER,
-                    String.format(
-                        "Failed to read document %s: %s",
+                composer.getLogger().error(
+                    DUUIEvent.Context.readerError(
                         document.getPath(),
-                        exception.toString()
+                        ExceptionUtils.getStackTrace(exception)
                     ),
-                    DUUIComposer.DebugLevel.ERROR
+                    "Failed to read document %s; %s: %s",
+                    document.getPath(),
+                    exception,
+                    exception.toString()
                 );
                 throw new RuntimeException(exception);
             }
@@ -528,11 +399,10 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     private InputStream decodeDocument(DUUIDocument document, Timer timer) {
         document.setStatus(DUUIStatus.DECODE);
 
-        composer.addEvent(
-            DUUIEvent.Sender.READER,
-            String.format(
-                "Decoding document %s",
-                document.getPath())
+        composer.getLogger().info(
+            context(document.getPath(), DUUIStatus.DECODE),
+            "Decoding document %s",
+            document.getPath()
         );
 
         timer.start();
@@ -542,14 +412,15 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         try {
             decodedFile = DUUIDocumentDecoder.decode(document);
         } catch (IOException e) {
-            composer.addEvent(
-                DUUIEvent.Sender.DOCUMENT,
-                String.format(
-                    "Failed to decode document %s: %s",
+            composer.getLogger().error(
+                DUUIEvent.Context.readerError(
                     document.getPath(),
-                    e.toString()
+                    ExceptionUtils.getStackTrace(e)
                 ),
-                DUUIComposer.DebugLevel.ERROR
+                "Failed to decode document %s; %s: %s",
+                document.getPath(),
+                e,
+                e.toString()
             );
             document.setError(String.format(
                 "%s%n%s",
@@ -574,7 +445,6 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                     composer.getLogger().error(
                         DUUIEvent.Context.readerError(
                             document.getPath(),
-                            this,
                             ExceptionUtils.getStackTrace(e)
                         ),
                         "Failed to read document %s asynchronously: %s",
@@ -625,7 +495,11 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     public void upload(DUUIDocument document, JCas cas) throws IOException, SAXException {
         if (builder.outputHandler == null || document.getUploadProgress() != 0) return;
 
-        composer.addEvent(DUUIEvent.Sender.READER, String.format("Uploading document %s", document.getPath()));
+        composer.getLogger().info(
+            context(document.getPath(), DUUIStatus.OUTPUT),
+            "Uploading document %s",
+            document.getPath()
+        );
 
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         XmiCasSerializer xmiCasSerializer = new XmiCasSerializer(null);
@@ -641,31 +515,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         String inputExtension = document.getFileExtension();
         String outputExtension = builder.outputFileExtension;
-
-        String originalName = document.getName();
-        String outputName = originalName;
-
-        if (originalName != null && !originalName.isEmpty()) {
-            String inExt = inputExtension == null ? "" : inputExtension;
-            String outExt = outputExtension == null ? "" : outputExtension;
-
-            // If it already ends with the desired extension, keep it.
-            if (!outExt.isEmpty() && originalName.endsWith(outExt)) {
-                outputName = originalName;
-            }
-            // If it ends with the input extension, swap just that suffix.
-            else if (!inExt.isEmpty() && originalName.endsWith(inExt)) {
-                outputName =
-                    originalName.substring(0, originalName.length() - inExt.length()) + outExt;
-            }
-            // Fallback: replace the last extension segment, if any.
-            else if (!outExt.isEmpty()) {
-                int dotIndex = originalName.lastIndexOf('.');
-                if (dotIndex > 0) {
-                    outputName = originalName.substring(0, dotIndex) + outExt;
-                }
-            }
-        }
+        String outputName = buildOutputName(document.getName(), inputExtension, outputExtension);
 
         byte[] payload = outputStream.toByteArray();
 
@@ -718,6 +568,37 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         document.setUploadProgress(temp.getUploadProgress());
         document.setStatus(DUUIStatus.COMPLETED);
+    }
+
+    /**
+     * Derive the output file name based on the original name and the configured
+     * input/output extensions.
+     *
+     * Rules:
+     * - If the original name already ends with the desired output extension, keep it.
+     * - Else if it ends with the input extension, swap that suffix to the output extension.
+     * - Else, if an output extension is configured, replace the last extension segment.
+     */
+    private static String buildOutputName(String originalName, String inputExtension, String outputExtension) {
+        String outputName = originalName;
+
+        if (originalName != null && !originalName.isEmpty()) {
+            String inExt = inputExtension == null ? "" : inputExtension;
+            String outExt = outputExtension == null ? "" : outputExtension;
+
+            if (!outExt.isEmpty() && originalName.endsWith(outExt)) {
+                return originalName;
+            } else if (!inExt.isEmpty() && originalName.endsWith(inExt)) {
+                return originalName.substring(0, originalName.length() - inExt.length()) + outExt;
+            } else if (!outExt.isEmpty()) {
+                int dotIndex = originalName.lastIndexOf('.');
+                if (dotIndex > 0) {
+                    outputName = originalName.substring(0, dotIndex) + outExt;
+                }
+            }
+        }
+
+        return outputName;
     }
 
     public static final class Builder {

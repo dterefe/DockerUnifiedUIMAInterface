@@ -106,7 +106,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
 
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
             // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
             if (comp.getImageFetching()) {
                 if (comp.getUsername() != null) {

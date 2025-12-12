@@ -114,7 +114,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             throw new InvalidParameterException("This node is not a Docker Swarm Manager, thus cannot create and schedule new services!");
         }
         DUUISwarmDriver.InstantiatedComponent comp = new DUUISwarmDriver.InstantiatedComponent(component, uuid);
-        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
             if (_interface.getLocalImage(comp.getImageName()) == null) {
                 // If image is not available try to pull it
                 try {
@@ -128,7 +128,7 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             }
 
             if (comp.isBackedByLocalImage()) {
-                logger().info("[DockerSwarmDriver] Attempting to push local image %s to remote image registry %s%n", comp.getLocalImageName(), comp.getImageName());
+                logger().debug("[DockerSwarmDriver] Attempting to push local image %s to remote image registry %s%n", comp.getLocalImageName(), comp.getImageName());
                 if (comp.getUsername() != null && comp.getPassword() != null) {
                     logger().debug("[DockerSwarmDriver] Using provided password and username to authentificate against the remote registry");
                 }

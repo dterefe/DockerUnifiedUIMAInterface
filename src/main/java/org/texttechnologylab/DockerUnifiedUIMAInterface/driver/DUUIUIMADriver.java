@@ -32,8 +32,9 @@ import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.ClassScopedLogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
 import org.xml.sax.SAXException;
@@ -45,7 +46,7 @@ import org.xml.sax.SAXException;
 public class DUUIUIMADriver implements IDUUIDriverInterface {
     private HashMap<String, InstantiatedComponent> _engines;
     private boolean _enable_debug;
-    private DUUILogger logger = DUUILogContext.getLogger();
+    private static final DUUILogger logger = DUUILoggers.getLogger(DUUIUIMADriver.class);
 
     public DUUIUIMADriver() {
         _engines = new HashMap<String, InstantiatedComponent>();
@@ -58,8 +59,10 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
     }
 
     @Override
-    public void setLogger(DUUILogger logger) {
-        this.logger = (logger != null) ? logger : DUUILogContext.getLogger();
+    public void setLogger(DUUILogger delegate) {
+        if (logger instanceof ClassScopedLogger scoped) {
+            scoped.setDelegate(delegate);
+        }
     }
 
     public void setLuaContext(DUUILuaContext luaContext) {
@@ -153,9 +156,8 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
 
         public void describeAnalysisEngine() throws InvalidXMLException {
             String[] names = extractNames(_engine, 0);
-            DUUILogger log = DUUILogContext.getLogger();
             for (String i : names) {
-                log.debug("%s", i);
+                logger.debug("%s", i);
             }
         }
 

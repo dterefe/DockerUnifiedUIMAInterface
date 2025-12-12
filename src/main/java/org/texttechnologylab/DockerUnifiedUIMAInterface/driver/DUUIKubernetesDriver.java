@@ -27,8 +27,8 @@ import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
 import org.xml.sax.SAXException;
 
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -59,6 +59,8 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
 
     private static int _port = 9715;
     private static String sNamespace = "default";
+
+    private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIKubernetesDriver.class);
 
     /**
      * Constructor.
@@ -112,12 +114,10 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
      */
     public static void createDeployment(String name, String image, int replicas, List<String> labels) {
 
-        DUUILogger log = DUUILogContext.getLogger();
-
         if (labels.isEmpty()) {
             labels = List.of("disktype=all");
             
-            log.debug("Defaulting to label disktype=all");
+            LOG.debug("Defaulting to label disktype=all");
         }
 
         List<NodeSelectorTerm> terms = getNodeSelectorTerms(labels);
@@ -269,7 +269,7 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
         }
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);  // Initialisiere Komponente
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp))) {
+        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp))) {
             String dockerImage = comp.getImageName();  // Image der Komponente als String
             int scale = comp.getScale(); // Anzahl der Replicas in dieser Kubernetes-Komponente
 

@@ -1,9 +1,14 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
+import org.apache.uima.cas.Marker;
+import org.apache.uima.cas.impl.CASImpl;
 import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.jcas.cas.TOP;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -14,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class DUUIDocument {
 
+    private static final DUUILogger logger = DUUILoggers.getLogger(DUUIDocument.class);
     private String name;
     /**
      * The absolute path to the document including the name.
@@ -34,6 +40,8 @@ public class DUUIDocument {
     private long uploadProgress = 0L;
     private long downloadProgress = 0L;
     private final Map<String, Integer> annotations = new HashMap<>();
+    private final Map<String, AnnotationRecord> annotationRecords = new HashMap<>();
+    private Marker marker = null;
 
     public DUUIDocument(String name, String path, long size) {
         this.name = name;
@@ -244,22 +252,113 @@ public class DUUIDocument {
         this.finishedAt = finishedAt;
     }
 
+    private AnnotationState state(TOP top) {
+        return marker.isNew(top) 
+            ? AnnotationState.NEW : marker.isModified(top) 
+            ? AnnotationState.MODIFIED :
+            AnnotationState.BASELINE;
+    }
+
+    private AnnotationRecord merge(AnnotationRecord r1, AnnotationRecord r2) {
+        return r1 != null && r2 != null ? 
+            new AnnotationRecord(compare(r1.state(), r2.state()), r1.count() + r2.count()) : 
+            r1 == null ? r2 : r1; 
+    }
+
+    private AnnotationState compare(AnnotationState s1, AnnotationState s2) {
+        return s1 != null && s2 != null
+            ? s1 == AnnotationState.NEW       ? s1
+            : s2 == AnnotationState.NEW       ? s2
+            : s1 == AnnotationState.MODIFIED  ? s1
+            : s2 == AnnotationState.MODIFIED  ? s2
+            : AnnotationState.BASELINE
+            : s1 == null ? s2 : s1;
+    }
+
     public void countAnnotations(JCas cas) {
-        JCasUtil.select(cas, TOP.class).forEach(a -> {
-            String name = a.getType().getName();
 
-            int count = 0;
+        annotations.clear();
+        annotationRecords.clear();
 
-            if (annotations.containsKey(name)) {
-                count = annotations.get(name);
-            }
-            count++;
-            annotations.put(name, count);
-        });
+        boolean isMarkerValid = ensureValidMarker(cas);
+
+        JCasUtil.select(cas, TOP.class)
+            .stream()
+            .collect(
+                () -> new HashMap<String, AnnotationRecord>(),
+                (map, fs) -> {
+                    map.merge(
+                        fs.getType().getName(), 
+                        new AnnotationRecord(state(fs), 1),
+                        this::merge
+                    );
+                },
+                (left, right) -> right.forEach((type, rec) ->
+                    left.merge(
+                        type,
+                        rec,
+                        this::merge
+                    )
+                )
+            )
+            .forEach((typeName, rec) -> {
+                annotations.put(typeName, rec.count());
+                if (isMarkerValid) {
+                    annotationRecords.put(typeName, rec);
+                }
+            });
+    }
+
+    public void initializeMarker(JCas cas) {
+        CASImpl casImpl = (CASImpl) cas.getCas();
+        if (casImpl.getCurrentMark() != null) {
+            logger.warn(
+                DUUIEvent.Context.document(
+                    getPath(),
+                    DUUIStatus.ACTIVE
+                ),
+                "Marker already initialized for CAS of document %s, cannot track new annotations",
+                getPath()
+            );
+            return;
+        }
+        marker = casImpl.createMarker();
+    }
+
+    private boolean ensureValidMarker(JCas cas) {
+        if (marker == null) {
+            logger.warn(
+                DUUIEvent.Context.document(
+                    getPath(),
+                    DUUIStatus.ACTIVE
+                ),
+                "No marker initialized for document %s",
+                getPath()
+            );
+            return false;
+        }
+        CASImpl casImpl = (CASImpl) cas.getCas();
+        Marker current = casImpl.getCurrentMark();
+        if (current == null || current != marker) {
+            logger.warn(
+                DUUIEvent.Context.document(
+                    getPath(),
+                    DUUIStatus.ACTIVE
+                ),
+                "Marker for document %s is not current or has been cleared",
+                getPath()
+            );
+            return false;
+        }
+        return true;
     }
 
     public Map<String, Integer> getAnnotations() {
         return annotations;
+    }
+
+    public Map<String, AnnotationRecord> getAnnotationRecords() {
+        return annotationRecords;
     }
 
     public long getUploadProgress() {
@@ -277,4 +376,12 @@ public class DUUIDocument {
     public void setDownloadProgress(long downloadProgress) {
         this.downloadProgress = downloadProgress;
     }
+
+    public enum AnnotationState {
+        BASELINE,
+        NEW,
+        MODIFIED
+    }
+
+    public record AnnotationRecord(AnnotationState state, int count) { }
 }

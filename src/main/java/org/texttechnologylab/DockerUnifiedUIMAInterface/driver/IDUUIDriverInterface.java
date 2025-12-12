@@ -29,16 +29,14 @@ import org.xml.sax.SAXException;
 public interface IDUUIDriverInterface {
 
     /**
-     * @return the logger associated with this driver. Defaults to the
-     *         logger from {@link DUUILogContext} if not overridden.
+     * @return the logger associated with this driver.
      */
     default DUUILogger logger() {
         return DUUILogContext.getLogger();
     }
 
     /**
-     * Inject a logger for this driver. By default this sets the logger
-     * in {@link DUUILogContext} so that static helpers can use it.
+     * Inject a logger for this driver.
      */
     default void setLogger(DUUILogger logger) {
         DUUILogContext.setLogger(logger);

@@ -62,7 +62,7 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
         }
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
             final String uuidCopy = uuid;
             boolean added_communication_layer = false;
             int endpointIndex = 0;

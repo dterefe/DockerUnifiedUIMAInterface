@@ -26,6 +26,12 @@ public final class DUUILoggingConfig {
 
     private static volatile DebugLevel DEFAULT_MIN_LEVEL = DebugLevel.TRACE;
 
+    // Formatting / emission flags
+    private static volatile boolean INCLUDE_CLASS_NAME = false;
+    private static volatile boolean INCLUDE_SENDER = true;
+    private static volatile boolean INCLUDE_PAYLOAD = true;
+    private static volatile boolean FORMAT_TIMESTAMP = false;
+
     private DUUILoggingConfig() {
     }
 
@@ -51,6 +57,27 @@ public final class DUUILoggingConfig {
         } catch (IOException e) {
             // ignore config loading errors and keep defaults
             return;
+        }
+
+        // Formatting flags
+        String includeClassName = props.getProperty("logging.includeClassName");
+        if (includeClassName != null) {
+            INCLUDE_CLASS_NAME = Boolean.parseBoolean(includeClassName.trim());
+        }
+
+        String includeSender = props.getProperty("logging.includeSender");
+        if (includeSender != null) {
+            INCLUDE_SENDER = Boolean.parseBoolean(includeSender.trim());
+        }
+
+        String includePayload = props.getProperty("logging.includePayload");
+        if (includePayload != null) {
+            INCLUDE_PAYLOAD = Boolean.parseBoolean(includePayload.trim());
+        }
+
+        String formatTimestamp = props.getProperty("logging.formatTimestamp");
+        if (formatTimestamp != null) {
+            FORMAT_TIMESTAMP = Boolean.parseBoolean(formatTimestamp.trim());
         }
 
         for (Map.Entry<Object, Object> entry : props.entrySet()) {
@@ -104,6 +131,38 @@ public final class DUUILoggingConfig {
         PER_LOGGER_MIN_LEVEL.put(clazz.getName(), level);
     }
 
+    public static boolean isIncludeClassName() {
+        return INCLUDE_CLASS_NAME;
+    }
+
+    public static void setIncludeClassName(boolean includeClassName) {
+        INCLUDE_CLASS_NAME = includeClassName;
+    }
+
+    public static boolean isIncludeSender() {
+        return INCLUDE_SENDER;
+    }
+
+    public static void setIncludeSender(boolean includeSender) {
+        INCLUDE_SENDER = includeSender;
+    }
+
+    public static boolean isIncludePayload() {
+        return INCLUDE_PAYLOAD;
+    }
+
+    public static void setIncludePayload(boolean includePayload) {
+        INCLUDE_PAYLOAD = includePayload;
+    }
+
+    public static boolean isFormatTimestamp() {
+        return FORMAT_TIMESTAMP;
+    }
+
+    public static void setFormatTimestamp(boolean formatTimestamp) {
+        FORMAT_TIMESTAMP = formatTimestamp;
+    }
+
     /**
      * Returns the configured minimum level for the given logger name,
      * falling back to package-level configuration and finally the
@@ -128,4 +187,3 @@ public final class DUUILoggingConfig {
         return best != null ? best : DEFAULT_MIN_LEVEL;
     }
 }
-

@@ -99,16 +99,14 @@ public interface IDUUIInstantiatedPipelineComponent {
     }
     
     /**
-     * @return the logger associated with this instantiated component. Defaults
-     *         to the logger from {@link DUUILogContext} if not overridden.
+     * @return the logger associated with this instantiated component.
      */
     default DUUILogger logger() {
         return DUUILogContext.getLogger();
     }
 
     /**
-     * Inject a logger for this instantiated component. By default this sets the
-     * logger in {@link DUUILogContext} so that static helpers can use it.
+     * Inject a logger for this instantiated component.
      */
     default void setLogger(DUUILogger logger) {
         DUUILogContext.setLogger(logger);
@@ -227,7 +225,7 @@ public interface IDUUIInstantiatedPipelineComponent {
 
         String logPrefix = String.format("[%s]", queue.getValue0().getUniqueInstanceKey());
 
-        try (var ignored = comp.logger().withContext(DUUIEvent.Context.from(perf, comp, queue.getValue0().getUniqueInstanceKey()))) {
+        try (var ignored = comp.logger().withContext(DUUIEvent.Context.component(perf, comp, queue.getValue0().getUniqueInstanceKey()))) {
 
             String viewName = pipelineComponent.getViewName();
             JCas viewJc;
@@ -260,7 +258,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             }
 
             if (layer.supportsProcess()) {
-                comp.logger().debug(
+                comp.logger().info(
                         "%s Using direct layer.process() with sourceView='%s' and targetView='%s'.",
                         logPrefix,
                         comp.getSourceView(),
@@ -288,7 +286,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                         targetCas
                 );
 
-                comp.logger().debug(
+                comp.logger().info(
                         "%s Finished layer.process().",
                         logPrefix
                 );
@@ -306,7 +304,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             ByteArrayOutputStream out = new ByteArrayOutputStream(1024*1024);
 
             // Invoke Lua serialize()
-            comp.logger().debug("%s Serializing JCas (sourceView=%s, parameters %s)",
+            comp.logger().info("%s Serializing JCas (sourceView=%s, parameters %s)",
                  logPrefix,
                  comp.getSourceView(),
                  comp.getParameters()
@@ -383,15 +381,16 @@ public interface IDUUIInstantiatedPipelineComponent {
                 ByteArrayInputStream st = new ByteArrayInputStream(resp.body());
                 long annotatorEnd = System.nanoTime();
                 long deserializeStart = annotatorEnd;
-
-                comp.logger().debug("%s Deserializing JCas (targetView=%s)",
-                    logPrefix,
-                    comp.getTargetView()
-                );
                 
                 layer.deserialize(viewJc, st, comp.getTargetView());
 
                 long deserializeEnd = System.nanoTime();
+                
+                comp.logger().info("%s Deserialized JCas (targetView=%s) after %d ms",
+                    logPrefix,
+                    comp.getTargetView(),
+                    Duration.ofNanos(deserializeEnd - deserializeStart).toMillis()
+                );            
 
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
                 ann.setDescription(comp.getFinalizedRepresentation());
@@ -421,7 +420,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                     throw new InvalidObjectException(String.format("Expected response 200, got %d: %s", resp.statusCode(), responseBody));
                 } else {
                     comp.logger().debug(
-                        DUUIEvent.Context.from(perf, comp, queue.getValue0().getUniqueInstanceKey(), responseBody),
+                        DUUIEvent.Context.component(perf, comp, queue.getValue0().getUniqueInstanceKey(), responseBody),
                         String.format("%s Expected response 200, got %d", logPrefix, resp.statusCode())
                     );
                 }

@@ -12,6 +12,24 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.DebugLevel;
 public interface DUUILogger extends DUUIEventEmitter {
 
         /**
+         * @return the logical name of this logger. Implementations are free to
+         *         choose an appropriate convention (for example, the fully
+         *         qualified class name when using class-scoped loggers).
+         */
+        default String name() {
+            return "";
+        }
+
+        /**
+         * @return the default {@link DUUIEvent.Sender} associated with this
+         *         logger. Class-scoped loggers should derive this from the
+         *         owning class.
+         */
+        default DUUIEvent.Sender sender() {
+            return DUUIEvent.Sender.SYSTEM;
+        }
+
+        /**
          * Scope handle for temporary logging contexts.
          * <p>
          * Extends {@link AutoCloseable} but does not declare any checked
@@ -47,10 +65,10 @@ public interface DUUILogger extends DUUIEventEmitter {
             DUUIEvent.Context previous = getContext();
             setContext(context);
             return () -> setContext(previous);
-        }
+        } 
 
         default void log(DUUIEvent.Context context, DebugLevel level, String message) {
-            emit(new DUUIEvent(context.sender(), message, level, context));
+            emit(new DUUIEvent(sender(), message, level, context, name()));
         }
 
         default void log(DUUIEvent.Context context, DebugLevel level, String format, Object... args) {
@@ -111,6 +129,34 @@ public interface DUUILogger extends DUUIEventEmitter {
 
         default void none(DUUIEvent.Context context, String format, Object... args) {
             log(context, DebugLevel.NONE, format, args);
+        }
+
+        default void trace(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.TRACE, format, args);
+        }
+
+        default void debug(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.DEBUG, format, args);
+        }
+
+        default void info(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.INFO, format, args);
+        }
+
+        default void warn(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.WARN, format, args);
+        }
+
+        default void error(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.ERROR, format, args);
+        }
+
+        default void critical(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.CRITICAL, format, args);
+        }
+
+        default void none(String status, String format, Object... args) {
+            log(DUUIEvent.Context.of(status), DebugLevel.NONE, format, args);
         }
 
         default void trace(String message) {

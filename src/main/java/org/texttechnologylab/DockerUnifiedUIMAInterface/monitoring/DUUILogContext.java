@@ -2,6 +2,8 @@ package org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring;
 
 import java.util.Objects;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.DebugLevel;
+
 /**
  * Global logging context for DUUI.
  * <p>
@@ -19,10 +21,16 @@ public final class DUUILogContext {
 
     /**
      * Default logger used when no logger has been set in this thread.
-     * Emits events directly to {@code System.out}/{@code System.err}.
+     * Emits events directly to {@code System.out}/{@code System.err}, but
+     * still respects the global logging configuration in
+     * {@link DUUILoggingConfig}.
      */
     private static final DUUILogger FALLBACK_LOGGER = (DUUIEvent event) -> {
         if (event == null) {
+            return;
+        }
+        DebugLevel min = DUUILoggingConfig.getMinLevel("fallback");
+        if (event.getDebugLevel().ordinal() < min.ordinal()) {
             return;
         }
         switch (event.getDebugLevel()) {

@@ -40,6 +40,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.ClassScopedLogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.xml.sax.SAXException;
 
@@ -64,16 +66,18 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
     static Duration RETRY_DELAY = Duration.ofMillis(2000);
     static int BODY_PREVIEW_LIMIT = 500;
 
-    private DUUILogger logger = DUUILogContext.getLogger();
+    private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIRestDriver.class);
 
     @Override
     public DUUILogger logger() {
-        return logger;
+        return LOG;
     }
 
     @Override
-    public void setLogger(DUUILogger logger) {
-        this.logger = (logger != null) ? logger : DUUILogContext.getLogger();
+    public void setLogger(DUUILogger delegate) {
+        if (LOG instanceof ClassScopedLogger scoped) {
+            scoped.setDelegate(delegate);
+        }
     }
  
     /**
@@ -112,7 +116,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
                 return resp;
             } catch (Exception e) {
                 attempts++;
-                log.error(
+                log.debug(
                         "%s HTTP connection error on try #%d to %s: %s (%s)%n",
                         prefix,
                         attempts,

@@ -27,8 +27,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver.ComponentInstance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
 import org.xml.sax.SAXException;
 
 import io.vertx.core.Future;
@@ -54,6 +54,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
     private HashMap<String, DUUIDockerDriver.InstantiatedComponent> _active_components;
 
+    private static final DUUILogger logger = DUUILoggers.getLogger(DUUIPodmanDriver.class);
 
     public DUUIPodmanDriver() throws IOException, SAXException {
 
@@ -76,7 +77,6 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
         String path = System.getenv("PODMAN_SOCKET_PATH");
 
         if (path == null) {
-            DUUILogger log = DUUILogContext.getLogger();
             String uid = System.getenv("UID");
             if (uid == null) {
                 try {
@@ -86,7 +86,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                     BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
                     uid = reader.readLine(); // UID aus der Ausgabe lesen
                 } catch (IOException e) {
-                    log.error(
+                    logger.error(
                             "[PodmanDriver] Failed to resolve UID for PODMAN_SOCKET_PATH: %s%n%s",
                             e.toString(),
                             ExceptionUtils.getStackTrace(e)
@@ -94,7 +94,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                 }
             }
             path = "/run/user/" + uid + "/podman/podman.sock";
-            log.debug("[PodmanDriver] Using podman socket path: %s", path);
+            logger.debug("[PodmanDriver] Using podman socket path: %s", path);
         }
 
         return path;
@@ -155,8 +155,6 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 //            }
 //        });
 
-        DUUILogger log = DUUILogContext.getLogger();
-
         ProcessBuilder pb = new ProcessBuilder("podman", "pull", sImagename);
         Process process = null;
 
@@ -167,7 +165,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                 BufferedReader brError = new BufferedReader(new InputStreamReader(process.getErrorStream()));
                 String input;
                 while ((input = br.readLine()) != null) {
-                    log.info("[PodmanDriver] podman pull output: %s", input);
+                    logger.info("[PodmanDriver] podman pull output: %s", input);
                 }
                 StringBuilder sb = new StringBuilder();
                 while ((input = brError.readLine()) != null) {
@@ -182,7 +180,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                 }
 
             } catch (IOException e) {
-                log.error(
+                logger.error(
                         "[PodmanDriver] Error while reading podman pull output: %s%n%s",
                         e.toString(),
                         ExceptionUtils.getStackTrace(e)
@@ -209,7 +207,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
         DUUIDockerDriver.InstantiatedComponent comp = new DUUIDockerDriver.InstantiatedComponent(component, uuid);
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.from(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
             // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
             if (comp.getImageFetching()) {
                 if (comp.getUsername() != null) {
@@ -280,18 +278,17 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
                             _interface.containers().start(containerId);
 
-                            DUUILogger log = DUUILogContext.getLogger();
-                            log.debug("[PodmanDriver] Created container: %s", pObject);
+                            logger.info("[PodmanDriver] Created container: %s", pObject);
 
 
                             iObject = awaitResult(_interface.containers().inspect(containerId, new ContainerInspectOptions().setSize(false)));
                             JSONObject nObject = new JSONObject(iObject);
-                            log.debug("[PodmanDriver] Inspect container result: %s", nObject);
+                            logger.debug("[PodmanDriver] Inspect container result: %s", nObject);
                             port = nObject.getJSONObject("map").getJSONObject("HostConfig").getJSONObject("PortBindings").getJSONArray("9714/tcp").getJSONObject(0).getInt("HostPort");
 
 
                         } catch (Throwable e) {
-                            logger().debug(
+                            logger.debug(
                                 "%s during container build: %s%n",
                                 e.getClass().getSimpleName(),
                                 e.getMessage()

@@ -50,7 +50,7 @@ public interface DUUILogger extends DUUIEventEmitter {
         }
 
         default void log(DUUIEvent.Context context, DebugLevel level, String message) {
-            emit(new DUUIEvent(DUUIEvent.Sender.DRIVER, message, level, context));
+            emit(new DUUIEvent(context.sender(), message, level, context));
         }
 
         default void log(DUUIEvent.Context context, DebugLevel level, String format, Object... args) {

@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.lang3.SerializationUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.analysis_engine.AnalysisEngineProcessException;
 import org.apache.uima.cas.impl.XmiCasSerializer;
 import org.apache.uima.collection.CollectionReader;
@@ -59,10 +60,10 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionDBReade
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEventObserver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIMonitor;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEventObserver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.IDUUIStorageBackend;
@@ -565,16 +566,26 @@ class DUUIWorkerDocumentReader extends Thread {
         this.composer = composer;
     }
 
+    DUUIEvent.Context context(String status) {
+        return DUUIEvent.Context.worker(runKey, Thread.currentThread().getName(), status);
+    }
+
+    DUUIEvent.Context error(String status, String payload) {
+        return DUUIEvent.Context.worker(runKey, Thread.currentThread().getName(), status, payload);
+    }
+
     /**
      * Runs the pipeline.
      */
     @Override
     public void run() {
-        composer.addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            String.format("[DUUIWorkerDocumentReader] Thread %s started, %d threads are active.",
-                Thread.currentThread().getName(),
-                threadsAlive.addAndGet(1))
+        var log = composer.getLogger();
+        int active = threadsAlive.addAndGet(1);
+        log.info(
+            context(DUUIStatus.ACTIVE),
+            "[DUUIWorkerDocumentReader] Thread %s started, %d threads are active.",
+            Thread.currentThread().getName(),
+            active
         );
 
         try {
@@ -592,36 +603,40 @@ class DUUIWorkerDocumentReader extends Thread {
                     try {
                         document = reader.getNextDocument(cas);
                         if (document != null && !document.isFinished()) {
-                            composer.addEvent(
-                                DUUIEvent.Sender.DOCUMENT,
-                                String.format(
-                                    "[DUUIWorkerDocumentReader] Fetched document %s (status=%s)",
+                            log.debug(
+                                DUUIEvent.Context.document(
+                                    runKey,
                                     document.getPath(),
-                                    document.getStatus())
+                                    DUUIStatus.ACTIVE
+                                ),
+                                "[DUUIWorkerDocumentReader] Fetched document %s (status=%s)",
+                                document.getPath(),
+                                document.getStatus()
                             );
                             break;
                         } else {
-                            composer.addEvent(
-                                DUUIEvent.Sender.COMPOSER,
-                                "[DUUIWorkerDocumentReader] No ready document available yet, backing off for 300ms.");
+                            log.debug(
+                                context( DUUIStatus.WAITING),
+                                "[DUUIWorkerDocumentReader] No ready document available yet, backing off for 300ms."
+                            );
                         }
 
                         Thread.sleep(300);
                     } catch (IllegalArgumentException e) {
-                        composer.addEvent(
-                            DUUIEvent.Sender.COMPOSER,
-                            String.format(
-                                "[DUUIWorkerDocumentReader] IllegalArgumentException while fetching next document: %s",
-                                e.toString()),
-                            DUUIComposer.DebugLevel.ERROR
+                        log.error(
+                            error(DUUIStatus.FAILED,
+                                ExceptionUtils.getStackTrace(e)
+                            ),
+                            "[DUUIWorkerDocumentReader] IllegalArgumentException while fetching next document: %s",
+                            e.toString()
                         );
                     } catch (InterruptedException e) {
-                        composer.addEvent(
-                            DUUIEvent.Sender.COMPOSER,
-                            String.format(
-                                "[DUUIWorkerDocumentReader] Interrupted while waiting for next document: %s",
-                                e.toString()),
-                            DUUIComposer.DebugLevel.ERROR
+                        log.error(
+                            error(DUUIStatus.FAILED,
+                                ExceptionUtils.getStackTrace(e)
+                            ),
+                            "[DUUIWorkerDocumentReader] Interrupted while waiting for next document: %s",
+                            e.toString()
                         );
                     }
                 }
@@ -639,22 +654,37 @@ class DUUIWorkerDocumentReader extends Thread {
                     trackErrorDocs);
 
                 document.setDurationWait(timer.getDuration());
-                composer.addEvent(
-                    DUUIEvent.Sender.DOCUMENT,
-                    String.format("Starting to process %s", document.getPath()));
+                log.info(
+                    DUUIEvent.Context.document(
+                        runKey,
+                        document.getPath(),
+                        DUUIStatus.PROCESS
+                    ),
+                    "Starting to process %s",
+                    document.getPath()
+                );
 
                 timer.restart();
 
                 document.setStatus(DUUIStatus.ACTIVE);
 
                 for (DUUIComposer.PipelinePart pipelinePart : flow) {
-                    composer.addEvent(
-                        DUUIEvent.Sender.DOCUMENT,
-                        String.format("[DUUIWorkerDocumentReader] %s is being processed by component %s (driver=%s, segmentation=%s)",
+                    String driverName = pipelinePart.getDriver().getClass().getSimpleName();
+                    String segmentationName = pipelinePart.getSegmentationStrategy().getClass().getSimpleName();
+                    log.info(
+                        DUUIEvent.Context.pipeline(
+                            runKey,
                             document.getPath(),
                             pipelinePart.getName(),
-                            pipelinePart.getDriver().getClass().getSimpleName(),
-                            pipelinePart.getSegmentationStrategy().getClass().getSimpleName())
+                            driverName,
+                            segmentationName,
+                            DUUIStatus.PROCESS
+                        ),
+                        "[DUUIWorkerDocumentReader] %s is being processed by component %s (driver=%s, segmentation=%s)",
+                        document.getPath(),
+                        pipelinePart.getName(),
+                        driverName,
+                        segmentationName
                     );
 
                     try {
@@ -671,11 +701,18 @@ class DUUIWorkerDocumentReader extends Thread {
 
                             pipelinePart.getDriver().run(pipelinePart.getUUID(), cas, perf, composer);
                         } else {
-                            composer.addEvent(
-                                DUUIEvent.Sender.DOCUMENT,
-                                String.format("[DUUIWorkerDocumentReader] Initializing segmentation strategy %s for %s",
-                                    segmentationStrategy.getClass().getSimpleName(),
-                                    document.getPath())
+                            log.debug(
+                                DUUIEvent.Context.pipeline(
+                                    runKey,
+                                    document.getPath(),
+                                    pipelinePart.getName(),
+                                    driverName,
+                                    segmentationName,
+                                    DUUIStatus.SETUP
+                                ),
+                                "[DUUIWorkerDocumentReader] Initializing segmentation strategy %s for %s",
+                                segmentationStrategy.getClass().getSimpleName(),
+                                document.getPath()
                             );
                             segmentationStrategy.initialize(cas);
                             JCas jCasSegmented = segmentationStrategy.getNextSegment();
@@ -687,17 +724,33 @@ class DUUIWorkerDocumentReader extends Thread {
                                     if (pStrategie.hasDebug()) {
                                         int iLeft = pStrategie.getSegments();
                                         DocumentMetaData dmd = DocumentMetaData.get(cas);
-                                        composer.addEvent(
-                                            DUUIEvent.Sender.COMPOSER,
-                                            String.format("%s Left: %s", dmd.getDocumentId(), iLeft)
+                                        log.debug(
+                                            DUUIEvent.Context.pipeline(
+                                                runKey,
+                                                dmd.getDocumentId(),
+                                                pipelinePart.getName(),
+                                                driverName,
+                                                segmentationName,
+                                                DUUIStatus.PROCESS
+                                            ),
+                                            "%s Left: %s",
+                                            dmd.getDocumentId(),
+                                            iLeft
                                         );
                                     }
                                 }
-                                composer.addEvent(
-                                    DUUIEvent.Sender.DOCUMENT,
-                                    String.format("[DUUIWorkerDocumentReader] Processing next segment of %s with component %s",
+                                log.debug(
+                                    DUUIEvent.Context.pipeline(
+                                        runKey,
                                         document.getPath(),
-                                        pipelinePart.getName())
+                                        pipelinePart.getName(),
+                                        driverName,
+                                        segmentationName,
+                                        DUUIStatus.PROCESS
+                                    ),
+                                    "[DUUIWorkerDocumentReader] Processing next segment of %s with component %s",
+                                    document.getPath(),
+                                    pipelinePart.getName()
                                 );
                                 pipelinePart.getDriver().run(pipelinePart.getUUID(), jCasSegmented, perf, composer);
                                 segmentationStrategy.merge(jCasSegmented);
@@ -710,11 +763,18 @@ class DUUIWorkerDocumentReader extends Thread {
                     } catch (AnalysisEngineProcessException exception) {
                         composer.setPipelineStatus(pipelinePart.getName(), DUUIStatus.FAILED);
 
-                        composer.addEvent(
-                            DUUIEvent.Sender.DOCUMENT,
-                            String.format(
-                                "%s encountered error %s. Thread continues work with next document.",
-                                document.getPath(), exception.getMessage()));
+                        log.error(
+                            DUUIEvent.Context.pipelineError(
+                                runKey,
+                                document.getPath(),
+                                pipelinePart.getName(),
+                                driverName,
+                                exception.toString()
+                            ),
+                            "%s encountered error %s. Thread continues work with next document.",
+                            document.getPath(),
+                            exception.getMessage()
+                        );
 
                         document.setError(String.format(
                             "%s%n%s",
@@ -729,11 +789,18 @@ class DUUIWorkerDocumentReader extends Thread {
                             throw new RuntimeException(exception);
                         }
                     } catch (Exception exception) {
-                        composer.addEvent(
-                            DUUIEvent.Sender.DOCUMENT,
-                            String.format(
-                                "%s encountered error %s. Thread continues work with next document.",
-                                document.getPath(), exception));
+                        log.error(
+                            DUUIEvent.Context.pipelineError(
+                                runKey,
+                                document.getPath(),
+                                pipelinePart.getName(),
+                                driverName,
+                                ExceptionUtils.getStackTrace(exception)
+                            ),
+                            "%s encountered error %s. Thread continues work with next document.",
+                            document.getPath(),
+                            exception
+                        );
 
                         document.setError(String.format(
                             "%s%n%s",
@@ -747,11 +814,18 @@ class DUUIWorkerDocumentReader extends Thread {
                             throw new RuntimeException(exception.getMessage());
                         }
                     }
-                    composer.addEvent(
-                        DUUIEvent.Sender.DOCUMENT,
-                        String.format("[DUUIWorkerDocumentReader] %s has been processed by component %s",
+                    log.info(
+                        DUUIEvent.Context.pipeline(
+                            runKey,
                             document.getPath(),
-                            pipelinePart.getName())
+                            pipelinePart.getName(),
+                            driverName,
+                            segmentationName,
+                            DUUIStatus.COMPLETED
+                        ),
+                        "[DUUIWorkerDocumentReader] %s has been processed by component %s",
+                        document.getPath(),
+                        pipelinePart.getName()
                     );
                     document.incrementProgress();
                 }
@@ -764,20 +838,27 @@ class DUUIWorkerDocumentReader extends Thread {
                     document.countAnnotations(cas);
 
                     if (reader.hasOutput()) {
-                        composer.addEvent(
-                            DUUIEvent.Sender.DOCUMENT,
-                            String.format("[DUUIWorkerDocumentReader] Uploading output for %s", document.getPath())
+                        log.info(
+                            DUUIEvent.Context.reader(
+                                document.getPath(),
+                                reader,
+                                DUUIStatus.OUTPUT
+                            ),
+                            "[DUUIWorkerDocumentReader] Uploading output for %s",
+                            document.getPath()
                         );
                         try {
                             reader.upload(document, cas);
                         } catch (IOException | SAXException exception) {
-                            composer.addEvent(
-                                DUUIEvent.Sender.DOCUMENT,
-                                String.format(
-                                    "[DUUIWorkerDocumentReader] Failed to upload output for %s: %s",
+                            log.error(
+                                DUUIEvent.Context.readerError(
                                     document.getPath(),
-                                    exception.toString()),
-                                DUUIComposer.DebugLevel.ERROR
+                                    reader,
+                                    ExceptionUtils.getStackTrace(exception)
+                                ),
+                                "[DUUIWorkerDocumentReader] Failed to upload output for %s: %s",
+                                document.getPath(),
+                                exception.toString()
                             );
 
                             document.setError(String.format(
@@ -792,12 +873,17 @@ class DUUIWorkerDocumentReader extends Thread {
                     }
                 }
 
-                composer.addEvent(
-                    DUUIEvent.Sender.DOCUMENT,
-                    String.format("[DUUIWorkerDocumentReader] %s has been processed after %d ms (status=%s)",
+                log.info(
+                    DUUIEvent.Context.document(
+                        runKey,
                         document.getPath(),
-                        timer.getDuration(),
-                        document.getStatus()));
+                        document.getStatus()
+                    ),
+                    "[DUUIWorkerDocumentReader] %s has been processed after %d ms (status=%s)",
+                    document.getPath(),
+                    timer.getDuration(),
+                    document.getStatus()
+                );
 
                 if (backend != null) {
                     backend.addMetricsForDocument(perf);
@@ -809,13 +895,13 @@ class DUUIWorkerDocumentReader extends Thread {
                 document.setFinishedAt();
             }
         } catch (Exception e) {
-            composer.addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                String.format(
-                    "[DUUIWorkerDocumentReader] Unhandled exception in worker thread %s: %s",
-                    Thread.currentThread().getName(),
-                    e.toString()),
-                DUUIComposer.DebugLevel.ERROR
+            composer.getLogger().error(
+                error(DUUIStatus.FAILED,
+                    ExceptionUtils.getStackTrace(e)
+                ),
+                "[DUUIWorkerDocumentReader] Unhandled exception in worker thread %s: %s",
+                Thread.currentThread().getName(),
+                e.toString()
             );
 
             if (!composer.getIgnoreErrors()) {
@@ -823,12 +909,11 @@ class DUUIWorkerDocumentReader extends Thread {
             }
         } finally {
             int remaining = threadsAlive.decrementAndGet();
-            composer.addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                String.format(
-                    "[DUUIWorkerDocumentReader] Thread %s finished, %d threads remain active.",
-                    Thread.currentThread().getName(),
-                    remaining)
+            composer.getLogger().info(
+                context(DUUIStatus.SHUTDOWN),
+                "[DUUIWorkerDocumentReader] Thread %s finished, %d threads remain active.",
+                Thread.currentThread().getName(),
+                remaining
             );
         }
     }

@@ -8,6 +8,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.DebugLevel;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.IDUUIDriverInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.IDUUIInstantiatedPipelineComponent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.IDUUIUrlAccessible;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionReader;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 
 public class DUUIEvent {
@@ -79,16 +81,158 @@ public class DUUIEvent {
                 logs
             );
         }
+
+        public static Context of(Sender sender, String status, Class<?> object) {
+            return new DefaultContext(sender, status, object.getSimpleName());
+        }
+
+        /**
+         * Context for worker threads operating on documents.
+         */
+        public static Context worker(String runKey, String threadName, String status) {
+            return new DocumentWorkerContext(
+                Sender.COMPOSER,
+                status,
+                runKey,
+                threadName
+            );
+        }
+
+        /**
+         * Context for worker threads operating on documents.
+         */
+        public static Context worker(String runKey, String threadName, String status, String payload) {
+            return new DocumentWorkerErrorContext(
+                Sender.COMPOSER,
+                status,
+                runKey,
+                threadName,
+                payload
+            );
+        }
+
+        /**
+         * Context for document pipeline processing (per document and component).
+         */
+        public static Context pipeline(String runKey, String documentId, String componentName, String driver, String segmentation, String status) {
+            return new DocumentPipelineContext(
+                Sender.DOCUMENT,
+                status,
+                runKey,
+                documentId,
+                componentName,
+                driver,
+                segmentation
+            );
+        }
+
+        /**
+         * Error context for document pipeline processing.
+         */
+        public static PayloadContext pipelineError(String runKey, String documentId, String componentName, String driver, String payload) {
+            return new DocumentPipelineErrorContext(
+                Sender.DOCUMENT,
+                DUUIStatus.FAILED,
+                runKey,
+                documentId,
+                componentName,
+                driver,
+                payload
+            );
+        }
+
+        /**
+         * Document-level lifecycle context (without component details).
+         */
+        public static Context document(String runKey, String documentId, String status) {
+            return new DocumentLifecycleContext(
+                Sender.DOCUMENT,
+                status,
+                runKey,
+                documentId
+            );
+        }
+
+        /**
+         * Context for document reader operations (input/output) bound to a specific document.
+         */
+        public static Context reader(String documentId, DUUICollectionReader source, String status) {
+            return new DocumentReaderContext(
+                Sender.READER,
+                status,
+                documentId,
+                source.getClass().getSimpleName()
+            );
+        }
+
+        /**
+         * Error context for document reader operations bound to a specific document.
+         */
+        public static PayloadContext readerError(String documentId, DUUIDocumentReader reader, String payload) {
+            return new DocumentReaderErrorContext(
+                Sender.READER,
+                DUUIStatus.FAILED,
+                documentId,
+                reader,
+                payload
+            );
+        }
+
+        /**
+         * Context for reader-wide lifecycle events (not bound to a single document).
+         */
+        public static Context readerLifecycle(String source, String readerName, String status) {
+            return new DocumentReaderLifecycleContext(
+                Sender.READER,
+                status,
+                source,
+                readerName
+            );
+        }
+
+        /**
+         * Context for document storage / handler operations.
+         */
+        public static Context storage(String backend, String documentId, String path, String status) {
+            return new DocumentStorageContext(
+                Sender.STORAGE,
+                status,
+                backend,
+                documentId,
+                path
+            );
+        }
+
+        /**
+         * Error context for document storage / handler operations.
+         */
+        public static PayloadContext storageError(String backend, String documentId, String path, String operation, String payload) {
+            return new DocumentStorageErrorContext(
+                Sender.STORAGE,
+                DUUIStatus.FAILED,
+                backend,
+                documentId,
+                path,
+                operation,
+                payload
+            );
+        }
     }
 
     public static interface PayloadContext extends Context {
 
-        String logs();
+        String payload();
     } 
 
     public static class NoContext implements DUUIEvent.Context {
 
     }
+
+    public static record DefaultContext (
+        Sender sender,
+        String status, 
+        String className
+    ) implements Context {}
 
     public static record ComponentProcessContext (
         Sender sender,
@@ -112,7 +256,7 @@ public class DUUIEvent {
         String componentId,
         String instanceId,
         IDUUIInstantiatedPipelineComponent component,
-        String logs
+        String payload
     ) implements PayloadContext {
 
     }
@@ -135,7 +279,7 @@ public class DUUIEvent {
         String typesystem
     ) implements PayloadContext {
 
-        public String logs() {
+        public String payload() {
             return typesystem;
         }
     }
@@ -147,9 +291,141 @@ public class DUUIEvent {
         String lua
     ) implements PayloadContext {
 
-        public String logs() {
+        public String payload() {
             return lua;
         }
+    }
+
+    /**
+     * Worker thread context for document processing.
+     */
+    public static record DocumentWorkerContext(
+        Sender sender,
+        String status,
+        String runKey,
+        String threadName
+    ) implements Context {
+
+    }
+
+    /**
+     * Worker thread context for document processing.
+     */
+    public static record DocumentWorkerErrorContext(
+        Sender sender,
+        String status,
+        String runKey,
+        String threadName,
+        String payload
+    ) implements PayloadContext {
+
+    }
+
+    /**
+     * Document pipeline processing context (per document and component).
+     */
+    public static record DocumentPipelineContext(
+        Sender sender,
+        String status,
+        String runKey,
+        String documentId,
+        String componentName,
+        String driver,
+        String segmentation
+    ) implements Context {
+
+    }
+
+    /**
+     * Error context for document pipeline processing.
+     */
+    public static record DocumentPipelineErrorContext(
+        Sender sender,
+        String status,
+        String runKey,
+        String documentId,
+        String componentName,
+        String driver,
+        String payload
+    ) implements PayloadContext {
+
+    }
+
+    /**
+     * Document-level lifecycle context (without component details).
+     */
+    public static record DocumentLifecycleContext(
+        Sender sender,
+        String status,
+        String runKey,
+        String documentId
+    ) implements Context {
+
+    }
+
+    /**
+     * Context for document reader operations (input/output) bound to a specific document.
+     */
+    public static record DocumentReaderContext(
+        Sender sender,
+        String status,
+        String documentId,
+        String readerName
+    ) implements Context {
+
+    }
+
+    /**
+     * Error context for document reader operations bound to a specific document.
+     */
+    public static record DocumentReaderErrorContext(
+        Sender sender,
+        String status,
+        String documentId,
+        DUUIDocumentReader reader,
+        String payload
+    ) implements PayloadContext {
+
+    }
+
+    /**
+     * Reader-wide lifecycle context (input/output not tied to a single document).
+     */
+    public static record DocumentReaderLifecycleContext(
+        Sender sender,
+        String status,
+        String source,
+        String readerName
+    ) implements Context {
+
+    }
+
+    /**
+     * Context for document storage / handler operations.
+     */
+    public static record DocumentStorageContext(
+        Sender sender,
+        String status,
+        String backend,
+        String documentId,
+        String path
+    ) implements Context {
+
+    }
+
+    /**
+     * Error context for document storage / handler operations.
+     */
+    public static record DocumentStorageErrorContext(
+        Sender sender,
+        String status,
+        String backend,
+        String documentId,
+        String path,
+        String operation,
+        String payload
+    ) implements PayloadContext {
+
     }
 
     public enum Sender {
@@ -212,7 +488,7 @@ public class DUUIEvent {
         base = StringUtils.stripEnd(base, "\n\r");
 
         if (context instanceof PayloadContext errorContext) {
-            String logs = errorContext.logs();
+            String logs = errorContext.payload();
             if (StringUtils.isNotEmpty(logs)) {
                 String indented = "    " + logs.replace("\n", "\n    ");
                 indented = StringUtils.stripEnd(indented, "\n\r");

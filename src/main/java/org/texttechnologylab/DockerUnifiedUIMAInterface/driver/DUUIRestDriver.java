@@ -567,6 +567,7 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
         public void setLogger(DUUILogger logger) {
             this.logger = (logger != null) ? logger : DUUILogContext.getLogger();
         }
+
         @Override
         public String getUniqueComponentKey() {
             return _uniqueComponentKey;

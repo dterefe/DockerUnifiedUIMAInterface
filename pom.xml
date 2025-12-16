@@ -274,18 +274,18 @@
         <dependency>
             <groupId>tools.profiler</groupId>
             <artifactId>async-profiler</artifactId>
-            <version>4.2.1</version>
+            <version>4.2</version>
         </dependency>
 
         <dependency>
             <groupId>io.prometheus</groupId>
             <artifactId>simpleclient</artifactId>
-            <version>0.18.0</version>
+            <version>0.16.0</version>
         </dependency>
         <dependency>
             <groupId>io.prometheus</groupId>
             <artifactId>simpleclient_hotspot</artifactId>
-            <version>0.18.0</version>
+            <version>0.16.0</version>
         </dependency>
         <dependency>
             <groupId>com.github.oshi</groupId>

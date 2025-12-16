@@ -10,7 +10,7 @@ import java.io.InputStream;
 public class DUUIDocumentDecoder {
 
     public static InputStream decode(DUUIDocument document) throws IOException {
-        String fileExtension = document.getFileExtension();
+        String fileExtension = document.getFileExtension().replace(".", "");
 
         try {
             if (fileExtension.equalsIgnoreCase(CompressorStreamFactory.GZIP)) {

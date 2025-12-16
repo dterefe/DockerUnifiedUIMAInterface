@@ -566,10 +566,13 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         XmiCasSerializer xmiCasSerializer = new XmiCasSerializer(null);
         XMLSerializer sax2xml = new XMLSerializer(outputStream);
 
-        // Use XMI 1.1 in case of special characters which break serialization in XMI 1.0.
-        // sax2xml.setOutputProperty(javax.xml.transform.OutputKeys.VERSION, "1.1");
-
-        xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
+        try {
+            xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
+        } catch (SAXException e) {
+            // Use XMI 1.1 in case of special characters which break serialization in XMI 1.0.
+            sax2xml.setOutputProperty(javax.xml.transform.OutputKeys.VERSION, "1.1");
+            xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
+        }
 
         String inputExtension = document.getFileExtension();
         String outputExtension = builder.outputFileExtension;

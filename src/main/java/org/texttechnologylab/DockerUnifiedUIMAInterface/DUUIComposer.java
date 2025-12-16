@@ -59,6 +59,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUIAsynchronousProce
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionDBReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEventObserver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
@@ -601,7 +602,7 @@ class DUUIWorkerDocumentReader extends Thread {
                         return;
                     }
 
-                    try {
+                    try (AppMetrics.Timer ignoredFetchTimer = AppMetrics.timeStep("fetch_document")) {
                         document = reader.getNextDocument(cas);
                         if (document != null && !document.isFinished()) {
                             log.info(
@@ -671,24 +672,25 @@ class DUUIWorkerDocumentReader extends Thread {
 
                 document.setStatus(DUUIStatus.ACTIVE);
 
-                for (DUUIComposer.PipelinePart pipelinePart : flow) {
-                    String driverName = pipelinePart.getDriver().getClass().getSimpleName();
-                    String segmentationName = pipelinePart.getSegmentationStrategy().getClass().getSimpleName();
-                    log.info(
-                        DUUIEvent.Context.pipeline(
-                            runKey,
+                try (AppMetrics.DocRun docRun = perf.docRun()) {
+                    for (DUUIComposer.PipelinePart pipelinePart : flow) {
+                        String driverName = pipelinePart.getDriver().getClass().getSimpleName();
+                        String segmentationName = pipelinePart.getSegmentationStrategy().getClass().getSimpleName();
+                        log.info(
+                            DUUIEvent.Context.pipeline(
+                                runKey,
+                                document.getPath(),
+                                pipelinePart.getName(),
+                                driverName,
+                                segmentationName,
+                                DUUIStatus.PROCESS
+                            ),
+                            "%s is being processed by component %s (driver=%s, segmentation=%s)",
                             document.getPath(),
                             pipelinePart.getName(),
                             driverName,
-                            segmentationName,
-                            DUUIStatus.PROCESS
-                        ),
-                        "%s is being processed by component %s (driver=%s, segmentation=%s)",
-                        document.getPath(),
-                        pipelinePart.getName(),
-                        driverName,
-                        segmentationName
-                    );
+                            segmentationName
+                        );
 
                     try {
                         DUUISegmentationStrategy segmentationStrategy = pipelinePart.getSegmentationStrategy();
@@ -786,6 +788,7 @@ class DUUIWorkerDocumentReader extends Thread {
                             exception,
                             exception.getMessage()));
                         document.setStatus(DUUIStatus.FAILED);
+                        docRun.markError();
 
                         if (composer.getIgnoreErrors()) {
                             break;
@@ -845,6 +848,7 @@ class DUUIWorkerDocumentReader extends Thread {
                                 exception,
                                 exception.getMessage()));
                             document.setStatus(DUUIStatus.FAILED);
+                            docRun.markError();
 
                             if (!composer.getIgnoreErrors())
                                 throw exception;
@@ -872,6 +876,7 @@ class DUUIWorkerDocumentReader extends Thread {
                 document.setFinished(true);
                 document.setFinishedAt();
             }
+        }
         } catch (Exception e) {
             composer.getLogger().error(
                 error(DUUIStatus.FAILED,
@@ -916,6 +921,12 @@ public class DUUIComposer {
     private Thread _shutdownHook;
     private AtomicBoolean _shutdownAtomic;
     private boolean _hasShutdown;
+
+    /**
+     * Optional configuration for exporting Prometheus profiling snapshots
+     * produced by {@link org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics}.
+     */
+    private java.nio.file.Path prometheusProfilerOutputPath;
 
     private static final String DRIVER_OPTION_NAME = "duuid.composer.driver";
     public static final String COMPONENT_COMPONENT_UNIQUE_KEY = "duuid.storage.componentkey";
@@ -1121,6 +1132,19 @@ public class DUUIComposer {
      */
     public DUUIComposer withCasPoolsize(int poolsize) {
         _cas_poolsize = poolsize;
+        return this;
+    }
+
+    /**
+     * Enable Prometheus-based profiling for this composer and configure
+     * the directory where {@link org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics}
+     * should write its JSON snapshot for a run.
+     *
+     * @param outputPath Directory path for AppMetrics snapshot files.
+     * @return this, for method chaining
+     */
+    public DUUIComposer withPrometheusProfiler(java.nio.file.Path outputPath) {
+        this.prometheusProfilerOutputPath = outputPath;
         return this;
     }
 
@@ -2236,7 +2260,13 @@ public class DUUIComposer {
 
         logger.info("Running in asynchronous mode using up to %d threads", _workers);
 
+        AppMetrics profiler = null;
         try {
+            if (prometheusProfilerOutputPath != null) {
+                profiler = new AppMetrics(identifier, prometheusProfilerOutputPath);
+                profiler.start();
+            }
+
             if (_storage != null) {
                 _storage.addNewRun(identifier, this);
             }
@@ -2353,6 +2383,10 @@ public class DUUIComposer {
 
             shutdown();
             throw e;
+        } finally {
+            if (profiler != null) {
+                profiler.close();
+            }
         }
     }
 

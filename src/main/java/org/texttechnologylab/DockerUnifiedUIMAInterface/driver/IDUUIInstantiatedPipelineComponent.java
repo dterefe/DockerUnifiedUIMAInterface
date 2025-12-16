@@ -216,7 +216,10 @@ public interface IDUUIInstantiatedPipelineComponent {
      * @throws PipelineComponentException
      */
     public static void process(JCas jc, IDUUIInstantiatedPipelineComponent comp, DUUIPipelineDocumentPerformance perf) throws CASException, PipelineComponentException {
-        Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
+        Triplet<IDUUIUrlAccessible,Long,Long> queue;
+        try (var ignoredTimer = perf.timeStep("component_retrieval_latency", comp.getPipelineComponent().getName())) {
+            queue = comp.getComponent();
+        }
 
         IDUUICommunicationLayer layer = queue.getValue0().getCommunicationLayer();
         long serializeStart = System.nanoTime();
@@ -225,7 +228,8 @@ public interface IDUUIInstantiatedPipelineComponent {
 
         String logPrefix = String.format("[%s]", queue.getValue0().getUniqueInstanceKey());
 
-        try (var ignored = comp.logger().withContext(DUUIEvent.Context.component(perf, comp, queue.getValue0().getUniqueInstanceKey()))) {
+        try (var componentTimer = perf.timeStep("component_duration", comp.getPipelineComponent().getName());
+             var ignored = comp.logger().withContext(DUUIEvent.Context.component(perf, comp, queue.getValue0().getUniqueInstanceKey()))) {
 
             String viewName = pipelineComponent.getViewName();
             JCas viewJc;
@@ -279,12 +283,14 @@ public interface IDUUIInstantiatedPipelineComponent {
                     targetCas = viewJc.createView(comp.getTargetView());
                 }
 
-                layer.process(
-                        sourceCas,
-                        new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
-                        comp.getParameters(),
-                        targetCas
-                );
+                 try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
+                    layer.process(
+                            sourceCas,
+                            new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
+                            comp.getParameters(),
+                            targetCas
+                    );
+                }
 
                 comp.logger().info(
                         "%s Finished layer.process().",
@@ -309,7 +315,9 @@ public interface IDUUIInstantiatedPipelineComponent {
                  comp.getSourceView(),
                  comp.getParameters()
             );
-            layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
+            try (var serializeTimer = perf.timeStep("serialization", comp.getPipelineComponent().getName())) {
+                layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
+            }
 
             byte[] ok = out.toByteArray();
             long sizeArray = ok.length;
@@ -328,23 +336,22 @@ public interface IDUUIInstantiatedPipelineComponent {
             Instant deadline = Instant.now().plus(componentTimeout);
             HttpResponse<byte[]> resp = null;
 
-            try {
+            try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
                 comp.logger().debug(
                     "%s Sending process request to %s (headers=%s)",
                     logPrefix,
                     request.uri(),
                     request.headers().map()
                 );
-
-                resp = DUUIRestDriver.sendWithRetries(
-                    _client, 
-                    request, 
-                    deadline, 
-                    componentTimeout, 
-                    componentTimeout, 
-                    REQUEST_TRIES, 
-                    logPrefix
-                );
+                    resp = DUUIRestDriver.sendWithRetries(
+                        _client, 
+                        request, 
+                        deadline, 
+                        componentTimeout, 
+                        componentTimeout, 
+                        REQUEST_TRIES, 
+                        logPrefix
+                    );
             } catch (IOException | TimeoutException e) {
                 comp.logger().debug(
                         "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
@@ -382,7 +389,9 @@ public interface IDUUIInstantiatedPipelineComponent {
                 long annotatorEnd = System.nanoTime();
                 long deserializeStart = annotatorEnd;
                 
-                layer.deserialize(viewJc, st, comp.getTargetView());
+                try (var deserializeTimer = perf.timeStep("deserialization", comp.getPipelineComponent().getName())) {
+                    layer.deserialize(viewJc, st, comp.getTargetView());
+                }
 
                 long deserializeEnd = System.nanoTime();
                 

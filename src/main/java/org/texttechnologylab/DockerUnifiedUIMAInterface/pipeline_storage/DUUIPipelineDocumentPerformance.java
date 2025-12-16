@@ -5,6 +5,7 @@ import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.jcas.tcas.Annotation;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -33,8 +34,18 @@ public class DUUIPipelineDocumentPerformance {
      */
     private final boolean trackErrorDocs;
 
+    /**
+     * Optional metrics handle for Prometheus-based profiling.
+     */
+    private final AppMetrics appMetrics;
+
     public DUUIPipelineDocumentPerformance(String runKey, long waitDocumentTime, JCas jc, boolean trackErrorDocs) {
+        this(runKey, waitDocumentTime, jc, trackErrorDocs, null);
+    }
+
+    public DUUIPipelineDocumentPerformance(String runKey, long waitDocumentTime, JCas jc, boolean trackErrorDocs, AppMetrics appMetrics) {
         this.trackErrorDocs = trackErrorDocs;
+        this.appMetrics = appMetrics;
 
         _points = new Vector<>();
         _runKey = runKey;
@@ -150,5 +161,45 @@ public class DUUIPipelineDocumentPerformance {
 
     public Map<String, Integer> getAnnotationTypesCount() {
         return annotationTypesCount;
+    }
+
+    /**
+     * @return the {@link AppMetrics} instance associated with this document, if any.
+     */
+    public AppMetrics getAppMetrics() {
+        return appMetrics;
+    }
+
+    /**
+     * Convenience wrapper exposing {@link AppMetrics#timeStep(String)} via the
+     * document performance object.
+     *
+     * @param step logical step name
+     * @return a new {@link AppMetrics.Timer} for the given step
+     */
+    public AppMetrics.Timer timeStep(String step) {
+        return AppMetrics.timeStep(step);
+    }
+
+    /**
+     * Convenience wrapper exposing {@link AppMetrics#timeStep(String, String)} via the
+     * document performance object.
+     *
+     * @param step      logical step name
+     * @param component component identifier
+     * @return a new {@link AppMetrics.Timer} for the given step/component pair
+     */
+    public AppMetrics.Timer timeStep(String step, String component) {
+        return AppMetrics.timeStep(step, component);
+    }
+
+    /**
+     * Convenience wrapper exposing {@link AppMetrics#docRun()} via the
+     * document performance object.
+     *
+     * @return a new {@link AppMetrics.DocRun} instance
+     */
+    public AppMetrics.DocRun docRun() {
+        return AppMetrics.docRun();
     }
 }

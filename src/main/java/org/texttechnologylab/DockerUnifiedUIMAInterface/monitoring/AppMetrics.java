@@ -240,7 +240,7 @@ public final class AppMetrics implements AutoCloseable {
             String event = profileMode == ProfileMode.NO_CPU ? "itimer" : "cpu";
             String file = outputDirectory.resolve(runName + ".jfr").toString();
             String cmd = String.format(
-                "start,jfr,event=%s,interval=10ms,wall=200ms,alloc=512k,lock=10ms,threads,file=%s",
+                "start,jfr,event=%s,interval=10ms,wall=50ms,alloc=512k,lock=1ms,threads,file=%s",
                 event,
                 file
             );

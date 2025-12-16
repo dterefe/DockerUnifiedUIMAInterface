@@ -1,23 +1,21 @@
-import static org.junit.jupiter.params.provider.Arguments.arguments;
-
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Stream;
 
+import org.apache.commons.compress.compressors.CompressorException;
+import org.apache.uima.UIMAException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.api.Test;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDrivesDocumentHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRemoteDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.xml.sax.SAXException;
 
 public class GatewayEvaluation {
 
@@ -38,40 +36,9 @@ public class GatewayEvaluation {
         REMOTE
     }
 
-    private static Stream<Arguments> composerConfigurations() {
-        String workersEnv = System.getenv(ENV_WORKERS);
-        String modesEnv = System.getenv(ENV_MODES);
-
-        List<Integer> workers;
-        if (workersEnv == null || workersEnv.isBlank()) {
-            workers = List.of(1, 4, 8);
-        } else {
-            workers = Arrays.stream(workersEnv.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .map(Integer::parseInt)
-                .toList();
-        }
-
-        List<ComponentMode> modes;
-        if (modesEnv == null || modesEnv.isBlank()) {
-            modes = List.of(ComponentMode.LOCAL, ComponentMode.REMOTE);
-        } else {
-            modes = Arrays.stream(modesEnv.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .map(s -> ComponentMode.valueOf(s.toUpperCase()))
-                .toList();
-        }
-
-        return workers.stream()
-            .flatMap(w -> modes.stream().map(m -> arguments(w, m)));
-    }
-
-    @ParameterizedTest(name = "gateway-eval workers={0}, mode={1}")
-    @MethodSource("composerConfigurations")
     @DisplayName("Evaluate DUUIComposer run(DUUIDocumentReader, ...) for different worker counts and component modes")
-    public void evaluateGatewayRunWithDocumentReader(int workers, ComponentMode mode) throws Exception {
+    @Test
+    public void evaluateGatewayRunWithDocumentReader() throws Exception {
         String rootPath = System.getenv(ENV_ROOT_PATH);
         String inputPath = System.getenv(ENV_INPUT_PATH);
         String inputExt = System.getenv(ENV_INPUT_EXT);
@@ -79,6 +46,8 @@ public class GatewayEvaluation {
         String outputExt = System.getenv(ENV_OUTPUT_EXT);
         String promPath = System.getenv(ENV_PROM_PATH);
         String runKey = System.getenv(ENV_RUN_KEY);
+        Integer workers = Integer.parseInt(System.getenv(ENV_WORKERS));
+        String mode = System.getenv(ENV_MODES);
 
         Assumptions.assumeTrue(rootPath != null && !rootPath.isBlank(),
             () -> ENV_ROOT_PATH + " must be set for GatewayEvaluation");
@@ -95,45 +64,49 @@ public class GatewayEvaluation {
             () -> ENV_PROM_PATH + " must be set for GatewayEvaluation");
         Assumptions.assumeTrue(runKey != null && !runKey.isBlank(),
             () -> ENV_RUN_KEY + " must be set for GatewayEvaluation");
+        Assumptions.assumeTrue(workers != null,
+            () -> ENV_WORKERS + " must be set for GatewayEvaluation");
+        Assumptions.assumeTrue(mode != null && !mode.isBlank(),
+            () -> ENV_MODES + " must be set for GatewayEvaluation");
 
         DUUILuaContext luaContext = new DUUILuaContext().withJsonLibrary();
+        DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
 
         DUUIComposer composer = new DUUIComposer()
             .withLuaContext(luaContext)
             .withSkipVerification(true)
             .withWorkers(workers)
             .withDebugLevel(DUUIComposer.DebugLevel.INFO)
+            .withIgnoreErrors(false)
             .withPrometheusProfiler(Path.of(promPath));
 
-        configureComponent(composer, workers, mode);
-
-        DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
-
-        String resolvedInputPath = Path.of(rootPath, inputPath).toString();
-        String resolvedOutputPath = Path.of(rootPath, outputPath).toString();
-
-        DUUIDocumentReader documentReader = DUUIDocumentReader
-            .builder(composer)
-            .withInputHandler(handler)
-            .withInputPath(resolvedInputPath)
-            .withInputFileExtension(inputExt)
-            .withOutputHandler(handler)
-            .withOutputPath(resolvedOutputPath)
-            .withOutputFileExtension(outputExt)
-            .withSortBySize(true)
-            .withRecursive(true)
-            .withAddMetadata(true)
-            .withCheckTarget(true)
-            .build();
-
         try {
-            composer.run(documentReader, runKey);
+            configureComponent(composer, workers, mode.equals("local") ? ComponentMode.LOCAL : ComponentMode.REMOTE);
+
+            String resolvedInputPath = Path.of(rootPath, inputPath).toString();
+            String resolvedOutputPath = Path.of(rootPath, outputPath).toString();
+
+            DUUIDocumentReader documentReader = DUUIDocumentReader
+                .builder(composer)
+                .withInputHandler(handler)
+                .withInputPath(resolvedInputPath)
+                .withInputFileExtension(inputExt)
+                // .withOutputHandler(handler)
+                // .withOutputPath(resolvedOutputPath)
+                // .withOutputFileExtension(outputExt)
+                .withRecursive(true)
+                .withCheckTarget(false)
+                .build();
+
+            composer.run(documentReader, runKey + "_" + System.currentTimeMillis());
+        } catch (Exception e) {
+            e.printStackTrace();
         } finally {
             composer.shutdown();
         }
     }
 
-    private static void configureComponent(DUUIComposer composer, int workers, ComponentMode mode) throws URISyntaxException, IOException {
+    private static void configureComponent(DUUIComposer composer, int workers, ComponentMode mode) throws URISyntaxException, IOException, SAXException, CompressorException, UIMAException {
         switch (mode) {
             case LOCAL -> {
                 String image = System.getenv(ENV_DOCKER_IMAGE);

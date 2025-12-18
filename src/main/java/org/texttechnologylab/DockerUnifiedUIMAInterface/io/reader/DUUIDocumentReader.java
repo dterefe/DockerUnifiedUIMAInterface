@@ -16,14 +16,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import org.apache.commons.compress.compressors.CompressorException;
-import org.apache.commons.compress.compressors.CompressorOutputStream;
-import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.apache.uima.cas.impl.XmiCasDeserializer;
-import org.apache.uima.cas.impl.XmiCasSerializer;
 import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
-import org.apache.uima.util.XMLSerializer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDocumentHandler;
@@ -34,7 +29,10 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AdvancedProgr
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent.Sender;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils.XmiLoggingErrorHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.Timer;
+import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXException;
 
 import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
@@ -286,7 +284,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         if (decodedDocument != null) {
             try {
-                XmiCasDeserializer.deserialize(decodedDocument, pCas.getCas(), true);
+                SerDeUtils.XmiSharedIo.deserialize(decodedDocument, pCas.getCas(), true);
             } catch (Exception e) {
                 composer.getLogger().debug(
                     DUUIEvent.Context.readerError(
@@ -345,6 +343,8 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         if (builder.language != null && !builder.language.isEmpty()) {
             pCas.setDocumentLanguage(builder.language);
         }
+
+        document.setBytes(new byte[]{});
 
         return document;
     }
@@ -501,55 +501,31 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             document.getPath()
         );
 
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        XmiCasSerializer xmiCasSerializer = new XmiCasSerializer(null);
-        XMLSerializer sax2xml = new XMLSerializer(outputStream);
-
-        try {
-            xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
-        } catch (SAXException e) {
-            // Use XMI 1.1 in case of special characters which break serialization in XMI 1.0.
-            sax2xml.setOutputProperty(javax.xml.transform.OutputKeys.VERSION, "1.1");
-            xmiCasSerializer.serialize(cas.getCas(), sax2xml.getContentHandler(), null, null, null);
-        }
-
         String inputExtension = document.getFileExtension();
         String outputExtension = builder.outputFileExtension;
         String outputName = buildOutputName(document.getName(), inputExtension, outputExtension);
+        
+        ByteArrayOutputStream outputStream = SerDeUtils.SERIALIZE_BUFFER.get();
+        byte[] payload;
+        
+        ErrorHandler handler = new XmiLoggingErrorHandler(
+            composer.getLogger(),
+            DUUIEvent.Context.readerError(document.getPath(), ""),
+            document
+        );
 
-        byte[] payload = outputStream.toByteArray();
-
-        // Compress payload depending on desired output extension
-        if (outputExtension != null) {
-            try {
-                if (outputExtension.equalsIgnoreCase(".gz")) {
-                    ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-                    try (CompressorOutputStream cos = new CompressorStreamFactory()
-                        .createCompressorOutputStream(CompressorStreamFactory.GZIP, compressed)) {
-                        cos.write(payload);
-                    }
-                    payload = compressed.toByteArray();
-                } else if (outputExtension.equalsIgnoreCase(".xz")) {
-                    ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-                    try (CompressorOutputStream cos = new CompressorStreamFactory()
-                        .createCompressorOutputStream(CompressorStreamFactory.XZ, compressed)) {
-                        cos.write(payload);
-                    }
-                    payload = compressed.toByteArray();
-                } else if (outputExtension.equalsIgnoreCase(".bz2")) {
-                    ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-                    try (CompressorOutputStream cos = new CompressorStreamFactory()
-                        .createCompressorOutputStream(CompressorStreamFactory.BZIP2, compressed)) {
-                        cos.write(payload);
-                    }
-                    payload = compressed.toByteArray();
-                }
-            } catch (CompressorException e) {
-                throw new IOException(
-                    String.format("Failed to compress document %s as %s", document.getPath(), outputExtension),
-                    e
-                );
-            }
+        try {
+            payload = SerDeUtils.serializeAndMaybeCompress(
+                cas,
+                outputExtension,
+                handler,
+                outputStream
+            );
+        } catch (CompressorException e) {
+            throw new IOException(
+                String.format("Failed to compress document %s as %s", document.getPath(), outputExtension),
+                e
+            );
         }
 
         DUUIDocument temp = new DUUIDocument(

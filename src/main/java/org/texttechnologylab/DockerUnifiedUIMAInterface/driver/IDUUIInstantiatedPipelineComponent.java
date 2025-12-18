@@ -34,6 +34,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
 
 import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
@@ -307,7 +308,8 @@ public interface IDUUIInstantiatedPipelineComponent {
                 return;
             }
 
-            ByteArrayOutputStream out = new ByteArrayOutputStream(1024*1024);
+            ByteArrayOutputStream out = SerDeUtils.SERIALIZE_BUFFER.get();
+            out.reset();
 
             // Invoke Lua serialize()
             comp.logger().info("%s Serializing JCas (sourceView=%s, parameters %s)",

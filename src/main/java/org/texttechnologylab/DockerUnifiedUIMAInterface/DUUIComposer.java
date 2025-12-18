@@ -554,9 +554,10 @@ class DUUIWorkerDocumentReader extends Thread {
         IDUUIStorageBackend backend,
         String runKey,
         DUUIDocumentReader reader,
-        DUUIComposer composer
+        DUUIComposer composer, 
+        String name
     ) {
-        super();
+        super(name);
 
         this.flow = flow;
         this.cas = cas;
@@ -2317,10 +2318,16 @@ public class DUUIComposer {
                     _storage,
                     identifier,
                     documentReader,
-                    this
+                    this,
+                    "DUUIWorker-" + i + 1
                 );
 
                 arr[i].start();
+
+                // Track worker threads in profiler, if enabled
+                if (profiler != null) {
+                    profiler.addThread(arr[i]);
+                }
             }
 
             Instant starttime = Instant.now();

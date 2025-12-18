@@ -105,6 +105,9 @@ public final class AppMetrics implements AutoCloseable {
     private OSProcess prevProc = os.getProcess(os.getProcessId());
 
     private final ThreadMXBean tBean = ManagementFactory.getThreadMXBean();
+    private final java.util.Set<Long> trackedThreadIds =
+        java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private volatile long[] trackedThreadIdArray;
     private final java.util.List<Long> ts = new java.util.ArrayList<>();
     private final java.util.Map<String, java.util.List<Double>> series = new java.util.LinkedHashMap<>();
 
@@ -136,6 +139,33 @@ public final class AppMetrics implements AutoCloseable {
         this.profileMode = profileMode;
         DefaultExports.initialize();                 // JVM-Metriken
         MEM_SYSTEM_TOTAL.set(mem.getTotal());       // einmalig
+    }
+
+    /**
+     * Register a thread whose state should be tracked by the sampler.
+     * <p>
+     * If no threads are registered, the sampler falls back to tracking all JVM
+     * threads (legacy behaviour).
+     *
+     * @param thread Thread to track
+     */
+    public void addThread(Thread thread) {
+        if (thread == null) {
+            return;
+        }
+
+        long id = thread.getId();
+        synchronized (trackedThreadIds) {
+            // Only rebuild the cached array when a new ID is actually added
+            if (trackedThreadIds.add(id)) {
+                long[] arr = new long[trackedThreadIds.size()];
+                int i = 0;
+                for (Long tid : trackedThreadIds) {
+                    arr[i++] = tid;
+                }
+                trackedThreadIdArray = arr;
+            }
+        }
     }
 
     // lifecycle
@@ -199,7 +229,6 @@ public final class AppMetrics implements AutoCloseable {
         }
     }
 
-
     // system sampling
     private void sampleSafely() {
         try {
@@ -223,7 +252,11 @@ public final class AppMetrics implements AutoCloseable {
             measure("process_resident_memory_bytes", null, current.getResidentSetSize());
 
             // Threads pro State
-            long[] ids = tBean.getAllThreadIds();
+            long[] ids = trackedThreadIdArray;
+            if (ids == null || ids.length == 0) {
+                // Fallback to legacy behaviour when no threads are explicitly tracked
+                ids = tBean.getAllThreadIds();
+            }
             ThreadInfo[] infos = tBean.getThreadInfo(ids, 0);
             java.util.Map<Thread.State,Integer> cnt = new java.util.EnumMap<>(Thread.State.class);
             for (ThreadInfo ti : infos) {

@@ -200,6 +200,31 @@ public class DUUIPipelineDocumentPerformance {
      * @return a new {@link AppMetrics.DocRun} instance
      */
     public AppMetrics.DocRun docRun() {
-        return AppMetrics.docRun();
+        return AppMetrics.docRun(sizeBucket());
+    }
+
+    private String sizeBucket() {
+        long bytes = _documentSize == null ? -1L : _documentSize.longValue();
+        if (bytes < 0) {
+            return "unknown";
+        }
+
+        long mb = 1024L * 1024L;
+        if (bytes < 1L * mb) {
+            return "<1MB";
+        }
+        if (bytes < 10L * mb) {
+            return "1MB-10MB";
+        }
+        if (bytes < 50L * mb) {
+            return "10MB-50MB";
+        }
+        if (bytes < 100L * mb) {
+            return "50MB-100MB";
+        }
+        if (bytes < 1024L * mb) {
+            return "100MB-1GB";
+        }
+        return ">=1GB";
     }
 }

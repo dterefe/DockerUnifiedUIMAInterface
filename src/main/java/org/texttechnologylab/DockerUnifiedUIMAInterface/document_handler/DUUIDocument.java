@@ -134,7 +134,7 @@ public class DUUIDocument {
 
     public void setBytes(byte[] bytes) {
         this.bytes = bytes;
-        this.size = bytes.length;
+        if (bytes.length > 0) this.size = bytes.length;
     }
 
     /**

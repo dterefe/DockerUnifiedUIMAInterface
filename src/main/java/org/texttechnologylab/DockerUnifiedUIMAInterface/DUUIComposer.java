@@ -2266,6 +2266,9 @@ public class DUUIComposer {
             if (prometheusProfilerOutputPath != null) {
                 profiler = new AppMetrics(identifier, prometheusProfilerOutputPath);
                 profiler.start();
+                Thread currentThread = Thread.currentThread();
+                currentThread.setName("DUUIComposer-" + currentThread.getId());
+                profiler.addThread(currentThread);
             }
 
             if (_storage != null) {
@@ -2319,7 +2322,7 @@ public class DUUIComposer {
                     identifier,
                     documentReader,
                     this,
-                    "DUUIWorker-" + i + 1
+                    "DUUIWorker-" + (i + 1)
                 );
 
                 arr[i].start();

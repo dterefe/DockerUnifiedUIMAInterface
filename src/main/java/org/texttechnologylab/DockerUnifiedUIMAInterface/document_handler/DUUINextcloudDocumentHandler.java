@@ -283,8 +283,6 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
 
     @Override
     public void writeDocument(DUUIDocument document, String path) {
-
-        document.setStatus(DUUIStatus.OUTPUT);
         synchronized (path) {
             if (!folders.exists(path)) {
                 folders.createFolder(path);

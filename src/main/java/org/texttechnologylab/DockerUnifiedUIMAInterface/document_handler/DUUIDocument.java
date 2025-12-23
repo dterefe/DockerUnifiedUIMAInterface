@@ -6,77 +6,232 @@ import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.jcas.cas.TOP;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContext.DocumentContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIState;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIProcess;
+import org.bson.Document;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class DUUIDocument {
 
     private static final DUUILogger logger = DUUILoggers.getLogger(DUUIDocument.class);
-    private String name;
-    /**
-     * The absolute path to the document including the name.
-     */
-    private String path;
-    private long size;
-    private byte[] bytes;
-    private final AtomicInteger progess = new AtomicInteger(0);
-    private String status = DUUIStatus.WAITING;
-    private String error;
-    private boolean isFinished = false;
-    private long durationDecode = 0L;
-    private long durationDeserialize = 0L;
-    private long durationWait = 0L;
-    private long durationProcess = 0L;
-    private long startedAt = 0L;
-    private long finishedAt = 0L;
-    private long uploadProgress = 0L;
-    private long downloadProgress = 0L;
-    private final Map<String, Integer> annotations = new HashMap<>();
-    private final Map<String, AnnotationRecord> annotationRecords = new HashMap<>();
+    private final DocumentState state = new DocumentState();
     private Marker marker = null;
 
+    /**
+     * Single source of truth for all mutable document state and metrics.
+     * The public API of {@link DUUIDocument} delegates to this state object.
+     */
+    public static final class DocumentState extends DUUIState {
+        private String name;
+        /**
+         * The absolute path to the document including the name.
+         */
+        private String path;
+        private long size;
+        private byte[] bytes;
+        private final AtomicInteger progess = new AtomicInteger(0);
+        private long durationDecode = 0L;
+        private long durationDeserialize = 0L;
+        private long durationWait = 0L;
+        private long durationProcess = 0L;
+        private long uploadProgress = 0L;
+        private long downloadProgress = 0L;
+        private boolean isFinished = false;
+        private long startedAt = 0L;
+        private long finishedAt = 0L;
+        private String error;
+        private final Map<String, Integer> annotations = new HashMap<>();
+        private final Map<String, AnnotationRecord> annotationRecords = new HashMap<>();
+        private Map<Long, DUUIEvent> events = new ConcurrentHashMap<>();
+
+        private static final DUUIContext.Payload EMPTY_PAYLOAD = new DUUIContext.Payload(
+            DUUIStatus.UNKNOWN,
+            "",
+            DUUIContext.PayloadKind.NONE,
+            ""
+        );
+
+        public static final class ComponentState {
+            private volatile boolean segmented = false;
+            private volatile DUUIContext.Payload errorPayload = EMPTY_PAYLOAD;
+            private final AtomicLong waitMillis = new AtomicLong(0);
+            private final AtomicLong serializeMillis = new AtomicLong(0);
+            private final AtomicLong processMillis = new AtomicLong(0);
+            private final AtomicLong deserializeMillis = new AtomicLong(0);
+            private final AtomicLong luaProcessMillis = new AtomicLong(0);
+
+            public boolean isSegmented() {
+                return segmented;
+            }
+
+            public DUUIContext.Payload getErrorPayload() {
+                return errorPayload;
+            }
+
+            public long getWaitMillis() { return waitMillis.get(); }
+            public long getSerializeMillis() { return serializeMillis.get(); }
+            public long getProcessMillis() { return processMillis.get(); }
+            public long getDeserializeMillis() { return deserializeMillis.get(); }
+            public long getLuaProcessMillis() { return luaProcessMillis.get(); }
+
+            public Document toDocument() {
+                return new Document("is_segmented", this.segmented)
+                    .append("payload", DUUIContexts.toDocument(this.errorPayload))
+                    .append("duration_wait", this.waitMillis.get())
+                    .append("duration_serialize", this.serializeMillis.get())
+                    .append("duration_process", this.processMillis.get())
+                    .append("duration_deserialize", this.deserializeMillis.get())
+                    .append("duration_lua_process", this.luaProcessMillis.get());
+            }
+        }
+
+        /**
+         * Per-component document state (segmentation, last error payload, phase durations).
+         * Keyed by component id.
+         */
+        private final Map<String, ComponentState> components = new ConcurrentHashMap<>();
+
+        public Document toDocument() {
+            Document out = super.toDocument()
+                .append("name", name)
+                .append("path", path)
+                .append("size", size)
+                .append("status", status == null ? DUUIStatus.UNKNOWN.value() : status.value())
+                .append("progress", progess.get())
+                .append("duration_decode", durationDecode)
+                .append("duration_deserialize", durationDeserialize)
+                .append("duration_wait", durationWait)
+                .append("duration_process", durationProcess)
+                .append("progress_upload", uploadProgress)
+                .append("progress_download", downloadProgress)
+                .append("is_finished", isFinished)
+                .append("started_at", startedAt)
+                .append("finished_at", finishedAt)
+                .append("last_updated_at", lastUpdatedAt)
+                .append("last_event_id", lastEventId)
+                .append("events", events.values().stream().map(DUUIEvent::getId).toList())
+                .append("error", error);
+
+                if (isFinished) {
+                    out.append("annotations", annotations);
+                    out.append("annotations_new", annotationRecords);
+                }
+                
+                out.append("components", 
+                    components.entrySet().stream().collect(
+                    Collectors.toMap(Map.Entry::getKey,
+                    e -> e.getValue().toDocument()
+                )));
+
+            return out;
+        }
+
+        public void setLastUpdatedAt(long timestampMillis) {
+            this.lastUpdatedAt = timestampMillis;
+        }
+
+        public void setLastEventId(long id) {
+            this.lastEventId = id;
+        }
+
+        public void update(DUUIEvent event, DocumentContext ctx) {
+            DUUIStatus next = ctx.status();
+            if (DUUIProcess.isEffectivelyActive(next)) {
+                next = DUUIStatus.PROCESS;
+            }
+            transitionStatus(next, event.getTimestamp());
+            this.lastEventId = event.getId();
+            this.lastUpdatedAt = event.getTimestamp();
+            this.thread = ctx.thread();
+
+            events.put(event.getId(), event);
+        }
+    }
+
     public DUUIDocument(String name, String path, long size) {
-        this.name = name;
-        this.path = path;
-        this.size = size;
+        state.name = name;
+        state.path = path;
+        state.size = size;
+        long now = Instant.now().toEpochMilli();
+        state.initStatus(DUUIStatus.WAITING, now);
+        touch(now);
     }
 
     public DUUIDocument(String name, String path) {
-        this.name = name;
-        this.path = path;
+        state.name = name;
+        state.path = path;
+        long now = Instant.now().toEpochMilli();
+        state.initStatus(DUUIStatus.WAITING, now);
+        touch(now);
     }
 
     public DUUIDocument(String name, String path, byte[] bytes) {
-        this.name = name;
-        this.path = path;
-        this.bytes = bytes;
-        this.size = bytes.length;
+        state.name = name;
+        state.path = path;
+        state.bytes = bytes;
+        state.size = bytes.length;
+        long now = Instant.now().toEpochMilli();
+        state.initStatus(DUUIStatus.WAITING, now);
+        touch(now);
     }
 
     public DUUIDocument(String name, String path, JCas jCas) {
         if (jCas.getDocumentText() != null) {
-            this.bytes = jCas.getDocumentText().getBytes(StandardCharsets.UTF_8);
+            state.bytes = jCas.getDocumentText().getBytes(StandardCharsets.UTF_8);
         }
         else if (jCas.getSofaDataStream() != null) {
             try {
-                this.bytes = jCas.getSofaDataStream().readAllBytes();
+                state.bytes = jCas.getSofaDataStream().readAllBytes();
             }
             catch (Exception e) {
                 e.printStackTrace();
             }
         }
 
-        this.name = name;
-        this.path = path;
-        this.size = bytes.length;
+        state.name = name;
+        state.path = path;
+        state.size = state.bytes == null ? 0 : state.bytes.length;
+        long now = Instant.now().toEpochMilli();
+        state.initStatus(DUUIStatus.WAITING, now);
+        touch(now);
+    }
+
+    public DocumentState getState() {
+        return state;
+    }
+
+    /**
+     * Marks the state as updated "now".
+     */
+    public void touch() {
+        touch(Instant.now().toEpochMilli());
+    }
+
+    /**
+     * Marks the state as updated at the given timestamp (epoch millis).
+     */
+    public void touch(long timestampMillis) {
+        state.setLastUpdatedAt(timestampMillis);
     }
 
     @Override
@@ -94,11 +249,12 @@ public class DUUIDocument {
     }
 
     public String getName() {
-        return name;
+        return state.name;
     }
 
     public void setName(String name) {
-        this.name = name;
+        state.name = name;
+        touch();
     }
 
     /**
@@ -107,34 +263,37 @@ public class DUUIDocument {
      * @return The file extension including the dot character. E.G. '.txt'.
      */
     public String getFileExtension() {
-        int extensionStartIndex = name.lastIndexOf('.');
+        int extensionStartIndex = state.name.lastIndexOf('.');
         if (extensionStartIndex == -1) return "";
-        return name.substring(extensionStartIndex);
+        return state.name.substring(extensionStartIndex);
     }
 
     public String getPath() {
-        return path;
+        return state.path;
     }
 
     public void setPath(String path) {
-        this.path = path;
+        state.path = path;
+        touch();
     }
 
     public long getSize() {
-        return size;
+        return state.size;
     }
 
     public void setSize(long size) {
-        this.size = size;
+        state.size = size;
+        touch();
     }
 
     public byte[] getBytes() {
-        return bytes;
+        return state.bytes;
     }
 
     public void setBytes(byte[] bytes) {
-        this.bytes = bytes;
-        if (bytes.length > 0) this.size = bytes.length;
+        state.bytes = bytes;
+        if (bytes.length > 0) state.size = bytes.length;
+        touch();
     }
 
     /**
@@ -143,7 +302,7 @@ public class DUUIDocument {
      * @return A new {@link ByteArrayInputStream} containing the content of the document.
      */
     public ByteArrayInputStream toInputStream() {
-        return new ByteArrayInputStream(bytes);
+        return new ByteArrayInputStream(state.bytes);
     }
 
     /**
@@ -152,109 +311,208 @@ public class DUUIDocument {
      * @return A new String containing the content of the document.
      */
     public String getText() {
-        return new String(bytes, StandardCharsets.UTF_8);
+        return new String(state.bytes, StandardCharsets.UTF_8);
     }
 
     /**
      * Increment the document progress by one.
      */
     public void incrementProgress() {
-        progess.incrementAndGet();
+        state.progess.incrementAndGet();
+        touch();
     }
 
     public AtomicInteger getProgess() {
-        return progess;
+        return state.progess;
     }
 
     public String getStatus() {
-        return status;
+        return state.getStatus().toString();
     }
 
+    public DUUIStatus getStatusEnum() {
+        return state.getStatus();
+    }
+
+    /**
+     * @deprecated Use {@link #setStatus(DUUIStatus)} instead.
+     */
+    @Deprecated
     public void setStatus(String status) {
-        this.status = status;
+        setStatus(DUUIStatus.fromString(status));
+    }
+
+    public void setStatus(DUUIStatus status) {
+        long now = Instant.now().toEpochMilli();
+        state.transitionStatus(status, now);
+        touch(now);
     }
 
     public String getError() {
-        return error;
+        return state.error;
     }
 
     public void setError(String error) {
-        this.error = error;
+        setError(DUUILogContext.getContext(), error);
+    }
+    public void setError(DUUIContext ctx, String error) {
+        logger.error(
+            ctx,
+            error
+        );
+        setStatus(DUUIStatus.FAILED);
+        state.error = error;
+        touch();
     }
 
     public boolean isFinished() {
-        return isFinished;
+        return state.isFinished;
     }
 
     public void setFinished(boolean finished) {
-        isFinished = finished;
+        state.isFinished = finished;
+        touch();
     }
 
     public long getDurationDecode() {
-        return durationDecode;
+        return state.durationDecode;
     }
 
     public void setDurationDecode(long durationDecode) {
-        this.durationDecode = durationDecode;
+        state.durationDecode = durationDecode;
+        touch();
     }
 
     public long getDurationDeserialize() {
-        return durationDeserialize;
+        return state.durationDeserialize;
     }
 
     public void setDurationDeserialize(long durationDeserialize) {
-        this.durationDeserialize = durationDeserialize;
+        state.durationDeserialize = durationDeserialize;
+        touch();
     }
 
     public long getDurationWait() {
-        return durationWait;
+        return state.durationWait;
     }
 
     public void setDurationWait(long durationWait) {
-        this.durationWait = durationWait;
+        state.durationWait = durationWait;
+        touch();
     }
 
     public long getDurationProcess() {
-        return durationProcess;
+        return state.durationProcess;
     }
 
     public void setDurationProcess(long durationProcess) {
-        this.durationProcess = durationProcess;
+        state.durationProcess = durationProcess;
+        touch();
+    }
+
+    public Map<String, DocumentState.ComponentState> getComponentStates() {
+        return state.components;
+    }
+
+    public Map<String, DUUIContext.Payload> getComponentErrorPayloads() {
+        Map<String, DUUIContext.Payload> mapped = new HashMap<>();
+        for (Map.Entry<String, DocumentState.ComponentState> entry : state.components.entrySet()) {
+            mapped.put(entry.getKey(), entry.getValue().getErrorPayload());
+        }
+        return mapped;
+    }
+
+    public void setComponentErrorPayload(String componentId, DUUIContext.Payload payload) {
+        if (componentId == null || componentId.isEmpty() || payload == null) return;
+        DocumentState.ComponentState comp = state.components.computeIfAbsent(
+            componentId,
+            _ignored -> new DocumentState.ComponentState()
+        );
+        comp.errorPayload = payload;
+        touch();
+    }
+
+    public void setComponentSegmented(String componentId, boolean segmented) {
+        if (componentId == null || componentId.isEmpty()) return;
+        DocumentState.ComponentState comp = state.components.computeIfAbsent(
+            componentId,
+            _ignored -> new DocumentState.ComponentState()
+        );
+        comp.segmented = segmented;
+        touch();
+    }
+
+    public void addComponentPhaseDurationMillis(String componentId, DUUIStatus phase, long millis) {
+        if (componentId == null || componentId.isEmpty() || phase == null || millis < 0) {
+            return;
+        }
+
+        DocumentState.ComponentState comp = state.components.computeIfAbsent(
+            componentId,
+            _ignored -> new DocumentState.ComponentState()
+        );
+        boolean segmented = comp.segmented;
+
+        switch (phase) {
+            case COMPONENT_WAIT -> {
+                if (segmented) comp.waitMillis.addAndGet(millis); else comp.waitMillis.set(millis);
+            }
+            case COMPONENT_SERIALIZE -> {
+                if (segmented) comp.serializeMillis.addAndGet(millis); else comp.serializeMillis.set(millis);
+            }
+            case COMPONENT_PROCESS -> {
+                if (segmented) comp.processMillis.addAndGet(millis); else comp.processMillis.set(millis);
+            }
+            case COMPONENT_DESERIALIZE -> {
+                if (segmented) comp.deserializeMillis.addAndGet(millis); else comp.deserializeMillis.set(millis);
+            }
+            case COMPONENT_LUA_PROCESS -> {
+                if (segmented) comp.luaProcessMillis.addAndGet(millis); else comp.luaProcessMillis.set(millis);
+            }
+            default -> {
+                // ignore other statuses
+            }
+        }
+        touch();
     }
 
     public long getStartedAt() {
-        return startedAt;
+        return state.startedAt;
     }
 
     /**
      * Utility method to set the startedAt timestamp to the current time.
      */
     public void setStartedAt() {
-        startedAt = Instant.now().toEpochMilli();
+        state.startedAt = Instant.now().toEpochMilli();
+        touch();
     }
 
     public void setStartedAt(long startedAt) {
-        this.startedAt = startedAt;
+        state.startedAt = startedAt;
+        touch();
     }
 
     public long getFinishedAt() {
-        return finishedAt;
+        return state.finishedAt;
     }
 
     /**
      * Utility method to set the finishedAt timestamp to the current time.
      */
     public void setFinishedAt() {
-        finishedAt = Instant.now().toEpochMilli();
+        state.finishedAt = Instant.now().toEpochMilli();
+        touch();
     }
 
     public void setFinishedAt(long finishedAt) {
-        this.finishedAt = finishedAt;
+        state.finishedAt = finishedAt;
+        touch();
     }
 
     private AnnotationState state(TOP top) {
-        return marker.isNew(top) 
-            ? AnnotationState.NEW : marker.isModified(top) 
+        return marker.isNew(top)
+            ? AnnotationState.NEW : marker.isModified(top)
             ? AnnotationState.MODIFIED :
             AnnotationState.BASELINE;
     }
@@ -277,8 +535,8 @@ public class DUUIDocument {
 
     public void countAnnotations(JCas cas) {
 
-        annotations.clear();
-        annotationRecords.clear();
+        state.annotations.clear();
+        state.annotationRecords.clear();
 
         boolean isMarkerValid = ensureValidMarker(cas);
 
@@ -302,9 +560,9 @@ public class DUUIDocument {
                 )
             )
             .forEach((typeName, rec) -> {
-                annotations.put(typeName, rec.count());
+                state.annotations.put(typeName, rec.count());
                 if (isMarkerValid) {
-                    annotationRecords.put(typeName, rec);
+                    state.annotationRecords.put(typeName, rec);
                 }
             });
     }
@@ -313,10 +571,7 @@ public class DUUIDocument {
         CASImpl casImpl = (CASImpl) cas.getCas();
         if (casImpl.getCurrentMark() != null) {
             logger.warn(
-                DUUIEvent.Context.document(
-                    getPath(),
-                    DUUIStatus.ACTIVE
-                ),
+                DUUIContexts.doc(this).status(DUUIStatus.WAITING),
                 "Marker already initialized for CAS of document %s, cannot track new annotations",
                 getPath()
             );
@@ -328,10 +583,7 @@ public class DUUIDocument {
     private boolean ensureValidMarker(JCas cas) {
         if (marker == null) {
             logger.warn(
-                DUUIEvent.Context.document(
-                    getPath(),
-                    DUUIStatus.ACTIVE
-                ),
+                DUUIContexts.doc(this).status(DUUIStatus.WAITING),
                 "No marker initialized for document %s",
                 getPath()
             );
@@ -341,10 +593,7 @@ public class DUUIDocument {
         Marker current = casImpl.getCurrentMark();
         if (current == null || current != marker) {
             logger.warn(
-                DUUIEvent.Context.document(
-                    getPath(),
-                    DUUIStatus.ACTIVE
-                ),
+                DUUIContexts.doc(this).status(DUUIStatus.WAITING),
                 "Marker for document %s is not current or has been cleared",
                 getPath()
             );
@@ -354,27 +603,29 @@ public class DUUIDocument {
     }
 
     public Map<String, Integer> getAnnotations() {
-        return annotations;
+        return state.annotations;
     }
 
     public Map<String, AnnotationRecord> getAnnotationRecords() {
-        return annotationRecords;
+        return state.annotationRecords;
     }
 
     public long getUploadProgress() {
-        return uploadProgress;
+        return state.uploadProgress;
     }
 
     public void setUploadProgress(long uploadProgress) {
-        this.uploadProgress = uploadProgress;
+        state.uploadProgress = uploadProgress;
+        touch();
     }
 
     public long getDownloadProgress() {
-        return downloadProgress;
+        return state.downloadProgress;
     }
 
     public void setDownloadProgress(long downloadProgress) {
-        this.downloadProgress = downloadProgress;
+        state.downloadProgress = downloadProgress;
+        touch();
     }
 
     public enum AnnotationState {

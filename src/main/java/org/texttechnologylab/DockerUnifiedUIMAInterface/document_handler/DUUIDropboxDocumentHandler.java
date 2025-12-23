@@ -89,7 +89,6 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
     public void writeDocument(DUUIDocument document, String path) throws IOException {
         try {
             path = addTrailingSlashToPath(addLeadingSlashToPath(path));
-            document.setStatus(DUUIStatus.OUTPUT);
             IOUtil.ProgressListener progressListener = new IOUtil.ProgressListener() {
                 long uploadProgress = 0;
 

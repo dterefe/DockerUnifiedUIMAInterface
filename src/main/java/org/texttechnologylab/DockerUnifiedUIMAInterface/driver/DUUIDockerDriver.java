@@ -24,7 +24,10 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.xml.sax.SAXException;
 
 /**
@@ -37,6 +40,8 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
     private HttpClient _client;
 
     private HashMap<String, InstantiatedComponent> _active_components;
+
+    private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIDockerDriver.class);
 
     public DUUIDockerDriver() throws IOException, UIMAException, SAXException {
         _interface = new DUUIDockerInterface();
@@ -53,6 +58,11 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
         TypeSystemDescription desc = TypeSystemUtil.typeSystem2TypeSystemDescription(_basic.getTypeSystem());
         StringWriter wr = new StringWriter();
         desc.toXML(wr);
+    }
+
+    @Override
+    public DUUILogger logger() {
+        return LOG;
     }
 
     /**
@@ -106,7 +116,7 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
 
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIContexts.component(comp).status(DUUIStatus.INSTANTIATING)))  {
             // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
             if (comp.getImageFetching()) {
                 if (comp.getUsername() != null) {
@@ -182,14 +192,29 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
                             iCopy,
                             j + 1 
                         );
-                        comp.addComponent(new ComponentInstance(instanceIdentifier, containerid, containerURL, port, layer));
+                        IDUUIUrlAccessible instance = new ComponentInstance(instanceIdentifier, containerid, containerURL, port, layer.copy());
+                        comp.addComponent(instance);
+                        logger().trace(
+                            DUUIContexts.component(comp, instance).status(DUUIStatus.INACTIVE),
+                            "[DUUIDockerDriver] Started instance: %s", 
+                            instanceIdentifier
+                        );
                     }
+                    
+                    logger().info(
+                        DUUIContexts.component(comp).status(DUUIStatus.INSTANTIATING),
+                        "%s Replicas for image %s initialised!", 
+                    prefix, comp.getImageName()
+                    );
                 } catch (Exception e) {
                     //_interface.stop_container(containerid);
                     //throw e;
                 }
             }
+        } finally {
+            comp.setLogger(logger());
         }
+
 
         return shutdown.get() ? null : uuid;
     }
@@ -221,7 +246,11 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
         if (!comp.getRunningAfterExit()) {
             int counter = 1;
             for (IDUUIUrlAccessible inst : comp.getTotalInstances()) {
-                System.out.printf("[DUUIDockerDriver][Replication %d/%d] Stopping docker container %s...%n", counter, comp.getTotalInstances().size(), ((ComponentInstance)inst).getContainerId());
+                logger().info(
+                    DUUIContexts.component(comp, inst).status(DUUIStatus.SHUTDOWN),
+                    "[DUUIDockerDriver][Replication %d/%d] Stopping docker container %s...%n", 
+                    counter, comp.getTotalInstances().size(), ((ComponentInstance)inst).getContainerId()
+                );
                 _interface.stop_container(((ComponentInstance)inst).getContainerId());
                 counter += 1;
             }

@@ -26,9 +26,10 @@ import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.xml.sax.SAXException;
 
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -77,6 +78,11 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
         _client = HttpClient.newHttpClient();
 
         _active_components = new HashMap<>();
+    }
+    
+    @Override
+    public DUUILogger logger() {
+        return LOG;
     }
 
     public DUUIKubernetesDriver withScaleBuffer(int iValue) {
@@ -269,7 +275,7 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
         }
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);  // Initialisiere Komponente
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp))) {
+        try(var ignored = logger().withContext(DUUIContexts.component(comp).status(DUUIStatus.INSTANTIATING))) {
             String dockerImage = comp.getImageName();  // Image der Komponente als String
             int scale = comp.getScale(); // Anzahl der Replicas in dieser Kubernetes-Komponente
 
@@ -327,8 +333,10 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
             Thread.sleep(500);
 
             _active_components.put(uuid, comp);
+        } finally {
+            comp.setLogger(logger());
         }
-        
+
         return shutdown.get() ? null : uuid;
     }
 
@@ -372,6 +380,9 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
         if (!comp.getRunningAfterExit()) {
+            logger().info(DUUIContexts.component(comp).status(DUUIStatus.SHUTDOWN), 
+                "[DUUIKubernetesDriver] Stopping service %s...\n", uuid
+            );
             deleteDeployment("a" + uuid);
             deleteService("a" + uuid);
         }
@@ -447,7 +458,13 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
                     _uniqueComponentKey.substring(0, 5),
                     i + 1                               
                 );
-                _components.add(new ComponentInstance(instanceIdentifier, getServiceUrl(), layer.copy()));
+                IDUUIUrlAccessible instance = new ComponentInstance(instanceIdentifier, getServiceUrl(), layer.copy()); 
+                _components.add(instance);
+                logger().trace(
+                    DUUIContexts.component(this, instance).status(DUUIStatus.INACTIVE),
+                    "[DUUIKubernetesDriver] Started instance: %s", 
+                    instanceIdentifier
+                );
 
             }
             return this;

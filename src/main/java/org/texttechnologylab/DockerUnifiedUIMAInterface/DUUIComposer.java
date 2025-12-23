@@ -9,6 +9,7 @@ import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidParameterException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -24,13 +25,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.lang3.SerializationUtils;
-import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.analysis_engine.AnalysisEngineProcessException;
 import org.apache.uima.cas.impl.XmiCasSerializer;
 import org.apache.uima.collection.CollectionReader;
@@ -64,8 +65,13 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEventObserver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.ClassScopedLogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggingConfig;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIMonitor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIProcess;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.IDUUIStorageBackend;
@@ -129,7 +135,7 @@ class DUUIWorker extends Thread {
      */
     @Override
     public void run() {
-        DUUILogContext.setLogger(composer.getLogger());
+        DUUILogContext.setLogger(composer);
         int num = _threadsAlive.addAndGet(1);
         while (true) {
             JCas object = null;
@@ -279,7 +285,7 @@ class DUUIWorkerAsyncReader extends Thread {
      */
     @Override
     public void run() {
-        DUUILogContext.setLogger(composer.getLogger());
+        DUUILogContext.setLogger(composer);
         DUUILogger log = DUUILogContext.getLogger();
         int num = _threadsAlive.addAndGet(1);
         while (true) {
@@ -421,7 +427,7 @@ class DUUIWorkerAsyncProcessor extends Thread {
      */
     @Override
     public void run() {
-        DUUILogContext.setLogger(composer.getLogger());
+        DUUILogContext.setLogger(composer);
         DUUILogger log = DUUILogContext.getLogger();
 
         int num = _threadsAlive.addAndGet(1);
@@ -569,12 +575,14 @@ class DUUIWorkerDocumentReader extends Thread {
         this.composer = composer;
     }
 
-    DUUIEvent.Context context(String status) {
-        return DUUIEvent.Context.worker(runKey, status);
+    DUUIContext context(DUUIStatus status) {
+        return DUUIContexts.worker(Thread.currentThread().getName(), threadsAlive).status(status);
     }
 
-    DUUIEvent.Context error(String status, String payload) {
-        return DUUIEvent.Context.worker(runKey, status, payload);
+    DUUIContext error(DUUIStatus status, Throwable payload) {
+        return DUUIContexts.worker(Thread.currentThread().getName(), threadsAlive)
+            .exception(payload)
+            .status(status);
     }
 
     /**
@@ -583,6 +591,8 @@ class DUUIWorkerDocumentReader extends Thread {
     @Override
     public void run() {
         var log = composer.getLogger();
+        DUUILogContext.setLogger(composer);
+
         int active = threadsAlive.addAndGet(1);
         log.info(
             context(DUUIStatus.ACTIVE),
@@ -606,12 +616,9 @@ class DUUIWorkerDocumentReader extends Thread {
                     try (AppMetrics.Timer ignoredFetchTimer = AppMetrics.timeStep("fetch_document")) {
                         document = reader.getNextDocument(cas);
                         if (document != null && !document.isFinished()) {
+                            DUUIContexts.setDocumentContext(DUUIContexts.doc(document).status(DUUIStatus.WAITING));
                             log.info(
-                                DUUIEvent.Context.document(
-                                    runKey,
-                                    document.getPath(),
-                                    DUUIStatus.ACTIVE
-                                ),
+                                DUUIContexts.doc(document).status(DUUIStatus.WAITING),
                                 "Fetched document %s (status=%s)",
                                 document.getPath(),
                                 document.getStatus()
@@ -627,20 +634,22 @@ class DUUIWorkerDocumentReader extends Thread {
                         Thread.sleep(300);
                     } catch (IllegalArgumentException e) {
                         log.error(
-                            error(DUUIStatus.FAILED,
-                                ExceptionUtils.getStackTrace(e)
+                            error(DUUIStatus.WAITING,
+                                e
                             ),
                             "IllegalArgumentException while fetching next document: %s",
                             e.toString()
                         );
                     } catch (InterruptedException e) {
                         log.error(
-                            error(DUUIStatus.FAILED,
-                                ExceptionUtils.getStackTrace(e)
+                            error(DUUIStatus.SHUTDOWN,
+                                e
                             ),
                             "Interrupted while waiting for next document: %s",
                             e.toString()
                         );
+                        composer.cancelRunFromInterrupt(e);
+                        return;
                     }
                 }
 
@@ -660,32 +669,27 @@ class DUUIWorkerDocumentReader extends Thread {
 
                 document.setDurationWait(timer.getDuration());
                 log.info(
-                    DUUIEvent.Context.document(
-                        runKey,
-                        document.getPath(),
-                        DUUIStatus.PROCESS
-                    ),
+                    DUUIContexts.doc(document)
+                        .metric(Duration.ofMillis(timer.getDuration()))
+                        .status(DUUIStatus.WAITING),
+                    "Document %s waited %d ms in queue",
+                    document.getPath(),
+                    timer.getDuration()
+                );
+                log.info(
+                    DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
                     "Starting to process %s",
                     document.getPath()
                 );
 
                 timer.restart();
 
-                document.setStatus(DUUIStatus.ACTIVE);
-
                 try (AppMetrics.DocRun docRun = perf.docRun()) {
                     for (DUUIComposer.PipelinePart pipelinePart : flow) {
                         String driverName = pipelinePart.getDriver().getClass().getSimpleName();
                         String segmentationName = pipelinePart.getSegmentationStrategy().getClass().getSimpleName();
                         log.info(
-                            DUUIEvent.Context.pipeline(
-                                runKey,
-                                document.getPath(),
-                                pipelinePart.getName(),
-                                driverName,
-                                segmentationName,
-                                DUUIStatus.PROCESS
-                            ),
+                            DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
                             "%s is being processed by component %s (driver=%s, segmentation=%s)",
                             document.getPath(),
                             pipelinePart.getName(),
@@ -695,7 +699,12 @@ class DUUIWorkerDocumentReader extends Thread {
 
                     try {
                         DUUISegmentationStrategy segmentationStrategy = pipelinePart.getSegmentationStrategy();
+                        document.setComponentSegmented(
+                            pipelinePart.getUUID(),
+                            !(segmentationStrategy instanceof DUUISegmentationStrategyNone)
+                        );
                         if (segmentationStrategy instanceof DUUISegmentationStrategyNone) {
+                            // TODO: replace with implicit status updates
                             composer.setPipelineStatus(
                                 pipelinePart.getName(),
                                 DUUIStatus.ACTIVE);
@@ -708,14 +717,7 @@ class DUUIWorkerDocumentReader extends Thread {
                             pipelinePart.getDriver().run(pipelinePart.getUUID(), cas, perf, composer);
                         } else {
                             log.debug(
-                                DUUIEvent.Context.pipeline(
-                                    runKey,
-                                    document.getPath(),
-                                    pipelinePart.getName(),
-                                    driverName,
-                                    segmentationName,
-                                    DUUIStatus.SETUP
-                                ),
+                                DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
                                 "Initializing segmentation strategy %s for %s",
                                 segmentationStrategy.getClass().getSimpleName(),
                                 document.getPath()
@@ -731,14 +733,7 @@ class DUUIWorkerDocumentReader extends Thread {
                                         int iLeft = pStrategie.getSegments();
                                         DocumentMetaData dmd = DocumentMetaData.get(cas);
                                         log.debug(
-                                            DUUIEvent.Context.pipeline(
-                                                runKey,
-                                                dmd.getDocumentId(),
-                                                pipelinePart.getName(),
-                                                driverName,
-                                                segmentationName,
-                                                DUUIStatus.PROCESS
-                                            ),
+                                            DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
                                             "%s Left: %s",
                                             dmd.getDocumentId(),
                                             iLeft
@@ -746,14 +741,7 @@ class DUUIWorkerDocumentReader extends Thread {
                                     }
                                 }
                                 log.debug(
-                                    DUUIEvent.Context.pipeline(
-                                        runKey,
-                                        document.getPath(),
-                                        pipelinePart.getName(),
-                                        driverName,
-                                        segmentationName,
-                                        DUUIStatus.PROCESS
-                                    ),
+                                    DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
                                     "Processing next segment of %s with component %s",
                                     document.getPath(),
                                     pipelinePart.getName()
@@ -770,43 +758,39 @@ class DUUIWorkerDocumentReader extends Thread {
                             composer.setPipelineStatus(pipelinePart.getName(), DUUIStatus.FAILED);
                         }
 
-                        log.error(
-                            DUUIEvent.Context.pipelineError(
-                                runKey,
-                                document.getPath(),
-                                pipelinePart.getName(),
-                                driverName,
-                                ExceptionUtils.getStackTrace(exception)
-                            ),
-                            "%s encountered error %s: %s. Thread continues work with next document.",
-                            document.getPath(),
-                            exception,
-                            exception.getMessage()
-                        );
-
-                        document.setError(String.format(
-                            "Encountered error %s: %s",
-                            exception,
-                            exception.getMessage()));
-                        document.setStatus(DUUIStatus.FAILED);
                         docRun.markError();
 
                         if (composer.getIgnoreErrors()) {
+                            log.warn(
+                                DUUIContexts.doc(document)
+                                        .exception(exception)
+                                        .status(DUUIStatus.WAITING),
+                                String.format(
+                                    "%s encountered %s while processing %s: %s",
+                                        pipelinePart.getName(),
+                                        exception,
+                                        document.getPath(),
+                                        exception.getMessage())
+                            );
                             break;
                         } else {
+                            document.setError(
+                                DUUIContexts.doc(document)
+                                        .exception(exception)
+                                        .status(DUUIStatus.FAILED),
+                                String.format(
+                                    "%s encountered %s while processing %s: %s",
+                                        pipelinePart.getName(),
+                                        exception,
+                                        document.getPath(),
+                                        exception.getMessage())
+                            );
                             throw exception;
                         }
                     }
                     log.info(
-                        DUUIEvent.Context.pipeline(
-                            runKey,
-                            document.getPath(),
-                            pipelinePart.getName(),
-                            driverName,
-                            segmentationName,
-                            DUUIStatus.COMPLETED
-                        ),
-                        "%s has been processed by component %s",
+                        DUUIContexts.doc(document).status(DUUIStatus.WAITING),
+                        "%s has been processed by %s",
                         document.getPath(),
                         pipelinePart.getName()
                     );
@@ -816,84 +800,79 @@ class DUUIWorkerDocumentReader extends Thread {
                 timer.stop();
                 document.setDurationProcess(timer.getDuration());
 
+                log.info(DUUIContexts.doc(document).status(DUUIStatus.WAITING),
+                    "Counting annotations."
+                );
                 document.countAnnotations(cas);
 
-                if (!document.getStatus().equals(DUUIStatus.FAILED)) {
-                    document.setStatus(reader.hasOutput() ? DUUIStatus.OUTPUT : DUUIStatus.COMPLETED);
-
-                    if (reader.hasOutput()) {
-                        log.info(
-                            DUUIEvent.Context.reader(
-                                document.getPath(),
-                                DUUIStatus.OUTPUT
-                            ),
-                            "Uploading output for %s",
-                            document.getPath()
-                        );
-                        try {
-                            reader.upload(document, cas);
-                        } catch (IOException | SAXException exception) {
-                            log.error(
-                                DUUIEvent.Context.readerError(
-                                    document.getPath(),
-                                    ExceptionUtils.getStackTrace(exception)
-                                ),
-                                "Failed to upload %s to output storage for %s: %s",
-                                document.getPath(),
-                                exception,
-                                exception.getMessage()
+                if (reader.hasOutput() && document.getStatusEnum() != DUUIStatus.FAILED) {
+                    document.setStatus(DUUIStatus.OUTPUT);
+                    try {
+                        reader.upload(document, cas);
+                        document.setStatus(DUUIStatus.COMPLETED);
+                    } catch (IOException | SAXException exception) {
+                        String message = switch (exception.getClass().getName()) {
+                            case "java.io.IOException" -> String.format(
+                                "Encountered %s while uploading %s : %s",
+                                exception, document.getPath(), exception.getMessage()
                             );
+                            case "org.xml.sax.SAXException" -> String.format(
+                                "Fatal XMI serialization error for %s: %s",
+                                document.getPath(), exception.getMessage()
+                            );
+                            default -> "";
+                        };
 
-                            document.setError(String.format(
-                                "Failed to upload to output storage for %s: %s",
-                                exception,
-                                exception.getMessage()));
-                            document.setStatus(DUUIStatus.FAILED);
-                            docRun.markError();
+                        document.setError(
+                            DUUIContexts.reader(reader, document)
+                                .exception(exception)
+                                .status(DUUIStatus.FAILED),
+                            message
+                        );
+                        docRun.markError();
 
-                            if (!composer.getIgnoreErrors())
-                                throw exception;
-                        }
+                        if (!composer.getIgnoreErrors())
+                            throw exception;
                     }
+                } else {
+                    document.setStatus(DUUIStatus.COMPLETED);
                 }
 
                 log.info(
-                    DUUIEvent.Context.document(
-                        runKey,
-                        document.getPath(),
-                        document.getStatus()
-                    ),
+                    DUUIContexts.doc(document).status(document.getStatusEnum()),
                     "%s has been processed after %d ms (status=%s)",
                     document.getPath(),
                     timer.getDuration(),
-                    document.getStatus()
+                    document.getStatusEnum()
                 );
-
-                if (backend != null) {
-                    backend.addMetricsForDocument(perf);
-                }
 
                 composer.incrementProgress();
                 document.setFinished(true);
                 document.setFinishedAt();
+                DUUIContexts.setDocumentContext(null);
+
+                if (backend != null) {
+                    backend.addMetricsForDocument(perf);
+                }
             }
         }
         } catch (Exception e) {
-            composer.getLogger().error(
-                error(DUUIStatus.FAILED,
-                    ExceptionUtils.getStackTrace(e)
-                ),
+            log.error(
+                error(DUUIStatus.FAILED,e),
                 "Unhandled exception in worker thread %s: %s",
                 Thread.currentThread().getName(),
                 e.toString()
             );
 
             if (!composer.getIgnoreErrors()) {
-                throw new RuntimeException(e);
+                composer.failRunFromWorker(e);
+                return;
             }
         } finally {
+            DUUIContexts.setDocumentContext(null);
+            DUUIContexts.setComposerContext(null);
             int remaining = threadsAlive.decrementAndGet();
-            composer.getLogger().info(
+            log.info(
                 context(DUUIStatus.SHUTDOWN),
                 "Thread %s finished, %d threads remain active.",
                 Thread.currentThread().getName(),
@@ -910,6 +889,8 @@ class DUUIWorkerDocumentReader extends Thread {
  * This is the main class used to control and use DUUI.
  */
 public class DUUIComposer {
+    private static final System.Logger EVENT_LOGGER = System.getLogger(DUUIComposer.class.getName());
+
     private final Map<String, IDUUIDriverInterface> _drivers;
     private final Vector<DUUIPipelineComponent> _pipeline;
     private int _workers;
@@ -949,7 +930,6 @@ public class DUUIComposer {
 
     private TypeSystemDescription _minimalTypesystem;
     private TypeSystemDescription instantiatedTypeSystem;
-    private List<DUUIEvent> events = new ArrayList<>();
     private Map<String, DUUIDocument> documents = new HashMap<>();
     private Map<String, String> pipelineStatus = new HashMap<>();
     private DebugLevel debugLevel = DebugLevel.NONE;
@@ -959,6 +939,7 @@ public class DUUIComposer {
     private AtomicBoolean isFinished = new AtomicBoolean(false);
     private long instantiationDuration;
     private AtomicInteger progress = new AtomicInteger(0);
+    private final AtomicReference<Exception> fatalRunError = new AtomicReference<>(null);
 
     /**
      * Default logger used by the composer, drivers and components
@@ -967,8 +948,16 @@ public class DUUIComposer {
     private final DUUILogger logger;
 
     /**
-     * Observers that are notified asynchronously whenever a new
-     * {@link DUUIEvent} is added via {@link #addEvent(DUUIEvent)}.
+     * Observers are managed by {@link #process} and notified asynchronously
+     * whenever a new {@link DUUIEvent} is processed.
+     */
+    /**
+     * In-memory run state tracker, updated synchronously from {@link #addEvent(DUUIEvent)}.
+     */
+    private DUUIProcess process = new DUUIProcess();
+
+    /**
+     * Event observers must survive process resets (shutdown/new DUUIProcess).
      */
     private final CopyOnWriteArrayList<DUUIEventObserver> eventObservers = new CopyOnWriteArrayList<>();
 
@@ -992,7 +981,11 @@ public class DUUIComposer {
         _hasShutdown = false;
         _shutdownAtomic = new AtomicBoolean(false);
         _instantiatedPipeline = new Vector<>();
-        logger = this::addEvent;
+        logger = DUUILoggers.getLogger(DUUIComposer.class);
+        if (logger instanceof ClassScopedLogger scoped) {
+            scoped.setDelegate(this::addEvent);
+        }
+
         _minimalTypesystem = TypeSystemDescriptionFactory
             .createTypeSystemDescriptionFromPath(
                 Objects.requireNonNull(
@@ -1021,6 +1014,70 @@ public class DUUIComposer {
         Runtime.getRuntime().addShutdownHook(_shutdownHook);
     }
 
+    private void setContext(String runKey) {
+        DUUIContext ctx = runKey == null ? null : DUUIContexts.composer(this, runKey).status(DUUIStatus.ACTIVE);
+        DUUIContexts.setComposerContext(ctx);
+        logger.setContext(ctx);
+    }
+
+    private void markUnfinishedDocumentsFailed() {
+        for (DUUIDocument doc : getDocuments()) {
+            if (doc != null && !doc.isFinished()) {
+                doc.setStatus(DUUIStatus.FAILED);
+                doc.setFinishedAt();
+                doc.setFinished(true);
+            }
+        }
+    }
+
+    private void resetProcess() {
+        if (process != null) {
+            process.shutdown();
+        }
+        process = new DUUIProcess();
+        for (DUUIEventObserver observer : eventObservers) {
+            process.addEventObserver(observer);
+        }
+        fatalRunError.set(null);
+    }
+
+    /**
+     * Cancels the current run due to an interrupt.
+     * <p>
+     * This is package-private so worker threads in this compilation unit can
+     * trigger a clean cancellation without reaching into private fields.
+     */
+    void cancelRunFromInterrupt(InterruptedException e) {
+        logger.updateStatus(DUUIStatus.CANCELLED);
+        logger.error(DUUIContexts.exception(e),
+            "Run interrupted: %s", e.getMessage()
+        );
+        _shutdownAtomic.set(true);
+        markUnfinishedDocumentsFailed();
+        Thread.currentThread().interrupt();
+    }
+
+    /**
+     * Fails the current run due to an unrecoverable worker exception (non-interrupt).
+     * <p>
+     * Intended to be called from worker threads when {@link #getIgnoreErrors()} is false.
+     */
+    void failRunFromWorker(Exception t) {
+        Exception failure = t != null ? t : new RuntimeException("Worker failed");
+        fatalRunError.compareAndSet(null, failure);
+        logger.updateStatus(DUUIStatus.FAILED);
+        logger.error(DUUIContexts.exception(failure),
+            "Run failed after processing %d documents : %s", 
+            getProgress(), Objects.toString(failure.getMessage(), "")
+        );
+        _shutdownAtomic.set(true);
+        markUnfinishedDocumentsFailed();
+    }
+
+    Exception getFatalRunError() {
+        return fatalRunError.get();
+    }
+
     /**
      * @return the default logger associated with this composer.
      */
@@ -1035,9 +1092,9 @@ public class DUUIComposer {
      * @param observer observer to register
      */
     public void addEventObserver(DUUIEventObserver observer) {
-        if (observer != null) {
-            eventObservers.add(observer);
-        }
+        if (observer == null) return;
+        eventObservers.addIfAbsent(observer);
+        process.addEventObserver(observer);
     }
 
     /**
@@ -1046,31 +1103,9 @@ public class DUUIComposer {
      * @param observer observer to remove
      */
     public void removeEventObserver(DUUIEventObserver observer) {
-        if (observer != null) {
-            eventObservers.remove(observer);
-        }
-    }
-
-    /**
-     * Dispatches the given event to all registered observers using
-     * asynchronous tasks. Exceptions in observers are caught and ignored
-     * so they do not affect the main processing flow.
-     *
-     * @param event event to dispatch
-     */
-    protected void notifyEventObservers(DUUIEvent event) {
-        if (event == null || eventObservers.isEmpty()) {
-            return;
-        }
-        for (DUUIEventObserver observer : eventObservers) {
-            CompletableFuture.runAsync(() -> {
-                try {
-                    observer.onEvent(event);
-                } catch (Throwable ignored) {
-                    // Observer failures must not impact main processing.
-                }
-            });
-        }
+        if (observer == null) return;
+        eventObservers.remove(observer);
+        process.removeEventObserver(observer);
     }
 
     public static String getLocalhost() {
@@ -1181,6 +1216,9 @@ public class DUUIComposer {
         driver.setLogger(logger);
         driver.setLuaContext(_context);
         _drivers.put(driver.getClass().getCanonicalName(), driver);
+        logger.debug(DUUIContexts.driver(driver).status(DUUIStatus.INACTIVE), 
+            "Added %s to DUUIComposer", driver.getClass().getSimpleName()
+        );
         return this;
     }
 
@@ -1194,9 +1232,7 @@ public class DUUIComposer {
      */
     public DUUIComposer addDriver(IDUUIDriverInterface... drivers) {
         for (IDUUIDriverInterface driver : drivers) {
-            driver.setLogger(logger);
-            driver.setLuaContext(_context);
-            _drivers.put(driver.getClass().getCanonicalName(), driver);
+            addDriver(driver);
         }
         return this;
     }
@@ -1284,7 +1320,7 @@ public class DUUIComposer {
             }
         }
 
-        System.out.println("[DUUIComposer] Compressing and finalizing pipeline component...");
+        logger.info(DUUIStatus.SETUP, "Compressing and finalizing pipeline component %s ...", object.getName());
         object.finalizeComponent();
         _pipeline.add(object);
         return this;
@@ -1358,7 +1394,7 @@ public class DUUIComposer {
      * @return this, for method chaining
      */
     public DUUIComposer resetPipeline() {
-        events.clear();
+        resetProcess();
         _pipeline.clear();
         documents.clear();
         progress.set(0);
@@ -1373,6 +1409,7 @@ public class DUUIComposer {
      * @throws Exception
      */
     public void run(DUUIAsynchronousProcessor collectionReader, String name) throws Exception {
+        setContext(name);
         ConcurrentLinkedQueue<JCas> emptyCasDocuments = new ConcurrentLinkedQueue<>();
         AtomicInteger aliveThreads = new AtomicInteger(0);
         _shutdownAtomic.set(false);
@@ -1450,6 +1487,7 @@ public class DUUIComposer {
      * @throws Exception
      */
     public void runSegmented(DUUICollectionDBReader collectionReader, String name) throws Exception {
+        setContext(name);
         try {
             _shutdownAtomic.set(false);
 
@@ -1526,6 +1564,7 @@ public class DUUIComposer {
      * @throws Exception
      */
     public void run(AsyncCollectionReader collectionReader, String name) throws Exception {
+        setContext(name);
         ConcurrentLinkedQueue<JCas> emptyCasDocuments = new ConcurrentLinkedQueue<>();
         ConcurrentLinkedQueue<JCas> loadedCasDocuments = new ConcurrentLinkedQueue<>();
         AtomicInteger aliveThreads = new AtomicInteger(0);
@@ -1712,6 +1751,7 @@ public class DUUIComposer {
      * @throws Exception
      */
     public void run(CollectionReaderDescription reader, String name) throws Exception {
+        setContext(name);
         Exception catched = null;
         if (_storage != null && name == null) {
             throw new RuntimeException("[Composer] When a storage backend is specified a run name is required, since it is the primary key");
@@ -1795,6 +1835,8 @@ public class DUUIComposer {
      * @throws Exception
      */
     public TypeSystemDescription instantiate_pipeline() throws Exception {
+        logger.updateStatus(DUUIStatus.INSTANTIATING);
+        
         if (isServiceStarted)
             return fromInstantiatedPipeline();
 
@@ -1807,9 +1849,7 @@ public class DUUIComposer {
         jc.setDocumentText("Hello World!");
 
         if (_skipVerification) {
-            addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                "Running without verification, no process calls will be made during initialization!");
+            logger.debug("Running without verification, no process calls will be made during initialization!");
         }
 
         // Reset "instantiated pipeline" as the components will duplicate otherwise
@@ -1827,30 +1867,29 @@ public class DUUIComposer {
                 if (shouldShutdown()) return null;
 
                 IDUUIDriverInterface driver = _drivers.get(comp.getDriver());
-                pipelineStatus.put(driver.getClass().getSimpleName(), DUUIStatus.INSTANTIATING);
-                pipelineStatus.put(comp.getName(), DUUIStatus.INSTANTIATING);
+                setPipelineStatus(driver.getClass().getSimpleName(), DUUIStatus.INSTANTIATING);
+                setPipelineStatus(comp.getName(), DUUIStatus.INSTANTIATING);
 
                 // When a pipeline is run as a service, only components that are not yet instantiated
                 // should be instantiated here.
 
                 if (isServiceStarted && _instantiatedPipeline.size() > index) {
-                    addEvent(
-                        DUUIEvent.Sender.COMPOSER,
-                        String.format("Reusing component %s", comp.getName())
-                    );
+                    logger.info( "Reusing component %s", comp.getName());
 
                     TypeSystemDescription desc = driver.get_typesystem(_instantiatedPipeline.get(index).getUUID());
                     if (desc != null) {
                         descriptions.add(desc);
                     }
                 } else {
-                    addEvent(
-                        DUUIEvent.Sender.COMPOSER,
-                        String.format("Instantiating component %s", comp.getName())
-                    );
+                    logger.info( "Instantiating component %s with driver %s", 
+                    comp.getName(), comp.getDriverSimpleName());
 
                     String uuid = driver.instantiate(comp, jc, _skipVerification, _shutdownAtomic);
                     if (uuid == null) {
+                        logger.error(DUUIStatus.FAILED, 
+                            "Instantiating component %s with driver %s failed! Initiating shutdown", 
+                            comp.getName(), comp.getDriverSimpleName()
+                        );
                         shutdown();
                         return null;
                     }
@@ -1861,39 +1900,40 @@ public class DUUIComposer {
                     if (desc != null) {
                         descriptions.add(desc);
                     }
+
+                    logger.info(
+                        "Successfully instantiated component %s with driver %s", 
+                        comp.getName(), comp.getDriverSimpleName()
+                    );
                     //TODO: get input output of every annotator
                     _instantiatedPipeline.add(new PipelinePart(driver, uuid, comp.getName(), segmentationStrategy));
                 }
 
                 index++;
-                pipelineStatus.put(comp.getName(), DUUIStatus.IDLE);
+                setPipelineStatus(comp.getName(), DUUIStatus.IDLE);
             }
 
             for (IDUUIDriverInterface driver : _drivers.values()) {
-                pipelineStatus.put(driver.getClass().getSimpleName(), DUUIStatus.IDLE);
+                setPipelineStatus(driver.getClass().getSimpleName(), DUUIStatus.IDLE);
             }
 
             if (shouldShutdown()) return null;
-            // UUID und die input outputs
-            // Execution Graph
-            // Gegeben Knoten n finde Vorgaenger
-            // inputs: [], outputs: [Token]
-            // input: [Sentences], outputs: [POS]
         } catch (InterruptedException e) {
-            return null;
+            logger.updateStatus(DUUIStatus.CANCELLED);
+            logger.error(DUUIContexts.exception(e),
+                "Pipeline instantiation interrupted: %s", e.getMessage()
+            );
+            Thread.currentThread().interrupt();
+            throw e;
         } catch (Exception e) {
-            System.err.println("[Composer] Pipeline instantiation failed:");
-            // e.printStackTrace();
-            addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                e.getMessage(),
-                DebugLevel.ERROR);
-
+            logger.error(DUUIContexts.exception(e), 
+                "Pipeline instantiation failed: %s", e.getMessage()
+            );
             throw e;
         }
 
         if (isServiceStarted && instantiatedTypeSystem != null) {
-            addEvent(DUUIEvent.Sender.COMPOSER, "Reusing TypeSystemDescription");
+            logger.info("Reusing TypeSystemDescription");
         } else {
             isServiceStarted = isService;
 
@@ -1907,9 +1947,7 @@ public class DUUIComposer {
         }
 
         timer.stop();
-        addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            String.format("Instatiated Pipeline after %d ms.", timer.getDuration()));
+        logger.info("Instatiated Pipeline after %d ms.", timer.getDuration());
 
         instantiationDuration = timer.getDuration();
 
@@ -1962,7 +2000,7 @@ public class DUUIComposer {
         try {
             for (PipelinePart comp : pipeline) {
                 if (shouldShutdown()) break;
-                pipelineStatus.put(comp.getName(), DUUIStatus.ACTIVE);
+                setPipelineStatus(comp.getName(), DUUIStatus.ACTIVE);
 
                 // Segment document for each item in the pipeline separately
                 // TODO support "complete pipeline" segmentation to only segment once
@@ -2036,7 +2074,7 @@ public class DUUIComposer {
         if (error != null) {
             document.setStatus(DUUIStatus.FAILED);
         } else {
-            document.setStatus(DUUIStatus.OUTPUT);
+            document.setStatus(DUUIStatus.COMPLETED);
         }
 
         document.setFinishedAt();
@@ -2057,26 +2095,19 @@ public class DUUIComposer {
     private void shutdown_pipeline() throws Exception {
         if (!_instantiatedPipeline.isEmpty()) {
             for (PipelinePart comp : _instantiatedPipeline) {
-                pipelineStatus.put(comp.getName(), DUUIStatus.SHUTDOWN);
-                addEvent(
-                    DUUIEvent.Sender.COMPOSER,
-                    String.format("Shutting down %s (%s)", comp.getName(), comp.getUUID()));
+                setPipelineStatus(comp.getName(), DUUIStatus.SHUTDOWN);
+                logger.info("Shutting down %s (%s)", comp.getName(), comp.getUUID());
 
                 boolean fullyShutdown = false;
                 while (!fullyShutdown) {
                     fullyShutdown = comp.getDriver().destroy(comp.getUUID());
                 }
-                pipelineStatus.put(
-                    comp.getName(),
-                    DUUIStatus.INACTIVE);
             }
             _instantiatedPipeline.clear();
         }
 
         if (_monitor != null) {
-            addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                String.format("Visit %s to view the data.", _monitor.generateURL()));
+            logger.info("Visit %s to view the data.", _monitor.generateURL());
         }
 
 
@@ -2134,6 +2165,7 @@ public class DUUIComposer {
      * @throws Exception
      */
     public void run(JCas jc, String name) throws Exception {
+        setContext(name);
         if (_storage != null && name == null) {
             throw new RuntimeException("[Composer] When a storage backend is specified a run name is required, since it is the primary key");
         }
@@ -2188,28 +2220,23 @@ public class DUUIComposer {
      * @throws UnknownHostException
      */
     public void shutdown() throws UnknownHostException {
+        logger.updateStatus(DUUIStatus.SHUTDOWN);
         if (isService) {
-            addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                "Process finished. Keeping pipeline active for further requests.");
+            logger.info("Process finished. Keeping pipeline active for further requests.");
             return;
         }
 
         if (_hasShutdown) {
-            addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                "Shutdown already happened. Skipping.");
+            logger.info("Shutdown already happened. Skipping");
             return;
         }
 
-        addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            "Starting shutdown.");
+        logger.info("Starting shutdown.");
 
         _shutdownAtomic.set(true);
 
         if (_monitor != null) {
-            addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down monitor.");
+            logger.info("Shutting down monitor");
             _monitor.shutdown();
             /**
              * @see
@@ -2223,26 +2250,32 @@ public class DUUIComposer {
         }
 
         if (_storage != null) {
-            addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down storage.");
+            logger.info("Shutting down storage.");
             _storage.shutdown();
         }
 
         try {
-            addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down pipeline.");
+            logger.info("Shutting down pipeline.");
             shutdown_pipeline();
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.debug(DUUIContexts.exception(e), 
+            "%s occured during pipeline shutdown: %s", 
+                    e, e.getMessage()
+            );
         }
 
         for (IDUUIDriverInterface driver : _drivers.values()) {
-            addEvent(DUUIEvent.Sender.COMPOSER, "Shutting down driver " + driver.getClass().getSimpleName());
-            pipelineStatus.put(driver.getClass().getSimpleName(), DUUIStatus.SHUTDOWN);
+            logger.debug(DUUIContexts.driver(driver).status(DUUIStatus.SHUTDOWN), 
+            "Shutting down %s", driver.getClass().getSimpleName()
+            );
+            setPipelineStatus(driver.getClass().getSimpleName(), DUUIStatus.SHUTDOWN);
             driver.shutdown();
-            pipelineStatus.put(driver.getClass().getSimpleName(), DUUIStatus.INACTIVE);
         }
 
         _hasShutdown = true;
-        addEvent(DUUIEvent.Sender.COMPOSER, "Shutdown complete");
+        logger.info("Shutdown complete.");
+        resetProcess();
+        setContext(null);
     }
 
     /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -2255,6 +2288,7 @@ public class DUUIComposer {
      * @throws Exception
      */
     public void run(DUUIDocumentReader documentReader, String identifier) throws Exception {
+        setContext(identifier);
         ConcurrentLinkedQueue<JCas> emptyCasDocuments = new ConcurrentLinkedQueue<>();
         AtomicInteger aliveThreads = new AtomicInteger(0);
         _shutdownAtomic.set(false);
@@ -2362,10 +2396,11 @@ public class DUUIComposer {
                 try {
                     if (shouldShutdown())
                         break;
-                    logger.info("Waiting for threads to finish");
+                    logger.debug("Waiting for threads to finish");
                     Thread.sleep(1000L * _workers); // to fast or in relation with threads?
                 } catch (InterruptedException e) {
-                    break;
+                    cancelRunFromInterrupt(e);
+                    throw e;
                 }
             }
 
@@ -2379,6 +2414,11 @@ public class DUUIComposer {
                 thread.join();
             }
 
+            Exception fatal = getFatalRunError();
+            if (fatal != null && !getIgnoreErrors()) {
+                throw fatal;
+            }
+
             if (_storage != null) {
                 _storage.finalizeRun(identifier, starttime, Instant.now());
             }
@@ -2386,10 +2426,14 @@ public class DUUIComposer {
             logger.info("Process finished");
             isFinished.set(true);
             shutdown();
-        } catch (InterruptedException ignored) {
-            logger.error("The process has been interrupted before finishing.");
+        } catch (InterruptedException e) {
+            cancelRunFromInterrupt(e);
+            throw e;
         } catch (Exception e) {
-            logger.error("An %s occurred: %s", e, e.getMessage());
+            logger.error(
+                DUUIContexts.current().exception(e).status(DUUIStatus.FAILED),
+                "Encountered %s after processing %d documents occurred: %s", 
+                e, getProgress(), e.getMessage());
 
             shutdown();
             throw e;
@@ -2443,7 +2487,7 @@ public class DUUIComposer {
         }
 
         for (IDUUIDriverInterface driver : _drivers.values()) {
-            pipelineStatus.put(driver.getClass().getSimpleName(), DUUIStatus.IDLE);
+            setPipelineStatus(driver.getClass().getSimpleName(), DUUIStatus.IDLE);
         }
 
 
@@ -2459,7 +2503,7 @@ public class DUUIComposer {
     }
 
     public List<DUUIEvent> getEvents() {
-        return events;
+        return process.drainEvents();
     }
 
     /**
@@ -2489,16 +2533,30 @@ public class DUUIComposer {
      * @param event     DUUIEvent object
      */
     protected void addEvent(DUUIEvent event) {
-        events.add(event);
+        process.onEvent(event);
         // Only print events whose level is at least the configured
         // minimum debug level (TRACE < DEBUG < INFO < WARN < ERROR < CRITICAL < NONE).
         // Previously the comparison was inverted, causing DEBUG/TRACE messages
         // to still be printed even when the level was set to INFO.
-        if (!this.debugLevel.equals(DebugLevel.NONE)
-            && event.getDebugLevel().compareTo(this.debugLevel) >= 0) {
-            System.out.println(event);
+        DebugLevel minLevel = this.debugLevel;
+        if (minLevel != DebugLevel.NONE) {
+            DebugLevel eventLevel = event.getDebugLevel();
+            if (eventLevel.ordinal() >= minLevel.ordinal()) {
+                System.Logger.Level level = switch (eventLevel) {
+                    case TRACE -> System.Logger.Level.TRACE;
+                    case DEBUG -> System.Logger.Level.DEBUG;
+                    case INFO -> System.Logger.Level.INFO;
+                    case WARN -> System.Logger.Level.WARNING;
+                    case ERROR, CRITICAL -> System.Logger.Level.ERROR;
+                    case NONE -> System.Logger.Level.INFO;
+                };
+                EVENT_LOGGER.log(level, event::toString);
+            }
         }
-        notifyEventObservers(event);
+    }
+
+    public DUUIProcess getProcess() {
+        return process;
     }
 
     public Set<DUUIDocument> getDocuments() {
@@ -2527,10 +2585,10 @@ public class DUUIComposer {
         }
 
         documents.put(document.getPath(), document);
-        addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            String.format("Added Document %s for processing", document.getPath()));
-
+        logger.debug(
+            "Added Document %s for processing",
+            document.getPath()
+        );
         return document;
     }
 
@@ -2560,14 +2618,30 @@ public class DUUIComposer {
         return pipelineStatus;
     }
 
+    public Map<String, DUUIStatus> getPipelineStatusEnum() {
+        Map<String, DUUIStatus> mapped = new HashMap<>();
+        for (Map.Entry<String, String> entry : pipelineStatus.entrySet()) {
+            mapped.put(entry.getKey(), DUUIStatus.fromString(entry.getValue()));
+        }
+        return mapped;
+    }
+
     /**
      * Tracks the current status of Drivers and Components.
      *
      * @param name   The identifier of the object.
      * @param status The status the object is in.
      */
+    /**
+     * @deprecated Use {@link #setPipelineStatus(String, DUUIStatus)} instead.
+     */
+    @Deprecated
     public void setPipelineStatus(String name, String status) {
         pipelineStatus.put(name, status);
+    }
+
+    public void setPipelineStatus(String name, DUUIStatus status) {
+        pipelineStatus.put(name, status.toString());
     }
 
     public DebugLevel getDebugLevel() {
@@ -2621,7 +2695,7 @@ public class DUUIComposer {
     }
 
     public void resetService() {
-        events.clear();
+        resetProcess();
         documents.clear();
         progress.set(0);
         _shutdownAtomic.set(false);
@@ -2659,6 +2733,10 @@ public class DUUIComposer {
     }
 
     public AtomicInteger getProgressAtomic() { return progress;}
+
+    public int getDocumentCount() {
+        return documents.size();
+    }
 
     public void incrementProgress() {
         int progress = this.progress.incrementAndGet();

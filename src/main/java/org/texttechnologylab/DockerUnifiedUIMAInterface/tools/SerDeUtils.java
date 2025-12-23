@@ -19,8 +19,10 @@ import org.xml.sax.ContentHandler;
 
 import org.apache.uima.util.XMLSerializer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
 public class SerDeUtils {
 
@@ -59,19 +61,19 @@ public class SerDeUtils {
 
     public static final class XmiLoggingErrorHandler implements ErrorHandler {
         private final DUUILogger logger;
-        private final DUUIEvent.Context context;
+        private final DUUIDocumentReader reader;
         private final DUUIDocument document;
 
-        public XmiLoggingErrorHandler(DUUILogger logger, DUUIEvent.Context context, DUUIDocument document) {
+        public XmiLoggingErrorHandler(DUUILogger logger, DUUIDocumentReader reader, DUUIDocument document) {
             this.logger = logger;
-            this.context = context;
+            this.reader = reader;
             this.document = document;
         }
 
         @Override
         public void warning(SAXParseException e) {
             logger.warn(
-                context,
+                DUUIContexts.reader(reader, document).status(DUUIStatus.SERIALIZE),
                 "XMI serialization warning for %s: %s",
                 document.getPath(),
                 e.getMessage()
@@ -80,13 +82,11 @@ public class SerDeUtils {
 
         @Override
         public void error(SAXParseException e) throws SAXException {
-            document.setError(e.toString());
-            logger.error(
-                DUUIEvent.Context.readerError(
-                    document.getPath(),
-                    e
-                ),
-                "XMI serialization error for %s: %s",
+            logger.warn(
+                DUUIContexts.reader(reader, document)
+                    .exception(e)
+                    .status(DUUIStatus.SERIALIZE),
+                "Non-fatal XMI serialization error for %s: %s",
                 document.getPath(),
                 e.getMessage()
             );
@@ -95,15 +95,15 @@ public class SerDeUtils {
 
         @Override
         public void fatalError(SAXParseException e) throws SAXException {
-            document.setError(e.toString());
             logger.error(
-                DUUIEvent.Context.readerError(
+                DUUIContexts.reader(reader, document)
+                        .exception(e)
+                        .status(DUUIStatus.FAILED),
+                String.format(
+                    "Fatal XMI serialization error for %s: %s",
                     document.getPath(),
-                    e
-                ),
-                "XMI serialization FATAL error for %s: %s",
-                document.getPath(),
-                e.getMessage()
+                    e.getMessage()
+                )
             );
             throw e;
         }

@@ -1,5 +1,7 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
+
 /**
  * Observer that can receive {@link DUUIEvent} instances emitted by
  * the {@link org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer}.
@@ -12,6 +14,7 @@ public interface DUUIEventObserver {
      *
      * @param event the event that was emitted
      */
-    void onEvent(DUUIEvent event);
+    void onEvent(DUUIEvent event, DUUIState state);
+    
+    void onEvent(DUUIEvent event, DUUIDocument document);
 }
-

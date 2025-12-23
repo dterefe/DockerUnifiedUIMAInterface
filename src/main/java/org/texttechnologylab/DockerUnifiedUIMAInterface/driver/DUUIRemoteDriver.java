@@ -17,7 +17,10 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUICompressionHelper;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
 /**
  *
@@ -27,6 +30,8 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
     private Map<String, InstantiatedComponent> _components;
     private HttpClient _client;
     private DUUICompressionHelper _helper;
+
+    private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIRemoteDriver.class);
 
     public DUUIRemoteDriver(int timeout) {
         _timeout = Duration.ofMillis(timeout);
@@ -41,6 +46,11 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
         _timeout = Duration.ofMillis(10_000);
         _client = HttpClient.newHttpClient();
         _helper = new DUUICompressionHelper(CompressorStreamFactory.ZSTANDARD);
+    }
+    
+    @Override
+    public DUUILogger logger() {
+        return LOG;
     }
 
     @Override
@@ -62,7 +72,7 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
         }
         InstantiatedComponent comp = new InstantiatedComponent(component, uuid);
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIContexts.component(comp).status(DUUIStatus.INSTANTIATING)))  {
             final String uuidCopy = uuid;
             boolean added_communication_layer = false;
             int endpointIndex = 0;
@@ -98,13 +108,21 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
                         endpointIndex,
                         i + 1 
                     );
-                    comp.addComponent(new ComponentInstance(instanceIdentifier, url, layer.copy()));
+                    IDUUIUrlAccessible instance = new ComponentInstance(instanceIdentifier, url, layer.copy());
+                    comp.addComponent(instance);
+                    logger().trace(
+                        DUUIContexts.component(comp, instance).status(DUUIStatus.INACTIVE),
+                        "[DUUIDockerDriver] Started instance: %s", 
+                        instanceIdentifier
+                    );
                 }
                 _components.put(uuid, comp);
                 logger().info("[%s] Remote URL %s is online and seems to understand DUUI V1 format!", uuid, url);
 
                 logger().info("[%s] Maximum concurrency for this endpoint %d", uuid, comp.getWorkers());
             }
+        } finally {
+            comp.setLogger(logger());
         }
 
         return shutdown.get() ? null : uuid;
@@ -117,6 +135,12 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
     @Override
     public boolean destroy(String uuid) {
         _components.remove(uuid);
+
+        InstantiatedComponent comp = getInstantiatedComponent(uuid);
+        logger().info(
+            DUUIContexts.component(comp).status(DUUIStatus.SHUTDOWN),
+            "[DUUIRemoteDriver] Removing remote endpoints %s", comp.getUrls()
+        );
         return true;
     }
 

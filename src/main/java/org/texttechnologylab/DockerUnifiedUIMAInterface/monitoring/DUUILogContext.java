@@ -2,21 +2,22 @@ package org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring;
 
 import java.util.Objects;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.DebugLevel;
 
 /**
  * Global logging context for DUUI.
  * <p>
- * Holds the current {@link DUUILogger} and {@link DUUIEvent.Context}
+ * Holds the current {@link DUUILogger} and {@link DUUIContext}
  * in thread-local storage so that logging can work from anywhere in the call
  * stack (including static helper methods) without having to thread a logger
  * instance through every method signature.
  */
 public final class DUUILogContext {
 
-    private static final DUUIEvent.Context DEFAULT_CONTEXT = new DUUIEvent.NoContext();
+    private static final DUUIContext DEFAULT_CONTEXT = DUUIContexts.defaultContext();
 
-    private static final ThreadLocal<DUUIEvent.Context> CURRENT_CONTEXT =
+    private static final ThreadLocal<DUUIContext> CURRENT_CONTEXT =
             ThreadLocal.withInitial(() -> DEFAULT_CONTEXT);
 
     /**
@@ -46,18 +47,19 @@ public final class DUUILogContext {
         // utility
     }
 
-    public static DUUIEvent.Context getContext() {
-        DUUIEvent.Context context = CURRENT_CONTEXT.get();
+    public static DUUIContext getContext() {
+        DUUIContext context = CURRENT_CONTEXT.get();
         return context != null ? context : DEFAULT_CONTEXT;
     }
 
-    public static void setContext(DUUIEvent.Context context) {
+    public static void setContext(DUUIContext context) {
         CURRENT_CONTEXT.set(Objects.requireNonNullElse(context, DEFAULT_CONTEXT));
     }
 
     public static void clear() {
         CURRENT_CONTEXT.remove();
         CURRENT_LOGGER.remove();
+        DUUIContextTL.clear();
     }
 
     /**
@@ -67,6 +69,12 @@ public final class DUUILogContext {
     public static DUUILogger getLogger() {
         DUUILogger logger = CURRENT_LOGGER.get();
         return logger != null ? logger : FALLBACK_LOGGER;
+    }
+
+    public static void setLogger(DUUIComposer composer) {
+        CURRENT_LOGGER.set(composer.getLogger() != null ? composer.getLogger() : FALLBACK_LOGGER);
+        DUUIContexts.setComposerContext(composer.getLogger().getContext());
+        setContext(composer.getLogger().getContext());
     }
 
     public static void setLogger(DUUILogger logger) {

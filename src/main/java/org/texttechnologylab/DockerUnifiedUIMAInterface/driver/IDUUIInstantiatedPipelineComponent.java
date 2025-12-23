@@ -16,6 +16,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
@@ -30,9 +31,10 @@ import org.jetbrains.annotations.NotNull;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
@@ -55,6 +57,7 @@ public interface IDUUIInstantiatedPipelineComponent {
      */
     @NotNull
     public DUUIPipelineComponent getPipelineComponent();
+    public List<String> getInstanceIdentifiers();
     public Triplet<IDUUIUrlAccessible,Long,Long> getComponent();
     public void addComponent(IDUUIUrlAccessible item);
     public String getUniqueComponentKey();
@@ -230,7 +233,18 @@ public interface IDUUIInstantiatedPipelineComponent {
         String logPrefix = String.format("[%s]", queue.getValue0().getUniqueInstanceKey());
 
         try (var componentTimer = perf.timeStep("component_duration", comp.getPipelineComponent().getName());
-             var ignored = comp.logger().withContext(DUUIEvent.Context.component(perf, comp, queue.getValue0().getUniqueInstanceKey()))) {
+             var context = comp.logger().withContext(DUUIContexts.component(comp, queue.getValue0())
+                     .status(DUUIStatus.ACTIVE))) {
+
+            Duration waitedForInstance = Duration.ofNanos(queue.getValue1() - queue.getValue2());
+            comp.logger().debug(
+                DUUIContexts.component(comp, queue.getValue0())
+                    .metric(waitedForInstance)
+                    .status(DUUIStatus.COMPONENT_WAIT),
+                "%s Waited %d ms for instance",
+                logPrefix,
+                waitedForInstance.toMillis()
+            );
 
             String viewName = pipelineComponent.getViewName();
             JCas viewJc;
@@ -263,6 +277,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             }
 
             if (layer.supportsProcess()) {
+                context.updateStatus(DUUIStatus.COMPONENT_LUA_PROCESS);
                 comp.logger().info(
                         "%s Using direct layer.process() with sourceView='%s' and targetView='%s'.",
                         logPrefix,
@@ -284,7 +299,8 @@ public interface IDUUIInstantiatedPipelineComponent {
                     targetCas = viewJc.createView(comp.getTargetView());
                 }
 
-                 try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
+                long luaProcessStart = System.nanoTime();
+                try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
                     layer.process(
                             sourceCas,
                             new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
@@ -292,8 +308,16 @@ public interface IDUUIInstantiatedPipelineComponent {
                             targetCas
                     );
                 }
-
+                Duration luaProcessDuration = Duration.ofNanos(System.nanoTime() - luaProcessStart);
                 comp.logger().info(
+                    DUUIContexts.component(comp, queue.getValue0())
+                        .metric(luaProcessDuration)
+                        .status(DUUIStatus.COMPONENT_LUA_PROCESS),
+                    "%s layer.process() finished after %d ms",
+                    logPrefix,
+                    luaProcessDuration.toMillis()
+                );
+                comp.logger().debug(
                         "%s Finished layer.process().",
                         logPrefix
                 );
@@ -312,6 +336,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             out.reset();
 
             // Invoke Lua serialize()
+            context.updateStatus(DUUIStatus.COMPONENT_SERIALIZE);
             comp.logger().info("%s Serializing JCas (sourceView=%s, parameters %s)",
                  logPrefix,
                  comp.getSourceView(),
@@ -324,6 +349,16 @@ public interface IDUUIInstantiatedPipelineComponent {
             byte[] ok = out.toByteArray();
             long sizeArray = ok.length;
             long serializeEnd = System.nanoTime();
+
+            Duration serializeDuration = Duration.ofNanos(serializeEnd - serializeStart);
+            comp.logger().debug(
+                DUUIContexts.component(comp, queue.getValue0())
+                    .metric(serializeDuration)
+                    .status(DUUIStatus.COMPONENT_SERIALIZE),
+                "%s Serialized JCas after %d ms",
+                logPrefix,
+                serializeDuration.toMillis()
+            );
 
             long annotatorStart = serializeEnd;
 
@@ -338,6 +373,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             Instant deadline = Instant.now().plus(componentTimeout);
             HttpResponse<byte[]> resp = null;
 
+            context.updateStatus(DUUIStatus.COMPONENT_PROCESS);
             try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
                 comp.logger().debug(
                     "%s Sending process request to %s (headers=%s)",
@@ -355,6 +391,7 @@ public interface IDUUIInstantiatedPipelineComponent {
                         logPrefix
                     );
             } catch (IOException | TimeoutException e) {
+                context.updateStatus(DUUIStatus.FAILED);
                 comp.logger().debug(
                         "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
                         logPrefix,
@@ -365,6 +402,7 @@ public interface IDUUIInstantiatedPipelineComponent {
 
                 throw e;
             } catch (Exception e) {
+                context.updateStatus(DUUIStatus.FAILED);
                 comp.logger().debug(
                         "%s Fatal error during process request, aborting: %s %s %n",
                         logPrefix,
@@ -375,6 +413,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             }
 
             if(resp==null) {
+                context.updateStatus(DUUIStatus.FAILED);
                 comp.logger().debug(
                         "%s Could not reach endpoint %s%s after %d tries, aborting. %n",
                         logPrefix,
@@ -385,23 +424,46 @@ public interface IDUUIInstantiatedPipelineComponent {
                 throw new IOException("Could not reach endpoint after " + REQUEST_TRIES + " tries!");
             }
 
-
             if (resp.statusCode() == 200) {
                 ByteArrayInputStream st = new ByteArrayInputStream(resp.body());
                 long annotatorEnd = System.nanoTime();
+
+                Duration processRequestDuration = Duration.ofNanos(annotatorEnd - annotatorStart);
+                comp.logger().debug(
+                    DUUIContexts.component(comp, queue.getValue0())
+                        .metric(processRequestDuration)
+                        .status(DUUIStatus.COMPONENT_PROCESS),
+                    "%s Annotator finished after %d ms",
+                    logPrefix,
+                    processRequestDuration.toMillis()
+                );
                 long deserializeStart = annotatorEnd;
                 
+                context.updateStatus(DUUIStatus.COMPONENT_DESERIALIZE);
                 try (var deserializeTimer = perf.timeStep("deserialization", comp.getPipelineComponent().getName())) {
                     layer.deserialize(viewJc, st, comp.getTargetView());
                 }
 
                 long deserializeEnd = System.nanoTime();
                 
-                comp.logger().info("%s Deserialized JCas (targetView=%s) after %d ms",
+                Duration deserializeDuration = Duration.ofNanos(deserializeEnd - deserializeStart);
+                comp.logger().info(
+                    DUUIContexts.component(comp, queue.getValue0())
+                        .metric(deserializeDuration)
+                        .status(DUUIStatus.COMPONENT_DESERIALIZE),
+                    "%s Deserialized JCas (targetView=%s) after %d ms",
                     logPrefix,
                     comp.getTargetView(),
-                    Duration.ofNanos(deserializeEnd - deserializeStart).toMillis()
-                );            
+                    deserializeDuration.toMillis()
+                );
+                
+                comp.logger().debug(
+                    DUUIContexts.component(comp, queue.getValue0())
+                        .metric(Duration.ofNanos(queue.getValue1() - deserializeEnd))
+                        .status(DUUIStatus.COMPONENT_WAIT),
+                    "%s Finished processing %s after %d ms", 
+                    logPrefix, perf.getDocument(), Duration.ofNanos(queue.getValue1() - deserializeEnd).toMillis()
+                );
 
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
                 ann.setDescription(comp.getFinalizedRepresentation());
@@ -431,11 +493,14 @@ public interface IDUUIInstantiatedPipelineComponent {
                     throw new InvalidObjectException(String.format("Expected response 200, got %d: %s", resp.statusCode(), responseBody));
                 } else {
                     comp.logger().debug(
-                        DUUIEvent.Context.component(perf, comp, queue.getValue0().getUniqueInstanceKey(), responseBody),
+                        DUUIContexts.component(comp, queue.getValue0())
+                            .response(responseBody)
+                            .status(DUUIStatus.FAILED),
                         String.format("%s Expected response 200, got %d", logPrefix, resp.statusCode())
                     );
                 }
             }
+
         } catch (CASException e) {
             throw e;
         } catch (IOException | TimeoutException e ) {
@@ -443,22 +508,34 @@ public interface IDUUIInstantiatedPipelineComponent {
         } catch (Exception e) {
             try {
                 comp.logger().debug(
-                        "%s Unhandled exception while processing component: %s%n%s%n",
-                        logPrefix,
-                        e.toString(),
-                        ExceptionUtils.getStackTrace(e)
+                    DUUIContexts.component(comp, queue.getValue0())
+                        .exception(e)
+                        .status(DUUIStatus.FAILED),
+                    "%s Unhandled exception while processing component: %s %s%n",
+                    logPrefix,
+                    e.toString(),
+                    e.getMessage()
                 );
                 DocumentMetaData documentMetaData = DocumentMetaData.get(jc);
                 throw new PipelineComponentException(comp.getPipelineComponent(), documentMetaData, e);
             } catch (IllegalArgumentException ignored) {
                 comp.logger().debug(
-                        "%s Could not retrieve DocumentMetaData from CAS while wrapping exception: %s%n",
-                        logPrefix,
-                        ignored.toString()
+                    DUUIContexts.component(comp, queue.getValue0())
+                        .exception(ignored)
+                        .status(DUUIStatus.FAILED),
+                    "%s Could not retrieve DocumentMetaData from CAS while wrapping exception: %s %s %n",
+                    logPrefix,
+                    ignored.toString(),
+                    ignored.getMessage()
                 );
                 throw new PipelineComponentException(comp.getPipelineComponent(), e);
             }
         } finally {
+            comp.logger().info(
+                DUUIContexts.component(comp, queue.getValue0())
+                    .status(DUUIStatus.IDLE),
+                "%s Finished processing %s", logPrefix, perf.getDocument()
+            );
             comp.addComponent(queue.getValue0());
         }
     }

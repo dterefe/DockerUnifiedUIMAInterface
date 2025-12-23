@@ -26,9 +26,10 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver.ComponentInstance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.xml.sax.SAXException;
 
 import io.vertx.core.Future;
@@ -54,7 +55,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
     private HashMap<String, DUUIDockerDriver.InstantiatedComponent> _active_components;
 
-    private static final DUUILogger logger = DUUILoggers.getLogger(DUUIPodmanDriver.class);
+    private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIPodmanDriver.class);
 
     public DUUIPodmanDriver() throws IOException, SAXException {
 
@@ -72,6 +73,11 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
         _interface = PodmanClient.create(_vertx, options);
     }
+    
+    @Override
+    public DUUILogger logger() {
+        return LOG;
+    }
 
     public static String podmanSocketPath() {
         String path = System.getenv("PODMAN_SOCKET_PATH");
@@ -86,7 +92,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                     BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
                     uid = reader.readLine(); // UID aus der Ausgabe lesen
                 } catch (IOException e) {
-                    logger.error(
+                    LOG.error(
                             "[PodmanDriver] Failed to resolve UID for PODMAN_SOCKET_PATH: %s%n%s",
                             e.toString(),
                             ExceptionUtils.getStackTrace(e)
@@ -94,7 +100,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                 }
             }
             path = "/run/user/" + uid + "/podman/podman.sock";
-            logger.debug("[PodmanDriver] Using podman socket path: %s", path);
+            LOG.debug("[PodmanDriver] Using podman socket path: %s", path);
         }
 
         return path;
@@ -165,7 +171,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                 BufferedReader brError = new BufferedReader(new InputStreamReader(process.getErrorStream()));
                 String input;
                 while ((input = br.readLine()) != null) {
-                    logger.info("[PodmanDriver] podman pull output: %s", input);
+                    LOG.info("[PodmanDriver] podman pull output: %s", input);
                 }
                 StringBuilder sb = new StringBuilder();
                 while ((input = brError.readLine()) != null) {
@@ -180,7 +186,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                 }
 
             } catch (IOException e) {
-                logger.error(
+                LOG.error(
                         "[PodmanDriver] Error while reading podman pull output: %s%n%s",
                         e.toString(),
                         ExceptionUtils.getStackTrace(e)
@@ -207,7 +213,7 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
         DUUIDockerDriver.InstantiatedComponent comp = new DUUIDockerDriver.InstantiatedComponent(component, uuid);
 
-        try(var ignored = logger().withContext(DUUIEvent.Context.driver(this, comp)))  {
+        try(var ignored = logger().withContext(DUUIContexts.component(comp).status(DUUIStatus.INSTANTIATING)))  {
             // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
             if (comp.getImageFetching()) {
                 if (comp.getUsername() != null) {
@@ -278,17 +284,17 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
                             _interface.containers().start(containerId);
 
-                            logger.info("[PodmanDriver] Created container: %s", pObject);
+                            LOG.info("[PodmanDriver] Created container: %s", pObject);
 
 
                             iObject = awaitResult(_interface.containers().inspect(containerId, new ContainerInspectOptions().setSize(false)));
                             JSONObject nObject = new JSONObject(iObject);
-                            logger.debug("[PodmanDriver] Inspect container result: %s", nObject);
+                            LOG.debug("[PodmanDriver] Inspect container result: %s", nObject);
                             port = nObject.getJSONObject("map").getJSONObject("HostConfig").getJSONObject("PortBindings").getJSONArray("9714/tcp").getJSONObject(0).getInt("HostPort");
 
 
                         } catch (Throwable e) {
-                            logger.debug(
+                            logger().debug(
                                 "%s during container build: %s%n",
                                 e.getClass().getSimpleName(),
                                 e.getMessage()
@@ -333,22 +339,19 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                                     iCopy,
                                     j + 1 
                                 );
-                                comp.addComponent(
-                                        new DUUIDockerDriver.ComponentInstance(
-                                                instanceIdentifier,
-                                                containerId,
-                                                containerUrl,
-                                                port,
-                                                layer.copy()
-                                        )
+                                IDUUIUrlAccessible instance = new ComponentInstance(instanceIdentifier, containerId, containerUrl, port, layer);
+                                comp.addComponent(instance);
+                                logger().trace(
+                                    DUUIContexts.component(comp, instance).status(DUUIStatus.INACTIVE),
+                                    "[DUUIDockerDriver] Started instance: %s", 
+                                    instanceIdentifier
                                 );
                             }
                         } catch (Exception e) {
                             logger().error(
-                                "%s during component initialization: %s%n%s",
-                                e.getClass().getSimpleName(),
-                                e.getMessage(),
-                                ExceptionUtils.getStackTrace(e)
+                                DUUIContexts.exception(e),
+                                "Encountered %s during component initialization: %s",
+                                e.getClass().getSimpleName(), e.getMessage()
                             );
                             //throw e;
                         }
@@ -360,7 +363,10 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
             } catch (Throwable e) {
                 throw new RuntimeException(e);
             }
+        } finally {
+            comp.setLogger(logger());
         }
+
         return shutdown.get() ? null : uuid;
     }
 
@@ -411,7 +417,11 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
         if (!comp.getRunningAfterExit()) {
             int counter = 1;
             for (IDUUIUrlAccessible inst : comp.getTotalInstances()) {
-                logger().info("[Replica %d/%d] Stopping docker container %s...", counter, comp.getInstances().size(), ((ComponentInstance)inst).getContainerId());
+                logger().info(
+                    DUUIContexts.component(comp, inst).status(DUUIStatus.SHUTDOWN),
+                    "[Replica %d/%d] Stopping docker container %s...", 
+                    counter, comp.getInstances().size(), ((ComponentInstance)inst).getContainerId()
+                );
                 stop_container(((ComponentInstance)inst).getContainerId(), true);
 
                 counter += 1;

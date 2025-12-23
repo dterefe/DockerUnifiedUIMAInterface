@@ -140,8 +140,6 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
     @Override
     public void writeDocument(DUUIDocument document, String path) throws IOException {
 
-        document.setStatus(DUUIStatus.OUTPUT);
-
         File file = new File();
         file.setParents(Collections.singletonList(path));
         file.setName(document.getName());

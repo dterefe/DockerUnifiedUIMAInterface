@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -26,8 +27,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIDo
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUIDocumentDecoder;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AdvancedProgressMeter;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent.Sender;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils.XmiLoggingErrorHandler;
@@ -51,10 +51,6 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     private final DUUIComposer composer;
     private final int initial;
     private final int skipped;
-
-    private DUUIEvent.Context context(String documentId, String status) {
-        return DUUIEvent.Context.reader(documentId, status);
-    }
 
     private DUUIDocumentReader(Builder builder) {
         this.builder = builder;
@@ -82,13 +78,13 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         documentQueue = new ConcurrentLinkedQueue<>(preProcessor);
         documentsBackup = new ConcurrentLinkedQueue<>(preProcessor);
         loadedDocuments = new ConcurrentLinkedQueue<>();
-
+        
         composer.getLogger().info(
-            DUUIStatus.INPUT,
-            "Processing %d files.",
+            DUUIStatus.SETUP,
+            "Processing %d files (Reader capacity: 500MB)",
             documentQueue.size()
         );
-
+        
         initialSize = documentQueue.size();
         progress = new AtomicInteger(0);
         currentMemorySize.set(0);
@@ -125,13 +121,13 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
     private void removeSmallFiles() {
         composer.getLogger().info(
-            DUUIStatus.INPUT,
+            DUUIStatus.SETUP,
             "Skip files smaller than %d bytes.",
             builder.minimumDocumentSize
         );
 
         composer.getLogger().info(
-            DUUIStatus.INPUT,
+            DUUIStatus.SETUP,
             "Number of files before skipping %d.",
             preProcessor.size()
         );
@@ -142,7 +138,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             .collect(Collectors.toList());
 
         composer.getLogger().info(
-            DUUIStatus.INPUT,
+            DUUIStatus.SETUP,
             "Number of files after skipping %d.",
             preProcessor.size()
         );
@@ -155,7 +151,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             .collect(Collectors.toList());
 
         composer.getLogger().info(
-            DUUIStatus.INPUT,
+            DUUIStatus.SETUP,
             "Sorted files by size in ascending order"
         );
     }
@@ -164,7 +160,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         if (builder.outputHandler == null) return;
 
         composer.getLogger().info(
-            DUUIStatus.OUTPUT,
+            DUUIStatus.SETUP,
             "Checking output location %s for existing documents.",
             builder.outputPath
         );
@@ -186,14 +182,14 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         if (documentsInTarget.isEmpty()) {
             composer.getLogger().info(
-                DUUIStatus.OUTPUT,
+                DUUIStatus.SETUP,
                 "Found 0 documents in output location. Keeping all files from input location."
             );
             return;
         }
 
         composer.getLogger().info(
-            DUUIStatus.OUTPUT,
+            DUUIStatus.SETUP,
             "Found %d documents in output location. Checking against %d documents in input location.",
             documentsInTarget.size(),
             preProcessor.size()
@@ -224,7 +220,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         }
 
         composer.getLogger().info(
-            DUUIStatus.OUTPUT,
+            DUUIStatus.SETUP,
             "Removed %d documents from input location that are already present in output location. Keeping %d",
             removedCounter,
             preProcessor.size()
@@ -262,35 +258,32 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         Timer timer = new Timer();
 
+        document.setStatus(DUUIStatus.DECODE);
+        
         timer.start();
         InputStream decodedDocument = decodeDocument(document, timer);
         timer.stop();
 
         document.setDurationDecode(timer.getDuration());
 
+        timer.restart();
+
         document.setStatus(DUUIStatus.DESERIALIZE);
 
         composer.getLogger().info(
-            context(
-                document.getPath(),
-                DUUIStatus.DECODE
-            ),
-            "Document %s decoded after %d ms",
-            document.getPath(),
-            timer.getDuration()
+            DUUIContexts.reader(this, document).status(DUUIStatus.DESERIALIZE),
+            "Deserializing %s ",
+            document.getPath()
         );
-
-        timer.restart();
 
         if (decodedDocument != null) {
             try {
                 SerDeUtils.XmiSharedIo.deserialize(decodedDocument, pCas.getCas(), true);
             } catch (Exception e) {
-                composer.getLogger().debug(
-                    DUUIEvent.Context.readerError(
-                        document.getPath(),
-                        ExceptionUtils.getStackTrace(e)
-                    ),
+                composer.getLogger().warn(
+                    DUUIContexts.reader(this, document)
+                        .exception(e)
+                        .status(DUUIStatus.DESERIALIZE),
                     "Failed to deserialize XMI for document %s, falling back to plain text: %s",
                     document.getPath(),
                     e.toString()
@@ -298,11 +291,8 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                 pCas.setDocumentText(document.getText().trim());
             }
         } else {
-            composer.getLogger().debug(
-                    context(
-                    document.getPath(),
-                    DUUIStatus.DECODE
-                ),
+            composer.getLogger().warn(
+                DUUIContexts.reader(this, document).status(DUUIStatus.DESERIALIZE),
                 "Decoded content for document %s is unavailable, using raw text representation if present.",
                 document.getPath()
             );
@@ -310,18 +300,17 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         }
 
         timer.stop();
-        composer.getLogger().info(
-            context(
-                document.getPath(),
-                DUUIStatus.DESERIALIZE
-            ),
+        
+        document.setDurationDeserialize(timer.getDuration());
+        Duration deserializeDuration = Duration.ofMillis(timer.getDuration());
+        composer.getLogger().debug(
+            DUUIContexts.reader(this, document)
+                .metric(deserializeDuration)
+                .status(DUUIStatus.WAITING),
             "Document %s deserialized after %d ms",
             document.getPath(),
-            timer.getDuration()
+            deserializeDuration.toMillis()
         );
-
-        document.setDurationDeserialize(timer.getDuration());
-        document.setStatus(DUUIStatus.WAITING);
 
         if (builder.addMetadata) {
             if (JCasUtil.select(pCas, DocumentMetaData.class).isEmpty()) {
@@ -362,6 +351,11 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             document = documentQueue.poll();
             if (document == null) return null;
         } else {
+            composer.getLogger().debug(
+                DUUIContexts.reader(this, polled).status(DUUIStatus.WAITING),
+                "Using cached document: %s",
+                    polled.getPath()
+            );
             document = polled;
             long factor = 1;
             if (document.getName().endsWith(".gz") || document.getName().endsWith(".xz")) {
@@ -374,18 +368,27 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         if (polled == null) {
             try {
-                polled = builder.inputHandler.readDocument(document.getPath());
-            } catch (IOException exception) {
-                composer.getLogger().error(
-                    DUUIEvent.Context.readerError(
-                        document.getPath(),
-                        ExceptionUtils.getStackTrace(exception)
-                    ),
-                    "Failed to read document %s; %s: %s",
-                    document.getPath(),
-                    exception,
-                    exception.toString()
+                composer.getLogger().debug(
+                    DUUIContexts.reader(this, document).status(DUUIStatus.DOWNLOAD),
+                    "Fetching %s",
+                        document.getPath()
                 );
+                polled = builder.inputHandler.readDocument(document.getPath());
+                composer.getLogger().debug(
+                    DUUIContexts.reader(this, document).status(DUUIStatus.DOWNLOAD),
+                    "Successfully downloaded %s",
+                        document.getPath()
+                );
+            } catch (IOException exception) {
+                document.setError(
+                    DUUIContexts.reader(this, document)
+                        .exception(exception)
+                        .status(DUUIStatus.DOWNLOAD),
+                    String.format("Encountered %s downloading document %s: %s",
+                        document.getPath(),
+                        exception,
+                        exception.toString()
+                ));
                 throw new RuntimeException(exception);
             }
         }
@@ -397,40 +400,44 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     }
 
     private InputStream decodeDocument(DUUIDocument document, Timer timer) {
-        document.setStatus(DUUIStatus.DECODE);
-
-        composer.getLogger().info(
-            context(document.getPath(), DUUIStatus.DECODE),
-            "Decoding document %s",
-            document.getPath()
-        );
-
-        timer.start();
 
         InputStream decodedFile;
 
         try {
-            decodedFile = DUUIDocumentDecoder.decode(document);
-        } catch (IOException e) {
-            composer.getLogger().error(
-                DUUIEvent.Context.readerError(
-                    document.getPath(),
-                    ExceptionUtils.getStackTrace(e)
-                ),
-                "Failed to decode document %s; %s: %s",
-                document.getPath(),
-                e,
-                e.toString()
+            composer.getLogger().info(
+                DUUIContexts.reader(this, document).status(DUUIStatus.DECODE),
+                "Decoding document %s",
+                document.getPath()
             );
-            document.setError(String.format(
-                "%s%n%s",
-                e.getClass().getCanonicalName(),
-                e.getMessage() == null ? "" : e.getMessage()));
-            document.setStatus(DUUIStatus.FAILED);
+            timer.start();
+
+            decodedFile = DUUIDocumentDecoder.decode(document);
+            
+            timer.stop();
+            Duration decodeDuration = Duration.ofMillis(timer.getDuration());
+            composer.getLogger().info(
+                DUUIContexts.reader(this, document)
+                    .metric(decodeDuration)
+                    .status(DUUIStatus.DECODE),
+                "Document %s decoded after %d ms",
+                document.getPath(),
+                decodeDuration.toMillis()
+            );
+
+            return decodedFile;
+        } catch (IOException e) {
+            document.setError(
+                DUUIContexts.reader(this, document)
+                        .exception(e)
+                        .status(DUUIStatus.FAILED),
+                String.format(
+                    "Encountered %s decoding document %s: %s",
+                    e,
+                    document.getPath(),
+                    e.getMessage())
+            );
             return null;
         }
-        timer.stop();
-        return decodedFile;
     }
 
     public CompletableFuture<Integer> getAsyncNextByteArray() {
@@ -442,19 +449,24 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                 try {
                     return builder.inputHandler.readDocument(document.getPath());
                 } catch (IOException e) {
-                    composer.getLogger().error(
-                        DUUIEvent.Context.readerError(
+                    document.setError(
+                        DUUIContexts.reader(this, document)
+                            .exception(e)
+                            .status(DUUIStatus.FAILED),
+                        String.format("Encountered %s during asynchronous download of %s: %s",
+                            e,
                             document.getPath(),
-                            ExceptionUtils.getStackTrace(e)
-                        ),
-                        "Failed to read document %s asynchronously: %s",
-                        document.getPath(),
-                        e.toString()
-                    );
+                            e.getMessage()
+                    ));
                     throw new RuntimeException(e);
                 }
             }
         ).thenApply(_document -> {
+            composer.getLogger().debug(
+                DUUIContexts.reader(this, document).status(DUUIStatus.DOWNLOAD),
+                "Asynchronously downloaded %s",
+                document.getPath()
+            );
             loadedDocuments.add(_document);
             long factor = 1;
             if (_document.getName().endsWith(".gz") || _document.getName().endsWith(".xz")) {
@@ -496,7 +508,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         if (builder.outputHandler == null || document.getUploadProgress() != 0) return;
 
         composer.getLogger().info(
-            context(document.getPath(), DUUIStatus.OUTPUT),
+            DUUIContexts.reader(this, document).status(DUUIStatus.OUTPUT),
             "Uploading document %s",
             document.getPath()
         );
@@ -507,10 +519,16 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         
         ByteArrayOutputStream outputStream = SerDeUtils.SERIALIZE_BUFFER.get();
         byte[] payload;
+
+        composer.getLogger().debug(
+            DUUIContexts.reader(this, document).status(DUUIStatus.SERIALIZE),
+            "Serializing document before upload: %s",
+            document.getPath()
+        );
         
         ErrorHandler handler = new XmiLoggingErrorHandler(
             composer.getLogger(),
-            DUUIEvent.Context.readerError(document.getPath(), ""),
+            this,
             document
         );
 
@@ -527,6 +545,12 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                 e
             );
         }
+        
+        composer.getLogger().debug(
+            DUUIContexts.reader(this, document).status(DUUIStatus.OUTPUT),
+            "Successfully serialized document as %s",
+            outputName
+        );
 
         DUUIDocument temp = new DUUIDocument(
             outputName,
@@ -538,12 +562,17 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             .outputHandler
             .writeDocument(temp, builder.outputPath);
 
+        composer.getLogger().info(
+            DUUIContexts.reader(this, document).status(DUUIStatus.OUTPUT),
+            "Successfully uploaded %s",
+            temp.getPath()
+        );
+
         long sizeStore = document.getSize();
         document.setBytes(new byte[]{});
         document.setSize(sizeStore);
 
         document.setUploadProgress(temp.getUploadProgress());
-        document.setStatus(DUUIStatus.COMPLETED);
     }
 
     /**

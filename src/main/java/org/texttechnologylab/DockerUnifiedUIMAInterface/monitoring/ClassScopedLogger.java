@@ -22,10 +22,22 @@ public final class ClassScopedLogger implements DUUILogger {
     private final String name;
     private final DUUIEvent.Sender sender;
     private volatile DUUIEventEmitter delegate;
+    private DUUIContext context;
 
     public ClassScopedLogger(Class<?> clazz) {
         this.name = clazz.getName();
         this.sender = resolveSender(clazz);
+        this.context = DUUILogContext.getContext();
+    }
+
+    @Override
+    public DUUIContext getContext() {
+        return context;
+    }
+
+    @Override
+    public void setContext(DUUIContext ctx) {
+        this.context = ctx;
     }
 
     @Override
@@ -99,6 +111,10 @@ public final class ClassScopedLogger implements DUUILogger {
 
         if (DUUIDocument.class.isAssignableFrom(clazz)) {
             return DUUIEvent.Sender.DOCUMENT;
+        }
+
+        if (clazz.getName().contains("DUUIWorker")) {
+            return DUUIEvent.Sender.WORKER;
         }
 
         return DUUIEvent.Sender.SYSTEM;

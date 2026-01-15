@@ -220,10 +220,7 @@ public interface IDUUIInstantiatedPipelineComponent {
      * @throws PipelineComponentException
      */
     public static void process(JCas jc, IDUUIInstantiatedPipelineComponent comp, DUUIPipelineDocumentPerformance perf) throws CASException, PipelineComponentException {
-        Triplet<IDUUIUrlAccessible,Long,Long> queue;
-        try (var ignoredTimer = perf.timeStep("component_retrieval_latency", comp.getPipelineComponent().getName())) {
-            queue = comp.getComponent();
-        }
+        Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
 
         IDUUICommunicationLayer layer = queue.getValue0().getCommunicationLayer();
         long serializeStart = System.nanoTime();
@@ -232,18 +229,14 @@ public interface IDUUIInstantiatedPipelineComponent {
 
         String logPrefix = String.format("[%s]", queue.getValue0().getUniqueInstanceKey());
 
-        try (var componentTimer = perf.timeStep("component_duration", comp.getPipelineComponent().getName());
-             var context = comp.logger().withContext(DUUIContexts.component(comp, queue.getValue0())
+        try (var context = comp.logger().withContext(DUUIContexts.component(comp, queue.getValue0())
                      .status(DUUIStatus.ACTIVE))) {
 
             Duration waitedForInstance = Duration.ofNanos(queue.getValue1() - queue.getValue2());
-            comp.logger().debug(
-                DUUIContexts.component(comp, queue.getValue0())
-                    .metric(waitedForInstance)
-                    .status(DUUIStatus.COMPONENT_WAIT),
-                "%s Waited %d ms for instance",
-                logPrefix,
-                waitedForInstance.toMillis()
+            comp.logger().measureStep(
+                DUUIStatus.COMPONENT_WAIT, 
+                waitedForInstance, 
+                "%s Waiting for available instance took",logPrefix
             );
 
             String viewName = pipelineComponent.getViewName();
@@ -299,8 +292,9 @@ public interface IDUUIInstantiatedPipelineComponent {
                     targetCas = viewJc.createView(comp.getTargetView());
                 }
 
-                long luaProcessStart = System.nanoTime();
-                try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
+                try (var processTimer = comp.logger().measureStep(DUUIStatus.COMPONENT_LUA_PROCESS,
+                        "%s layer.process() finished after", logPrefix
+                )) {
                     layer.process(
                             sourceCas,
                             new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
@@ -308,19 +302,6 @@ public interface IDUUIInstantiatedPipelineComponent {
                             targetCas
                     );
                 }
-                Duration luaProcessDuration = Duration.ofNanos(System.nanoTime() - luaProcessStart);
-                comp.logger().info(
-                    DUUIContexts.component(comp, queue.getValue0())
-                        .metric(luaProcessDuration)
-                        .status(DUUIStatus.COMPONENT_LUA_PROCESS),
-                    "%s layer.process() finished after %d ms",
-                    logPrefix,
-                    luaProcessDuration.toMillis()
-                );
-                comp.logger().debug(
-                        "%s Finished layer.process().",
-                        logPrefix
-                );
 
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
                 ann.setDescription(comp.getFinalizedRepresentation());
@@ -342,23 +323,15 @@ public interface IDUUIInstantiatedPipelineComponent {
                  comp.getSourceView(),
                  comp.getParameters()
             );
-            try (var serializeTimer = perf.timeStep("serialization", comp.getPipelineComponent().getName())) {
+            try (var serializeTimer = comp.logger().measureStep(DUUIStatus.COMPONENT_SERIALIZE,
+                    "%s Serialized JCas after", logPrefix)
+            ) {
                 layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
             }
 
             byte[] ok = out.toByteArray();
             long sizeArray = ok.length;
             long serializeEnd = System.nanoTime();
-
-            Duration serializeDuration = Duration.ofNanos(serializeEnd - serializeStart);
-            comp.logger().debug(
-                DUUIContexts.component(comp, queue.getValue0())
-                    .metric(serializeDuration)
-                    .status(DUUIStatus.COMPONENT_SERIALIZE),
-                "%s Serialized JCas after %d ms",
-                logPrefix,
-                serializeDuration.toMillis()
-            );
 
             long annotatorStart = serializeEnd;
 
@@ -374,7 +347,9 @@ public interface IDUUIInstantiatedPipelineComponent {
             HttpResponse<byte[]> resp = null;
 
             context.updateStatus(DUUIStatus.COMPONENT_PROCESS);
-            try (var processTimer = perf.timeStep("process", comp.getPipelineComponent().getName())) {
+            try (var processTimer = comp.logger().measureStep(DUUIStatus.COMPONENT_PROCESS,
+                    "%s Annotator finished after", logPrefix)
+            ) {
                 comp.logger().debug(
                     "%s Sending process request to %s (headers=%s)",
                     logPrefix,
@@ -404,10 +379,8 @@ public interface IDUUIInstantiatedPipelineComponent {
             } catch (Exception e) {
                 context.updateStatus(DUUIStatus.FAILED);
                 comp.logger().debug(
-                        "%s Fatal error during process request, aborting: %s %s %n",
-                        logPrefix,
-                        e.getCause().getClass().getSimpleName(),
-                        e.getCause().getMessage()
+                    "%s Fatal error during process request, aborting: %s %s %n",
+                    logPrefix, e
                 );
                 throw e;
             }
@@ -427,35 +400,16 @@ public interface IDUUIInstantiatedPipelineComponent {
             if (resp.statusCode() == 200) {
                 ByteArrayInputStream st = new ByteArrayInputStream(resp.body());
                 long annotatorEnd = System.nanoTime();
-
-                Duration processRequestDuration = Duration.ofNanos(annotatorEnd - annotatorStart);
-                comp.logger().debug(
-                    DUUIContexts.component(comp, queue.getValue0())
-                        .metric(processRequestDuration)
-                        .status(DUUIStatus.COMPONENT_PROCESS),
-                    "%s Annotator finished after %d ms",
-                    logPrefix,
-                    processRequestDuration.toMillis()
-                );
                 long deserializeStart = annotatorEnd;
                 
                 context.updateStatus(DUUIStatus.COMPONENT_DESERIALIZE);
-                try (var deserializeTimer = perf.timeStep("deserialization", comp.getPipelineComponent().getName())) {
+                try (var processTimer = comp.logger().measureStep(DUUIStatus.COMPONENT_DESERIALIZE,
+                        "%s Deserialized JCas (targetView=%s) after", logPrefix, comp.getTargetView())
+                ) {
                     layer.deserialize(viewJc, st, comp.getTargetView());
                 }
 
                 long deserializeEnd = System.nanoTime();
-                
-                Duration deserializeDuration = Duration.ofNanos(deserializeEnd - deserializeStart);
-                comp.logger().info(
-                    DUUIContexts.component(comp, queue.getValue0())
-                        .metric(deserializeDuration)
-                        .status(DUUIStatus.COMPONENT_DESERIALIZE),
-                    "%s Deserialized JCas (targetView=%s) after %d ms",
-                    logPrefix,
-                    comp.getTargetView(),
-                    deserializeDuration.toMillis()
-                );
                 
                 comp.logger().debug(
                     DUUIContexts.component(comp, queue.getValue0())

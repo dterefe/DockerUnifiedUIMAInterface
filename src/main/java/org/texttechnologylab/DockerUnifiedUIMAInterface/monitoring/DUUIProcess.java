@@ -1,78 +1,105 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import org.apache.commons.lang3.StringUtils;
 import org.bson.Document;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.DebugLevel;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContext.PayloadKind;
 
 /**
  * Thread-safe per-run state tracker fed by {@link DUUIEvent} stream.
  * <p>
- * The run status is derived exclusively from {@link DUUIContext.ComposerContext}.
- * All other context statuses are scoped (document/component/worker/driver) and
- * update only their respective state.
+ * The tracker processes events on a single event loop thread to avoid blocking the calling thread
+ * (e.g. DUUIComposer) and to preserve ordering.
  */
-public final class DUUIProcess implements AutoCloseable {
+public final class DUUIProcess implements IDUUIProcess {
 
-    public static final class RunState extends DUUIState {
-        private volatile String runKey;
+    /**
+     * Structured update emitted after applying an event to the in-memory snapshot.
+     */
+    public sealed interface Update permits Update.ProcessUpdate, Update.WorkerUpsert, Update.DriverUpsert,
+            Update.ComponentUpsert, Update.InstanceUpsert, Update.DocumentUpsert {
 
-        protected volatile AtomicInteger progress = new AtomicInteger(0);
-        protected volatile long total = 0;
-        protected volatile int skipped = 0;
-        protected volatile int initial = 0;
-        protected volatile boolean isFinished = false;
-        protected volatile long startedAt = 0L;
-        protected volatile long finishedAt = 0L;
-        protected volatile String error = "";
+        Meta meta();
+
+        record Meta(String runKey, long eventId, long timestamp) {}
+
+        record ProcessUpdate(Meta meta, Document process) implements Update {}
+
+        record WorkerUpsert(Meta meta, String workerName, Document worker) implements Update {}
+
+        record DriverUpsert(Meta meta, String driverName, Document driver) implements Update {}
+
+        record ComponentUpsert(Meta meta, String componentId, Document component) implements Update {}
+
+        record InstanceUpsert(Meta meta, String componentId, String instanceId, Document instance) implements Update {}
+
+        record DocumentUpsert(Meta meta, String documentKey, Document document) implements Update {}
+    }
+
+    public static final class ProcessState extends DUUIState {
+        private volatile String runId = "";
+        private volatile int progress = 0;
+        private volatile int total = 0;
+        private volatile int skipped = 0;
+        private volatile int initial = 0;
+        private volatile boolean isFinished = false;
+        private volatile long startedAt = 0L;
+        private volatile long finishedAt = 0L;
+        private volatile String error = "";
+        private volatile boolean isTerminal = false;
+
+        public boolean isTerminal() { return isTerminal; }
 
         public boolean isFinished() { return isFinished; }
-
         public long startedAt() { return startedAt; }
-
         public long finishedAt() { return finishedAt; }
-
         public int initial() { return initial; }
-
         public int skipped() { return skipped; }
+        public int total() { return total; }
+        public int progress() { return progress; }
+        public String runId() { return runId; }
+        public String error() { return error; }
 
-        public long total() { return total; }
-
-        public int progress() { return progress.get(); }
-
-        public String runKey() { return runKey; }
-
+        @Override
         public Document toDocument() {
             return super.toDocument()
-                .append("runKey", runKey)
-                .append("progress", progress.get())
+                .append("runKey", runId)
+                .append("progress", progress)
                 .append("skipped", skipped)
                 .append("initial", initial)
                 .append("total", total)
                 .append("started_at", startedAt)
                 .append("finished_at", finishedAt)
                 .append("is_finished", isFinished)
+                .append("is_terminal", isTerminal)
                 .append("error", error);
         }
     }
 
     public static final class WorkerState extends DUUIState {
         private final String name;
+        private volatile int activeWorkers = 0;
 
         WorkerState(String name) { this.name = name; }
 
@@ -80,14 +107,16 @@ public final class DUUIProcess implements AutoCloseable {
 
         @Override
         public Document toDocument() {
-            return super.toDocument().append("name", name);
+            return super.toDocument()
+                .append("name", name)
+                .append("activeWorkers", activeWorkers);
         }
     }
 
     public static final class ComponentState extends DUUIState {
         private final String componentId;
-        private volatile String componentName;
-        private volatile String driverName;
+        private volatile String componentName = "";
+        private volatile String driverName = "";
         private final Map<String, InstanceState> instancesById = new ConcurrentHashMap<>();
         private final AtomicLong activeInstances = new AtomicLong(0);
         private volatile boolean activatedOnce = false;
@@ -140,7 +169,7 @@ public final class DUUIProcess implements AutoCloseable {
 
     public static final class InstanceState extends DUUIState {
         private final String instanceId;
-        private volatile String endpoint;
+        private volatile String endpoint = "";
         private final AtomicLong errorCount = new AtomicLong(0);
         private volatile DUUIContext.Payload lastErrorPayload;
         private volatile long lastErrorAt = 0L;
@@ -168,85 +197,245 @@ public final class DUUIProcess implements AutoCloseable {
         }
     }
 
-    private final RunState run = new RunState();
+    private final ProcessState process = new ProcessState();
     private final Map<String, DUUIDocument> documentsByPath = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> terminalDocumentsByPath = new ConcurrentHashMap<>();
+    private final Map<String, String> pipelineStatus = new ConcurrentHashMap<>();
     private final Map<String, WorkerState> workersByName = new ConcurrentHashMap<>();
     private final Map<String, ComponentState> componentsById = new ConcurrentHashMap<>();
     private final Map<String, DriverState> driversByName = new ConcurrentHashMap<>();
 
     private final ConcurrentLinkedQueue<DUUIEvent> timeline = new ConcurrentLinkedQueue<>();
-    private final Map<Long, DUUIEvent> eventsById = new ConcurrentHashMap<>();
+    private final Set<Long> processedEventIds = ConcurrentHashMap.newKeySet();
+
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final ExecutorService virtualThreadPool = Executors.newVirtualThreadPerTaskExecutor();
-    private final ExecutorService eventLoop = Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
+    private final AtomicReference<Thread> eventLoopThread = new AtomicReference<>();
+    private final ExecutorService eventLoop = Executors.newSingleThreadExecutor(r -> {
+        Thread t = Thread.ofVirtual().unstarted(r);
+        eventLoopThread.set(t);
+        return t;
+    });
+
     private final AtomicBoolean isShutdown = new AtomicBoolean(false);
+    /**
+     * State after reset. No more events are accepted.
+     */
+    private final AtomicBoolean isTerminal = new AtomicBoolean(false);
+
+    private final AtomicBoolean acceptingEvents = new AtomicBoolean(true);
+    private final AtomicBoolean started = new AtomicBoolean(false);
+    private final AtomicReference<Exception> fatalRunError = new AtomicReference<>(null);
+    private final CopyOnWriteArrayList<Thread> workerThreads = new CopyOnWriteArrayList<>();
+
+    private volatile DUUIProfiler appMetrics;
 
     /**
-     * Observers notified asynchronously whenever a new {@link DUUIEvent} is processed.
-     * Intended for real-time web UI updates (e.g. websockets).
+     * Process update observers (must be registered before run start).
+     * Notified sequentially on the event loop thread.
      */
-    private final CopyOnWriteArrayList<DUUIEventObserver> eventObservers = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<IDUUIProcessObserver> observers = new CopyOnWriteArrayList<>();
 
-    public RunState run() { return run; }
-
-    public void addEventObserver(DUUIEventObserver observer) {
-        eventObservers.add(observer);
+    @Override
+    public void addObserver(IDUUIProcessObserver observer) {
+        if (observer == null) return;
+        if (started.get()) {
+            throw new IllegalStateException("Observers must be registered before run start");
+        }
+        observers.addIfAbsent(observer);
     }
 
-    public void removeEventObserver(DUUIEventObserver observer) {
-        eventObservers.remove(observer);
+    @Override
+    public void removeObserver(IDUUIProcessObserver observer) {
+        if (observer == null) return;
+        observers.remove(observer);
     }
 
+    @Override
+    public IDUUIProcess setProfiler(Path prometheusProfilerOutputPath, String runIdentifier) {
+        if (prometheusProfilerOutputPath != null) {
+            appMetrics = new DUUIProfiler(runIdentifier, prometheusProfilerOutputPath);
+            appMetrics.start();
+
+            Thread currentThread = Thread.currentThread();
+            currentThread.setName("DUUIComposer-" + currentThread.getId());
+            appMetrics.addThread(currentThread);
+        }
+        return this;
+    }
+
+    @Override
+    public boolean hasProfiler() {
+        return appMetrics != null;
+    }
+
+    @Override
     public void onEvent(DUUIEvent event) {
-        if (event == null || isShutdown.get()) {
+        // TODO: Refactor so eventLoop is non-blocking and observers receive events in-order 
+        if (event == null || isShutdown.get() || isTerminal.get() || !acceptingEvents.get()) {
             return;
         }
-        eventLoop.execute(() -> {
-            DUUIContext ctx = event.getContext();
+        try {
+            eventLoop.execute(() -> {
+                if (isShutdown.get() || isTerminal.get()) return;
 
-            lock.writeLock().lock();
-            try {
-                timeline.add(event);
-                eventsById.put(event.getId(), event);
-                onContext(event, ctx);
-            } finally {
-                lock.writeLock().unlock();
-            }
-        });
+                List<Update> updates;
+                lock.writeLock().lock();
+                try {
+                    if (isTerminal.get()) return;
+                    if (!processedEventIds.add(event.getId())) return;
+                    timeline.add(event);
+                    updates = applyEvent(event);
+                } finally {
+                    lock.writeLock().unlock();
+                }
+
+                if (!updates.isEmpty() && !observers.isEmpty()) {
+                    for (IDUUIProcessObserver obs : observers) {
+                        try {
+                            obs.onEvent(event, updates);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+        }
     }
 
     /**
      * Stops internal executors and prevents further event processing.
      * Safe to call multiple times.
      */
+    @Override
     public void shutdown() {
         if (!isShutdown.compareAndSet(false, true)) {
             return;
         }
-
+        acceptingEvents.set(false);
+        observers.clear(); // eject ProcessUpdate observers
         eventLoop.shutdownNow();
-        virtualThreadPool.shutdown();
-
         try {
             eventLoop.awaitTermination(5, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        lock.writeLock().lock();
         try {
-            virtualThreadPool.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            timeline.clear();
+            documentsByPath.clear();
+            terminalDocumentsByPath.clear();
+            pipelineStatus.clear();
+            fatalRunError.set(null);
+            workerThreads.clear();
+            processedEventIds.clear();
+            workersByName.clear();
+            componentsById.clear();
+            driversByName.clear();
+
+            DUUIProfiler metrics = appMetrics;
+            appMetrics = null;
+            if (metrics != null) {
+                try { metrics.close(); } catch (Exception ignored) {}
+            }
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
-    @Override
-    public void close() {
-        shutdown();
+    private void stopAcceptingEvents() {
+        if (!acceptingEvents.compareAndSet(true, false)) {
+            return;
+        }
+        if (isShutdown.get()) return;
+
+        
+        try {
+            eventLoop.shutdown();
+            eventLoop.awaitTermination(5, TimeUnit.MINUTES);
+            Runnable terminalTask = () -> {
+                DUUIEvent terminalEvent = null;
+                Update.Meta meta = null;
+
+                lock.writeLock().lock();
+                try {
+                    isTerminal.set(true);
+                    process.isTerminal = true;
+                    process.lastUpdatedAt = Math.max(process.lastUpdatedAt, System.currentTimeMillis());
+
+                    terminalEvent = new DUUIEvent(
+                        DUUIEvent.Sender.SYSTEM, 
+                        "Process is terminal", 
+                        process.lastUpdatedAt, 
+                        DebugLevel.TRACE
+                    );
+
+                    timeline.add(terminalEvent);
+                    processedEventIds.add(terminalEvent.getId());
+                    process.lastEventId = terminalEvent.getId();
+
+                    meta = new Update.Meta(
+                        StringUtils.defaultString(process.runId),
+                        terminalEvent.getId(),
+                        terminalEvent.getTimestamp()
+                    );
+                } finally {
+                    lock.writeLock().unlock();
+                }
+
+                if (!observers.isEmpty() && terminalEvent != null) {
+                    for (IDUUIProcessObserver obs : observers) {
+                        try {
+                            obs.onEvent(terminalEvent, List.of(new Update.ProcessUpdate(meta, process.toDocument())));
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            };
+
+            // If stopAcceptingEvents is called from the event loop itself, run terminal task inline to avoid deadlock.
+            if (Thread.currentThread().equals(eventLoopThread.get())) {
+                terminalTask.run();
+            } else {
+                eventLoop.execute(terminalTask);
+            }
+        } catch (RejectedExecutionException | InterruptedException ignored) {
+            isTerminal.set(true);
+            process.isTerminal = true;
+        }
+
+        observers.clear();
+        eventLoop.shutdown();
+        isShutdown.set(true);
     }
 
-    /**
-     * Drains and returns queued events in insertion order.
-     */
+    public IDUUIProcess reset() {
+        DUUIProcess newprocess = new DUUIProcess();
+        
+        for (IDUUIProcessObserver observer : observers) {
+            newprocess.addObserver(observer);
+        }
+
+        stopAcceptingEvents();
+
+        return newprocess;
+    }
+
+    @Override
+    public boolean isTerminal() {
+        return isTerminal.get();
+    }
+
+    @Override
+    public boolean isFinished() {
+        return process.isFinished;
+    }
+
+    @Override
+    public int progress() {
+        return process.progress;
+    }
+
+    @Override
     public List<DUUIEvent> drainEvents() {
         lock.writeLock().lock();
         List<DUUIEvent> drained = new ArrayList<>(timeline.size());
@@ -261,9 +450,6 @@ public final class DUUIProcess implements AutoCloseable {
         return drained;
     }
 
-    /**
-     * Returns a snapshot of currently retained events (does not clear).
-     */
     public List<DUUIEvent> eventsSnapshot() {
         lock.readLock().lock();
         try {
@@ -273,69 +459,247 @@ public final class DUUIProcess implements AutoCloseable {
         }
     }
 
-    public Optional<DUUIEvent> eventById(long eventId) {
-        if (eventId <= 0L) return Optional.empty();
-        return Optional.ofNullable(eventsById.get(eventId));
+    @Override
+    public DUUIDocument addDocument(DUUIDocument document) {
+        if (document == null) return null;
+        String path = document.getPath();
+        if (StringUtils.isBlank(path)) return document;
+
+        lock.writeLock().lock();
+        try {
+            DUUIDocument existing = documentsByPath.putIfAbsent(path, document);
+            return existing != null ? existing : document;
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
+    @Override
+    public void addDocuments(Collection<DUUIDocument> documents) {
+        if (documents == null) return;
+        for (DUUIDocument document : documents) {
+            addDocument(document);
+        }
+    }
 
-    private void onContext(DUUIEvent event, DUUIContext ctx) {
+    @Override
+    public Set<DUUIDocument> getDocuments() {
+        lock.readLock().lock();
+        try {
+            return new HashSet<>(documentsByPath.values());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public Set<String> getDocumentPaths() {
+        lock.readLock().lock();
+        try {
+            return new HashSet<>(documentsByPath.keySet());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public DUUIDocument findDocumentByPath(String path) {
+        if (StringUtils.isBlank(path)) return null;
+        lock.readLock().lock();
+        try {
+            return documentsByPath.get(path);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public int getDocumentCount() {
+        lock.readLock().lock();
+        try {
+            return documentsByPath.size();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public void clearDocuments() {
+        lock.writeLock().lock();
+        try {
+            documentsByPath.clear();
+            terminalDocumentsByPath.clear();
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    @Override
+    public Map<String, String> getPipelineStatus() {
+        return pipelineStatus;
+    }
+
+    @Override
+    public Map<String, DUUIStatus> getPipelineStatusEnum() {
+        Map<String, DUUIStatus> mapped = new ConcurrentHashMap<>();
+        for (Map.Entry<String, String> entry : pipelineStatus.entrySet()) {
+            mapped.put(entry.getKey(), DUUIStatus.fromString(entry.getValue()));
+        }
+        return mapped;
+    }
+
+    @Override
+    public void setPipelineStatus(String name, DUUIStatus status) {
+        if (StringUtils.isBlank(name) || status == null) return;
+        pipelineStatus.put(name, status.toString());
+    }
+
+    @Override
+    public void setPipelineStatus(String name, String status) {
+        if (StringUtils.isBlank(name) || status == null) return;
+        pipelineStatus.put(name, status);
+    }
+
+    @Override
+    public Exception getFatalRunError() {
+        return fatalRunError.get();
+    }
+
+    @Override
+    public boolean setFatalRunErrorIfAbsent(Exception error) {
+        Exception effective = error != null ? error : new RuntimeException("Worker failed");
+        return fatalRunError.compareAndSet(null, effective);
+    }
+
+    @Override
+    public void clearFatalRunError() {
+        fatalRunError.set(null);
+    }
+
+    @Override
+    public void registerWorker(Thread thread) {
+        if (thread == null) return;
+        workerThreads.addIfAbsent(thread);
+    }
+
+    @Override
+    public List<Thread> workers() {
+        return new ArrayList<>(workerThreads);
+    }
+
+    @Override
+    public void clearWorkerThreads() {
+        workerThreads.clear();
+    }
+
+    private List<Update> applyEvent(DUUIEvent event) {
+        DUUIContext ctx = Objects.requireNonNullElse(event.getContext(), DUUIContexts.defaultContext());
+        long ts = event.getTimestamp();
+        long eventId = event.getId();
+
+        String runKey = deriveRunKey(ctx);
+        if (StringUtils.isBlank(process.runId) && StringUtils.isNotBlank(runKey)) {
+            process.runId = runKey;
+        }
+
+        Update.Meta meta = new Update.Meta(StringUtils.defaultString(process.runId), eventId, ts);
+
+        List<Update> out = new ArrayList<>(4);
+        applyContext(event, ctx, meta, ts, eventId, out);
+        return out;
+    }
+
+    private String deriveRunKey(DUUIContext ctx) {
+        return switch (ctx) {
+            case DUUIContext.ComposerContext c -> StringUtils.defaultString(c.runKey());
+            case DUUIContext.WorkerContext w -> StringUtils.defaultString(w.composer().runKey());
+            case DUUIContext.DocumentProcessContext p -> StringUtils.defaultString(p.composer().runKey());
+            case DUUIContext.DocumentComponentProcessContext d -> StringUtils.defaultString(d.document().composer().runKey());
+            default -> StringUtils.defaultString(process.runId);
+        };
+    }
+
+    private void applyContext(DUUIEvent event, DUUIContext ctx, Update.Meta meta, long ts, long eventId, List<Update> out) {
         switch (ctx) {
             case DUUIContext.ComposerContext composerCtx -> {
-                run.transitionStatus(composerCtx.status(), event.getTimestamp());
-                run.lastUpdatedAt = event.getTimestamp();
-                run.lastEventId = event.getId();
-                run.thread = ctx.thread();
-                
-                run.runKey = composerCtx.runKey();
-                run.progress = composerCtx.progressAtomic();
-                run.total = composerCtx.total();
-                
-                if (run.startedAt == 0L && composerCtx.status() != DUUIStatus.UNKNOWN) 
-                    run.startedAt = event.getTimestamp();
+                started.compareAndSet(false, true);
 
-                if (!run.isFinished && 
-                    (ctx.status() == DUUIStatus.COMPLETED 
-                    || ctx.status() == DUUIStatus.FAILED 
-                    || ctx.status() == DUUIStatus.CANCELLED)) { 
-                    run.isFinished = true; 
-                    run.finishedAt = event.getTimestamp(); 
+                if (StringUtils.isBlank(process.runId)) {
+                    process.runId = composerCtx.runKey();
                 }
 
-                if (ctx.payloadKind() == PayloadKind.STACKTRACE) {
-                    run.error = event.getMessage();
+                process.transitionStatus(composerCtx.status(), ts);
+                process.lastUpdatedAt = ts;
+                process.lastEventId = eventId;
+                process.thread = ctx.thread();
+
+                if (process.total == 0 && composerCtx.documentCount() > 0) {
+                    process.total = composerCtx.documentCount();
                 }
 
-                notifyEventObservers(event, run);
+                if (process.startedAt == 0L && composerCtx.status() != DUUIStatus.UNKNOWN) {
+                    process.startedAt = ts;
+                }
+
+                if (!process.isFinished
+                    && (ctx.status() == DUUIStatus.COMPLETED
+                    || ctx.status() == DUUIStatus.FAILED
+                    || ctx.status() == DUUIStatus.CANCELLED)) {
+                    process.isFinished = true;
+                    process.finishedAt = ts;
+                }
+
+                if ((ctx.status() == DUUIStatus.FAILED || ctx.status() == DUUIStatus.CANCELLED)
+                    && StringUtils.isBlank(process.error)) {
+                    process.error = StringUtils.defaultString(event.getMessage());
+                }
+
+                out.add(new Update.ProcessUpdate(meta, process.toDocument()));
+            }
+
+            case DUUIContext.ReaderContext readerCtx  
+            when readerCtx.status() == DUUIStatus.SETUP && readerCtx.reader() != null -> {
+                process.transitionStatus(DUUIStatus.SETUP, ts);
+                    process.lastUpdatedAt = ts;
+                    process.lastEventId = eventId;
+                    process.thread = ctx.thread();
+
+                    if (process.total == 0) {
+                        process.skipped = readerCtx.reader().getSkipped();
+                        process.initial = readerCtx.reader().getInitial();
+                        process.total = (int) readerCtx.reader().getSize();
+                    }
+                    if (process.startedAt == 0L) {
+                        process.startedAt = ts;
+                    }
+
+                    out.add(new Update.ProcessUpdate(meta, process.toDocument()));
             }
 
             case DUUIContext.WorkerContext workerCtx -> {
                 WorkerState worker = workersByName.computeIfAbsent(workerCtx.name(), WorkerState::new);
 
-                worker.transitionStatus(workerCtx.status(), event.getTimestamp());
-                worker.lastUpdatedAt = event.getTimestamp();
-                worker.lastEventId = event.getId();
+                worker.transitionStatus(workerCtx.status(), ts);
+                worker.lastUpdatedAt = ts;
+                worker.lastEventId = eventId;
                 worker.thread = ctx.thread();
-                
-                onContext(event, workerCtx.composer());
+                worker.activeWorkers = workerCtx.activeWorkers().get();
 
-                notifyEventObservers(event, worker);
-            }
+                out.add(new Update.WorkerUpsert(meta, worker.getName(), worker.toDocument()));
 
-            case DUUIContext.DocumentContext documentCtx -> {
-                DUUIDocument document = documentCtx.document();
-                document.getState().update(event, documentCtx);
-                documentsByPath.put(document.getPath(), document);
-
-                notifyEventObservers(event, document);
+                applyContext(event, workerCtx.composer(), meta, ts, eventId, out);
             }
 
             case DUUIContext.ComponentContext compCtx -> {
                 ComponentState component = componentsById.computeIfAbsent(compCtx.componentId(), ComponentState::new);
-                component.componentName = compCtx.componentName();
-                component.driverName = compCtx.driverName();
-                component.lastUpdatedAt = event.getTimestamp();
-                component.lastEventId = event.getId();
+                if (StringUtils.isBlank(component.componentName)) {
+                    component.componentName = compCtx.componentName();
+                }
+                if (StringUtils.isBlank(component.driverName)) {
+                    component.driverName = compCtx.driverName();
+                }
+                component.lastUpdatedAt = ts;
+                component.lastEventId = eventId;
                 component.thread = ctx.thread();
 
                 DUUIStatus compStatus = compCtx.status();
@@ -348,27 +712,29 @@ public final class DUUIProcess implements AutoCloseable {
                         compStatus = DUUIStatus.INACTIVE;
                     }
                 }
+                component.transitionStatus(compStatus, ts);
 
-                component.transitionStatus(compStatus, event.getTimestamp());
+                deriveDriverStatus(component, ts, eventId);
 
-                deriveDriverStatus(component, event.getTimestamp(), event.getId());
-                
-                notifyEventObservers(event, component);
+                out.add(new Update.ComponentUpsert(meta, component.componentId, component.toDocument()));
+                out.add(new Update.DriverUpsert(meta, component.driverName, driversByName.get(component.driverName).toDocument()));
             }
 
             case DUUIContext.InstantiatedComponentContext instCtx -> {
                 DUUIContext.ComponentContext compCtx = instCtx.component();
 
                 ComponentState component = componentsById.computeIfAbsent(compCtx.componentId(), ComponentState::new);
+                if (StringUtils.isBlank(component.componentName)) component.componentName = compCtx.componentName();
+                if (StringUtils.isBlank(component.driverName)) component.driverName = compCtx.driverName();
 
                 InstanceState instance = component.instancesById.computeIfAbsent(instCtx.instanceId(), InstanceState::new);
-                instance.endpoint = instCtx.endpoint();
+                if (StringUtils.isBlank(instance.endpoint)) instance.endpoint = instCtx.endpoint();
 
                 DUUIStatus next = instCtx.status();
                 if (next == DUUIStatus.FAILED) {
                     instance.errorCount.incrementAndGet();
                     instance.lastErrorPayload = instCtx.payloadRecord();
-                    instance.lastErrorAt = event.getTimestamp();
+                    instance.lastErrorAt = ts;
                     next = DUUIStatus.IDLE;
                 }
 
@@ -385,62 +751,44 @@ public final class DUUIProcess implements AutoCloseable {
                     component.activatedOnce = true;
                 }
 
-                instance.transitionStatus(next, event.getTimestamp());
-                instance.lastUpdatedAt = event.getTimestamp();
-                instance.lastEventId = event.getId();
+                instance.transitionStatus(next, ts);
+                instance.lastUpdatedAt = ts;
+                instance.lastEventId = eventId;
                 instance.thread = ctx.thread();
 
-                onContext(event, compCtx);
+                applyContext(event, compCtx, meta, ts, eventId, out);
+
+                out.add(new Update.InstanceUpsert(meta, component.componentId, instance.instanceId, instance.toDocument()));
+            }
+
+            case DUUIContext.DocumentContext documentCtx -> {
+                DUUIDocument document = documentCtx.document();
+
+                document.getState().update(event, documentCtx);
+                documentsByPath.put(document.getPath(), document);
+                DUUIStatus docStatus = documentCtx.status();
+                if (docStatus == DUUIStatus.COMPLETED || docStatus == DUUIStatus.FAILED || docStatus == DUUIStatus.CANCELLED) {
+                    String key = document.getPath();
+                    if (StringUtils.isNotBlank(key) && terminalDocumentsByPath.putIfAbsent(key, Boolean.TRUE) == null) {
+                        process.progress = Math.max(0, process.progress + 1);
+                    }
+                }
+                out.add(new Update.DocumentUpsert(meta, document.getPath(), document.getState().toDocument()));
             }
 
             case DUUIContext.DocumentProcessContext procCtx -> {
-                onContext(event, procCtx.composer());
-                onContext(event, procCtx.document());
-            }
-
-            case DUUIContext.DocumentComponentProcessContext dcpCtx -> {
-                onContext(event, dcpCtx.document());
-                onContext(event, dcpCtx.component());
-
-                DUUIDocument doc = dcpCtx.document().document().document();
-
-                if (dcpCtx.status() == DUUIStatus.FAILED) {
-                    String componentId = dcpCtx.component().component().componentId();
-                    DUUIContext.Payload payload = dcpCtx.payloadRecord();
-                    doc.setComponentErrorPayload(componentId, payload);
-                }
-
-                DUUIContext.Payload payload = dcpCtx.payloadRecord();
-                if (payload.kind() == DUUIContext.PayloadKind.METRIC_MILLIS) {
-                    long millis;
-                    try {
-                        millis = Long.parseLong(payload.content());
-                    } catch (NumberFormatException ignored) {
-                        break;
-                    }
-                    DUUIStatus phase = dcpCtx.status();
-                    String componentId = dcpCtx.component().component().componentId();
-                    doc.addComponentPhaseDurationMillis(componentId, phase, millis);
-                }
-            }
-
-            case DUUIContext.ReaderContext readerCtx -> {
-                if (readerCtx.status() == DUUIStatus.SETUP) {
-                    run.transitionStatus(DUUIStatus.SETUP, event.getTimestamp());
-                    run.lastUpdatedAt = event.getTimestamp();
-                    run.skipped = readerCtx.reader().getSkipped();
-                    run.initial = readerCtx.reader().getInitial();
-                    run.total = readerCtx.reader().getSize();
-                    run.thread = ctx.thread();
-                    run.lastEventId = event.getId();
-
-                    notifyEventObservers(event, run);
-                }
+                applyContext(event, procCtx.composer(), meta, ts, eventId, out);
+                applyContext(event, procCtx.document(), meta, ts, eventId, out);
             }
 
             case DUUIContext.ReaderDocumentContext readerDocCtx -> {
-                onContext(event, readerDocCtx.reader());
-                onContext(event, readerDocCtx.document());
+                applyContext(event, readerDocCtx.reader(), meta, ts, eventId, out);
+                applyContext(event, readerDocCtx.document(), meta, ts, eventId, out);
+            }
+
+            case DUUIContext.DocumentComponentProcessContext dcpCtx -> {
+                applyContext(event, dcpCtx.document(), meta, ts, eventId, out);
+                applyContext(event, dcpCtx.component(), meta, ts, eventId, out);
             }
 
             default -> {
@@ -448,39 +796,10 @@ public final class DUUIProcess implements AutoCloseable {
         }
     }
 
-    private void notifyEventObservers(DUUIEvent event, DUUIState newState) {
-        if (eventObservers.isEmpty()) {
-            return;
-        }
-        for (DUUIEventObserver observer : eventObservers) {
-            CompletableFuture.runAsync(() -> {
-                try {
-                    observer.onEvent(event, newState);
-                } catch (Throwable ignored) {
-                }
-            }, virtualThreadPool);
-        }
-    }
-
-    private void notifyEventObservers(DUUIEvent event, DUUIDocument newState) {
-        if (eventObservers.isEmpty()) {
-            return;
-        }
-        for (DUUIEventObserver observer : eventObservers) {
-            CompletableFuture.runAsync(() -> {
-                try {
-                    observer.onEvent(event, newState);
-                } catch (Throwable ignored) {
-                }
-            }, virtualThreadPool);
-        }
-    }
-
     private void deriveDriverStatus(ComponentState component, long ts, long eventId) {
         String driverName = component.driverName;
         DriverState driver = driversByName.computeIfAbsent(driverName, DriverState::new);
 
-        // Recompute driver active instances as sum of its components.
         long active = 0;
         for (ComponentState cs : componentsById.values()) {
             if (driverName.equals(cs.driverName)) {
@@ -518,7 +837,7 @@ public final class DUUIProcess implements AutoCloseable {
     public Document toDocument() {
         lock.readLock().lock();
         try {
-            Document out = run.toDocument();
+            Document out = process.toDocument();
 
             Document workers = new Document();
             for (Map.Entry<String, WorkerState> e : workersByName.entrySet()) {
@@ -546,6 +865,6 @@ public final class DUUIProcess implements AutoCloseable {
 
     @Override
     public String toString() {
-        return "DUUIProcess(runKey=" + Objects.toString(run.runKey, "") + ", status=" + run.status + ")";
+        return "DUUIProcess(runKey=" + Objects.toString(process.runId, "") + ", status=" + process.status + ")";
     }
 }

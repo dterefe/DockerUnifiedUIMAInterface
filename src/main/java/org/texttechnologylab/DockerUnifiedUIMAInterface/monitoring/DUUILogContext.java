@@ -73,7 +73,7 @@ public final class DUUILogContext {
 
     public static void setLogger(DUUIComposer composer) {
         CURRENT_LOGGER.set(composer.getLogger() != null ? composer.getLogger() : FALLBACK_LOGGER);
-        DUUIContexts.setComposerContext(composer.getLogger().getContext());
+        DUUIContexts.setComposer(composer);
         setContext(composer.getLogger().getContext());
     }
 

@@ -11,6 +11,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -29,7 +31,7 @@ import oshi.software.os.OSProcess;
 import oshi.software.os.OperatingSystem;
 import one.profiler.AsyncProfiler;
 
-public final class AppMetrics implements AutoCloseable {
+public final class DUUIProfiler implements AutoCloseable {
     private static final String NONE = "(none)";
 
     private enum ProfileMode {
@@ -202,15 +204,15 @@ public final class AppMetrics implements AutoCloseable {
     }
 
 
-    public AppMetrics(String runName, Path outputDirectory) {
+    public DUUIProfiler(String runName, Path outputDirectory) {
         this(runName, outputDirectory, ProfileMode.CPU);
     }
 
-    public AppMetrics(String runName, String outputDirectory) {
+    public DUUIProfiler(String runName, String outputDirectory) {
         this(runName, Path.of(outputDirectory));
     }
 
-    public AppMetrics(String runName, Path outputDirectory, ProfileMode profileMode) {
+    public DUUIProfiler(String runName, Path outputDirectory, ProfileMode profileMode) {
         this.periodMillis = Duration.ofSeconds(2).toMillis();
         this.runName = runName;
         this.outputDirectory = outputDirectory;
@@ -292,23 +294,58 @@ public final class AppMetrics implements AutoCloseable {
     // step timers
     public static Timer timeStep(String step) { return new Timer(step, NONE); }
     public static Timer timeStep(String step, String component) { return new Timer(step, component); }
+    public static void timeStep(String step, String component, Duration elapsed) { 
+        STEP_LATENCY.labels(step, component).observe(elapsed.toMillis()); 
+    }
+
+    private static String sizeBucket(DUUIDocument document) {
+        long bytes = document.getSize();
+        if (bytes < 0) {
+            return "unknown";
+        }
+
+        long mb = 1024L * 1024L;
+        if (bytes < 1L * mb) {
+            return "<1MB";
+        }
+        if (bytes < 10L * mb) {
+            return "1MB-10MB";
+        }
+        if (bytes < 50L * mb) {
+            return "10MB-50MB";
+        }
+        if (bytes < 100L * mb) {
+            return "50MB-100MB";
+        }
+        if (bytes < 1024L * mb) {
+            return "100MB-1GB";
+        }
+        return ">=1GB";
+    }
 
     // document total
     public static DocRun docRun() { return new DocRun(null); }
-    public static DocRun docRun(String sizeBucket) { return new DocRun(sizeBucket); }
+    public static DocRun docRun(DUUIDocument document) { return new DocRun(sizeBucket(document)); }
 
     public static final class Timer implements AutoCloseable {
         private final String step, comp;
-        private final long t0 = System.nanoTime();
+        // private final long t0 = System.nanoTime();
         private final long cpu0 = THREAD_CPU_BEAN.getCurrentThreadCpuTime();
+        final Duration t0 = Duration.ofNanos(System.nanoTime());
+        private Duration elapsed = t0;
 
         Timer(String step, String comp) {
             this.step = step; this.comp = comp;
         }
 
+        public Duration elapsed() {
+            return elapsed;
+        }
+
         @Override public void close() {
-            double ms = (System.nanoTime() - t0) / 1_000_000.0;
-            STEP_LATENCY.labels(step, comp).observe(ms);  // ms statt Sekunden
+            this.elapsed = Duration.ofNanos(System.nanoTime()).minus(t0);
+            double ms = elapsed.toMillis();
+            STEP_LATENCY.labels(step, comp).observe(ms);
 
             long cpu1 = THREAD_CPU_BEAN.getCurrentThreadCpuTime();
             if (cpu0 >= 0 && cpu1 >= cpu0) {
@@ -327,11 +364,12 @@ public final class AppMetrics implements AutoCloseable {
 
 
     public static final class DocRun implements AutoCloseable {
-        private final long t0 = System.nanoTime();
         private final long cpu0 = THREAD_CPU_BEAN.getCurrentThreadCpuTime();
         private final String threadName = Thread.currentThread().getName();
         private final String sizeBucket;
         private boolean error = false;
+        final Duration t0 = Duration.ofNanos(System.nanoTime());
+        Duration elapsed = t0;
 
         DocRun(String sizeBucket) {
             this.sizeBucket = sizeBucket == null ? "unknown" : sizeBucket;
@@ -339,8 +377,13 @@ public final class AppMetrics implements AutoCloseable {
 
         public void markError() { if (!error) { error = true; DOC_ERRORS.inc(); } }
 
+        public Duration elapsed() {
+            return elapsed;
+        }
+
         @Override public void close() {
-            double ms = (System.nanoTime() - t0) / 1_000_000.0;
+            this.elapsed = Duration.ofNanos(System.nanoTime()).minus(t0);
+            double ms = elapsed.toMillis();
             DOC_TOTAL.labels(error ? "error" : "ok").observe(ms);
 
             WORKER_DOCS_PROCESSED.labels(threadName).inc();

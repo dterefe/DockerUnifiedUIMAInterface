@@ -25,7 +25,7 @@ public final class ClassScopedLogger implements DUUILogger {
     private DUUIContext context;
 
     public ClassScopedLogger(Class<?> clazz) {
-        this.name = clazz.getName();
+        this.name = clazz.getSimpleName();
         this.sender = resolveSender(clazz);
         this.context = DUUILogContext.getContext();
     }

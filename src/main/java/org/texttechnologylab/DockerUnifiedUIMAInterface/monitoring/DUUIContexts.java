@@ -29,16 +29,26 @@ public final class DUUIContexts {
         return DEFAULT_CONTEXT;
     }
 
-    public static void setComposerContext(DUUIContext context) {
-        if (context instanceof ComposerContext composerContext) {
-            DUUIContextTL.COMPOSER.set(composerContext);
+    public static void setComposer(DUUIComposer composer) {
+        if (composer != null) {
+            DUUIContextTL.COMPOSER.set(composer);
         } else {
+            DUUIContextTL.COMPOSER.remove();
+        }
+    }
+
+    @Deprecated
+    public static void setComposerContext(DUUIContext context) {
+        // Context snapshots get stale quickly; store the composer thread-locally instead.
+        if (context == null) {
             DUUIContextTL.COMPOSER.remove();
         }
     }
 
     public static void setDocumentContext(DUUIContext context) {
         if (context instanceof DocumentProcessContext documentContext) {
+            DUUIContextTL.DOCUMENT.set(documentContext.document());
+        } else if (context instanceof DocumentContext documentContext) {
             DUUIContextTL.DOCUMENT.set(documentContext);
         } else {
             DUUIContextTL.DOCUMENT.remove();
@@ -182,7 +192,7 @@ public final class DUUIContexts {
             return new WorkerContext(ctx.composer(), ctx.name(), ctx.activeWorkers(), payload);
         }
         if (context instanceof ComposerContext ctx) {
-            return new ComposerContext(ctx.runKey(), ctx.pipelineStatus(), ctx.progressAtomic(), ctx.total(), payload);
+            return new ComposerContext(ctx.runKey(), ctx.pipelineStatus(), ctx.documentCount(), payload);
         }
         if (context instanceof DocumentContext ctx) {
             return new DocumentContext(ctx.document(), payload);
@@ -206,8 +216,7 @@ public final class DUUIContexts {
             }
             case ComposerContext ctx -> {
                 out.append("runKey", ctx.runKey());
-                out.append("progress", ctx.progressAtomic().get());
-                out.append("total", ctx.total());
+                out.append("documentCount", ctx.documentCount());
                 return out;
             }
             case WorkerContext ctx -> {
@@ -392,8 +401,8 @@ public final class DUUIContexts {
             String content = StringUtils.defaultString(payloadContent);
             Payload payload = new Payload(status, content, payloadKind, Thread.currentThread().getName());
 
-            ComposerContext tlComposer = DUUIContextTL.COMPOSER.get();
-            DocumentProcessContext tlDocument = DUUIContextTL.DOCUMENT.get();
+            ComposerContext tlComposer = currentComposerContext();
+            DocumentContext tlDocument = DUUIContextTL.DOCUMENT.get();
 
             switch (scope) {
                 case UPDATEPAYLOAD -> {
@@ -429,7 +438,24 @@ public final class DUUIContexts {
                             payload
                         );
                         if (tlDocument != null) {
-                            return new DocumentComponentProcessContext(tlDocument, inst, payload);
+                            DUUIDocument d = tlDocument.document();
+                            String componentId = component.getUniqueComponentKey();
+                            if (StringUtils.isNotBlank(componentId)) {
+                                if (payload.status() == DUUIStatus.FAILED) {
+                                    d.setComponentErrorPayload(componentId, payload);
+                                }
+                                if (payload.kind() == PayloadKind.METRIC_MILLIS) {
+                                    try {
+                                        long millis = Long.parseLong(payload.content());
+                                        d.addComponentPhaseDurationMillis(componentId, payload.status(), millis);
+                                    } catch (NumberFormatException ignored) {
+                                    }
+                                }
+                            }
+                            if (tlComposer != null) {
+                                DocumentProcessContext docProcCtx = new DocumentProcessContext(tlDocument, tlComposer, payload);
+                                return new DocumentComponentProcessContext(docProcCtx, inst, payload);
+                            }
                         }
                         return inst;
                     }
@@ -438,10 +464,10 @@ public final class DUUIContexts {
                 case READER -> {
                     ReaderContext readerCtx = new ReaderContext(reader, payload);
 
-                    if (payload.status() == DUUIStatus.SETUP && tlComposer != null) {
-                        DUUIContext updated = tlComposer.updateStatus(payload.status());
-                        if (updated instanceof ComposerContext updatedComposer) {
-                            DUUIContextTL.COMPOSER.set(updatedComposer);
+                    if (payload.status() == DUUIStatus.SETUP) {
+                        DUUIComposer tl = DUUIContextTL.COMPOSER.get();
+                        if (tl != null && tl.getLogger() != null) {
+                            tl.getLogger().updateStatus(payload.status());
                         }
                     }
 
@@ -461,14 +487,9 @@ public final class DUUIContexts {
                         if (statusMap == null) {
                             statusMap = Collections.emptyMap();
                         }
-                        AtomicInteger progressAtomic = composer.getProgressAtomic();
-                        if (progressAtomic == null) {
-                            progressAtomic = new AtomicInteger(0);
-                        }
                         return new ComposerContext(
                             StringUtils.defaultString(this.runKey),
                             statusMap,
-                            progressAtomic,
                             composer.getDocumentCount(),
                             payload
                         );
@@ -486,5 +507,20 @@ public final class DUUIContexts {
                 }
             }
         }
+    }
+
+    private static ComposerContext currentComposerContext() {
+        DUUIComposer composer = DUUIContextTL.COMPOSER.get();
+        if (composer == null || composer.getLogger() == null) {
+            return null;
+        }
+        DUUIContext ctx = composer.getLogger().getContext();
+        if (ctx instanceof ComposerContext composerCtx) {
+            return composerCtx;
+        }
+        if (ctx instanceof DocumentProcessContext dpc) {
+            return dpc.composer();
+        }
+        return null;
     }
 }

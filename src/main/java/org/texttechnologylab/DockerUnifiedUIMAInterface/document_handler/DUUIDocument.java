@@ -62,7 +62,6 @@ public class DUUIDocument {
         private String error;
         private final Map<String, Integer> annotations = new HashMap<>();
         private final Map<String, AnnotationRecord> annotationRecords = new HashMap<>();
-        private Map<Long, DUUIEvent> events = new ConcurrentHashMap<>();
 
         private static final DUUIContext.Payload EMPTY_PAYLOAD = new DUUIContext.Payload(
             DUUIStatus.UNKNOWN,
@@ -129,7 +128,6 @@ public class DUUIDocument {
                 .append("finished_at", finishedAt)
                 .append("last_updated_at", lastUpdatedAt)
                 .append("last_event_id", lastEventId)
-                .append("events", events.values().stream().map(DUUIEvent::getId).toList())
                 .append("error", error);
 
                 if (isFinished) {
@@ -158,13 +156,14 @@ public class DUUIDocument {
             DUUIStatus next = ctx.status();
             if (DUUIProcess.isEffectivelyActive(next)) {
                 next = DUUIStatus.PROCESS;
+            } else if (status == DUUIStatus.FAILED) {
+                next = status;
             }
+
             transitionStatus(next, event.getTimestamp());
             this.lastEventId = event.getId();
             this.lastUpdatedAt = event.getTimestamp();
             this.thread = ctx.thread();
-
-            events.put(event.getId(), event);
         }
     }
 

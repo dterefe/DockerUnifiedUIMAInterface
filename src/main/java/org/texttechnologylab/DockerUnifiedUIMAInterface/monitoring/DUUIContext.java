@@ -1,5 +1,6 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -31,6 +32,18 @@ public sealed interface DUUIContext extends PayloadUtil
     @Nonnull
     default DUUIContext updatePayload(DUUIContext.Payload payload) {
         return DUUIContexts.updateStatus(this, payload);
+    }
+
+    default DUUIContext metric(Duration elapsed) {
+        Objects.requireNonNull(elapsed);
+
+        return updatePayload(
+            new Payload(
+                DUUILogContext.getContext().status(),
+                String.valueOf(elapsed.toMillis()),
+                PayloadKind.METRIC_MILLIS,
+                Thread.currentThread().getName()
+        ));
     }
 
     public enum PayloadKind {
@@ -67,15 +80,13 @@ public sealed interface DUUIContext extends PayloadUtil
     public static record ComposerContext(
         @Nonnull String runKey,
         @Nonnull Map<String, DUUIStatus> pipelineStatus,
-        @Nonnull AtomicInteger progressAtomic,
-        int total,
+        int documentCount,
         @Nonnull
         Payload payloadRecord
     ) implements DUUIContext {
         public ComposerContext {
             runKey = Objects.requireNonNull(runKey, "runKey");
             pipelineStatus = Map.copyOf(Objects.requireNonNull(pipelineStatus, "pipelineStatus"));
-            progressAtomic = Objects.requireNonNull(progressAtomic, "progressAtomic");
             payloadRecord = Objects.requireNonNull(payloadRecord, "payloadRecord");
         }
     }

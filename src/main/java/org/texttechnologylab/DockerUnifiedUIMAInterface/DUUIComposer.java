@@ -14,7 +14,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -23,9 +22,7 @@ import java.util.Set;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -60,9 +57,10 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUIAsynchronousProce
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionDBReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIProfiler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEvent;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIEventObserver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.IDUUIProcess;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.IDUUIProcessObserver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.ClassScopedLogger;
@@ -613,7 +611,7 @@ class DUUIWorkerDocumentReader extends Thread {
                         return;
                     }
 
-                    try (AppMetrics.Timer ignoredFetchTimer = AppMetrics.timeStep("fetch_document")) {
+                    try {
                         document = reader.getNextDocument(cas);
                         if (document != null && !document.isFinished()) {
                             DUUIContexts.setDocumentContext(DUUIContexts.doc(document).status(DUUIStatus.WAITING));
@@ -668,14 +666,12 @@ class DUUIWorkerDocumentReader extends Thread {
                 );
 
                 document.setDurationWait(timer.getDuration());
-                log.info(
-                    DUUIContexts.doc(document)
-                        .metric(Duration.ofMillis(timer.getDuration()))
-                        .status(DUUIStatus.WAITING),
-                    "Document %s waited %d ms in queue",
-                    document.getPath(),
-                    timer.getDuration()
+                log.measureStep(
+                    DUUIStatus.WAITING, 
+                    Duration.ofMillis(timer.getDuration()), 
+                    "Document %s waited in queue for", document.getPath()
                 );
+
                 log.info(
                     DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
                     "Starting to process %s",
@@ -684,7 +680,10 @@ class DUUIWorkerDocumentReader extends Thread {
 
                 timer.restart();
 
-                try (AppMetrics.DocRun docRun = perf.docRun()) {
+                try (var docRun = log.measureDocument(
+                        DUUIContexts.doc(document).status(DUUIStatus.PROCESS),
+                        document)
+                    ) {
                     for (DUUIComposer.PipelinePart pipelinePart : flow) {
                         String driverName = pipelinePart.getDriver().getClass().getSimpleName();
                         String segmentationName = pipelinePart.getSegmentationStrategy().getClass().getSimpleName();
@@ -704,7 +703,6 @@ class DUUIWorkerDocumentReader extends Thread {
                             !(segmentationStrategy instanceof DUUISegmentationStrategyNone)
                         );
                         if (segmentationStrategy instanceof DUUISegmentationStrategyNone) {
-                            // TODO: replace with implicit status updates
                             composer.setPipelineStatus(
                                 pipelinePart.getName(),
                                 DUUIStatus.ACTIVE);
@@ -906,7 +904,7 @@ public class DUUIComposer {
 
     /**
      * Optional configuration for exporting Prometheus profiling snapshots
-     * produced by {@link org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics}.
+     * produced by {@link org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIProfiler}.
      */
     private java.nio.file.Path prometheusProfilerOutputPath;
 
@@ -930,16 +928,11 @@ public class DUUIComposer {
 
     private TypeSystemDescription _minimalTypesystem;
     private TypeSystemDescription instantiatedTypeSystem;
-    private Map<String, DUUIDocument> documents = new HashMap<>();
-    private Map<String, String> pipelineStatus = new HashMap<>();
     private DebugLevel debugLevel = DebugLevel.NONE;
     private boolean ignoreErrors = false;
     private boolean isService = false;
     private boolean isServiceStarted = false;
-    private AtomicBoolean isFinished = new AtomicBoolean(false);
     private long instantiationDuration;
-    private AtomicInteger progress = new AtomicInteger(0);
-    private final AtomicReference<Exception> fatalRunError = new AtomicReference<>(null);
 
     /**
      * Default logger used by the composer, drivers and components
@@ -954,12 +947,7 @@ public class DUUIComposer {
     /**
      * In-memory run state tracker, updated synchronously from {@link #addEvent(DUUIEvent)}.
      */
-    private DUUIProcess process = new DUUIProcess();
-
-    /**
-     * Event observers must survive process resets (shutdown/new DUUIProcess).
-     */
-    private final CopyOnWriteArrayList<DUUIEventObserver> eventObservers = new CopyOnWriteArrayList<>();
+    private IDUUIProcess process = new DUUIProcess();
 
     /**
      * Composer constructor.
@@ -1030,17 +1018,6 @@ public class DUUIComposer {
         }
     }
 
-    private void resetProcess() {
-        if (process != null) {
-            process.shutdown();
-        }
-        process = new DUUIProcess();
-        for (DUUIEventObserver observer : eventObservers) {
-            process.addEventObserver(observer);
-        }
-        fatalRunError.set(null);
-    }
-
     /**
      * Cancels the current run due to an interrupt.
      * <p>
@@ -1064,7 +1041,7 @@ public class DUUIComposer {
      */
     void failRunFromWorker(Exception t) {
         Exception failure = t != null ? t : new RuntimeException("Worker failed");
-        fatalRunError.compareAndSet(null, failure);
+        process.setFatalRunErrorIfAbsent(failure);
         logger.updateStatus(DUUIStatus.FAILED);
         logger.error(DUUIContexts.exception(failure),
             "Run failed after processing %d documents : %s", 
@@ -1075,7 +1052,7 @@ public class DUUIComposer {
     }
 
     Exception getFatalRunError() {
-        return fatalRunError.get();
+        return process.getFatalRunError();
     }
 
     /**
@@ -1085,27 +1062,14 @@ public class DUUIComposer {
         return logger;
     }
 
-    /**
-     * Registers an event observer that will be notified asynchronously
-     * whenever {@link #addEvent(DUUIEvent)} is called.
-     *
-     * @param observer observer to register
-     */
-    public void addEventObserver(DUUIEventObserver observer) {
+    public void addProcessObserver(IDUUIProcessObserver observer) {
         if (observer == null) return;
-        eventObservers.addIfAbsent(observer);
-        process.addEventObserver(observer);
+        process.addObserver(observer);
     }
 
-    /**
-     * Unregisters a previously registered event observer.
-     *
-     * @param observer observer to remove
-     */
-    public void removeEventObserver(DUUIEventObserver observer) {
+    public void removeProcessObserver(IDUUIProcessObserver observer) {
         if (observer == null) return;
-        eventObservers.remove(observer);
-        process.removeEventObserver(observer);
+        process.removeObserver(observer);
     }
 
     public static String getLocalhost() {
@@ -1173,7 +1137,7 @@ public class DUUIComposer {
 
     /**
      * Enable Prometheus-based profiling for this composer and configure
-     * the directory where {@link org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AppMetrics}
+     * the directory where {@link org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIProfiler}
      * should write its JSON snapshot for a run.
      *
      * @param outputPath Directory path for AppMetrics snapshot files.
@@ -1394,10 +1358,8 @@ public class DUUIComposer {
      * @return this, for method chaining
      */
     public DUUIComposer resetPipeline() {
-        resetProcess();
+        process = process == null ? new DUUIProcess() : process.reset();
         _pipeline.clear();
-        documents.clear();
-        progress.set(0);
         isServiceStarted = false;
         return this;
     }
@@ -1441,6 +1403,7 @@ public class DUUIComposer {
                 System.out.printf("[Composer] Starting worker thread [%d/%d]\n", i + 1, _workers);
                 arr[i] = new DUUIWorkerAsyncProcessor(_instantiatedPipeline, emptyCasDocuments.poll(), _shutdownAtomic, aliveThreads, _storage, name, collectionReader, this);
                 arr[i].start();
+                process.registerWorker(arr[i]);
             }
             Instant starttime = Instant.now();
 //            while (!_shutdownAtomic.get()) {
@@ -1475,6 +1438,8 @@ public class DUUIComposer {
             System.out.println("[Composer] Something went wrong, shutting down remaining components...");
             shutdown_pipeline();
             throw e;
+        } finally {
+            resetProcess();
         }
     }
 
@@ -1518,6 +1483,7 @@ public class DUUIComposer {
                             pipelineUUIDs
                     ));
                     thread.start();
+                    process.registerWorker(thread);
                     threads.add(thread);
                     tId += 1;
                 }
@@ -1554,6 +1520,8 @@ public class DUUIComposer {
             shutdown_pipeline();
 
             throw e;
+        } finally {
+            resetProcess();
         }
     }
 
@@ -1597,6 +1565,7 @@ public class DUUIComposer {
                 System.out.printf("[Composer] Starting worker thread [%d/%d]\n", i + 1, _workers);
                 arr[i] = new DUUIWorkerAsyncReader(_instantiatedPipeline, emptyCasDocuments.poll(), _shutdownAtomic, aliveThreads, _storage, name, collectionReader, this);
                 arr[i].start();
+                process.registerWorker(arr[i]);
             }
             Instant starttime = Instant.now();
             final int maxNumberOfFutures = 20;
@@ -1647,6 +1616,8 @@ public class DUUIComposer {
             System.out.println("[Composer] Something went wrong, shutting down remaining components...");
             shutdown_pipeline();
             throw e;
+        } finally {
+            resetProcess();
         }
     }
 
@@ -1692,6 +1663,7 @@ public class DUUIComposer {
                 arr[i] = new DUUIWorker(_instantiatedPipeline, emptyCasDocuments, loadedCasDocuments, _shutdownAtomic, aliveThreads, _storage, name, null,
                     new DUUILinearExecutionPlanGenerator(_instantiatedPipeline), this);
                 arr[i].start();
+                process.registerWorker(arr[i]);
             }
             Instant starttime = Instant.now();
             while (collectionReader.hasNext()) {
@@ -1753,77 +1725,81 @@ public class DUUIComposer {
     public void run(CollectionReaderDescription reader, String name) throws Exception {
         setContext(name);
         Exception catched = null;
-        if (_storage != null && name == null) {
-            throw new RuntimeException("[Composer] When a storage backend is specified a run name is required, since it is the primary key");
-        }
-        addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            "Instantiating the collection reader..."
-        );
-
-        CollectionReader collectionReader = CollectionReaderFactory.createReader(reader);
-
-        addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            "Instantiated the collection reader"
-        );
-
-        if (_workers == 1) {
-            addEvent(
-                DUUIEvent.Sender.COMPOSER,
-                "Running in synchronous mode, 1 thread at most!");
-
-            _cas_poolsize = 1;
-        } else {
-            run_async(collectionReader, name);
-            return;
-        }
-
         try {
-            if (_storage != null) {
-                _storage.addNewRun(name, this);
+            if (_storage != null && name == null) {
+                throw new RuntimeException("[Composer] When a storage backend is specified a run name is required, since it is the primary key");
             }
-            TypeSystemDescription desc = instantiate_pipeline();
-            JCas jc = JCasFactory.createJCas(desc);
-            Instant starttime = Instant.now();
-            while (collectionReader.hasNext()) {
-                long waitTimeStart = System.nanoTime();
-                collectionReader.getNext(jc.getCas());
-                long waitTimeEnd = System.nanoTime();
-                try {
-                    run_pipeline(name, jc, waitTimeEnd - waitTimeStart, _instantiatedPipeline);
-                } catch (Exception e) {
-                    e.printStackTrace();
-
-                    // If we want to track errors we just continue with the next document
-                    // TODO this should be configurable separately
-                    if (_storage == null) {
-                        throw e;
-                    }
-                    if (!_storage.shouldTrackErrorDocs()) {
-                        throw e;
-                    }
-
-                    addEvent(
-                        DUUIEvent.Sender.COMPOSER,
-                        "Something went wrong, shutting down remaining components...");
-                }
-                jc.reset();
-            }
-            if (_storage != null) {
-                _storage.finalizeRun(name, starttime, Instant.now());
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
             addEvent(
                 DUUIEvent.Sender.COMPOSER,
-                "Something went wrong, shutting down remaining components...");
-            catched = e;
-        }
+                "Instantiating the collection reader..."
+            );
 
-        shutdown_pipeline();
-        if (catched != null) {
-            throw catched;
+            CollectionReader collectionReader = CollectionReaderFactory.createReader(reader);
+
+            addEvent(
+                DUUIEvent.Sender.COMPOSER,
+                "Instantiated the collection reader"
+            );
+
+            if (_workers == 1) {
+                addEvent(
+                    DUUIEvent.Sender.COMPOSER,
+                    "Running in synchronous mode, 1 thread at most!");
+
+                _cas_poolsize = 1;
+            } else {
+                run_async(collectionReader, name);
+                return;
+            }
+
+            try {
+                if (_storage != null) {
+                    _storage.addNewRun(name, this);
+                }
+                TypeSystemDescription desc = instantiate_pipeline();
+                JCas jc = JCasFactory.createJCas(desc);
+                Instant starttime = Instant.now();
+                while (collectionReader.hasNext()) {
+                    long waitTimeStart = System.nanoTime();
+                    collectionReader.getNext(jc.getCas());
+                    long waitTimeEnd = System.nanoTime();
+                    try {
+                        run_pipeline(name, jc, waitTimeEnd - waitTimeStart, _instantiatedPipeline);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+
+                        // If we want to track errors we just continue with the next document
+                        // TODO this should be configurable separately
+                        if (_storage == null) {
+                            throw e;
+                        }
+                        if (!_storage.shouldTrackErrorDocs()) {
+                            throw e;
+                        }
+
+                        addEvent(
+                            DUUIEvent.Sender.COMPOSER,
+                            "Something went wrong, shutting down remaining components...");
+                    }
+                    jc.reset();
+                }
+                if (_storage != null) {
+                    _storage.finalizeRun(name, starttime, Instant.now());
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                addEvent(
+                    DUUIEvent.Sender.COMPOSER,
+                    "Something went wrong, shutting down remaining components...");
+                catched = e;
+            }
+
+            shutdown_pipeline();
+            if (catched != null) {
+                throw catched;
+            }
+        } finally {
+            resetProcess();
         }
     }
 
@@ -1951,6 +1927,8 @@ public class DUUIComposer {
 
         instantiationDuration = timer.getDuration();
 
+        logger.updateStatus(DUUIStatus.ACTIVE);
+
         return instantiatedTypeSystem;
     }
 
@@ -1964,8 +1942,6 @@ public class DUUIComposer {
      * @throws Exception
      */
     private JCas run_pipeline(String name, JCas jc, long documentWaitTime, Vector<PipelinePart> pipeline) throws Exception {
-        progress.set(0);
-
         if (name == null) {
             name = "UIMA-Document";
         }
@@ -2203,6 +2179,8 @@ public class DUUIComposer {
                 DUUIEvent.Sender.COMPOSER,
                 "Something went wrong, shutting down remaining components...");
             catched = e;
+        } finally {
+            resetProcess();
         }
         /** shutdown **/
         //shutdown_pipeline();
@@ -2238,15 +2216,6 @@ public class DUUIComposer {
         if (_monitor != null) {
             logger.info("Shutting down monitor");
             _monitor.shutdown();
-            /**
-             * @see
-             * @Givara
-             * @edited Dawit Terefe
-             * Added option to keep connection open.
-             */
-//                if (!_connection_open) {
-//                    _clients.forEach(IDUUIConnectionHandler::close);
-//                }
         }
 
         if (_storage != null) {
@@ -2274,7 +2243,6 @@ public class DUUIComposer {
 
         _hasShutdown = true;
         logger.info("Shutdown complete.");
-        resetProcess();
         setContext(null);
     }
 
@@ -2295,15 +2263,9 @@ public class DUUIComposer {
 
         logger.info("Running in asynchronous mode using up to %d threads", _workers);
 
-        AppMetrics profiler = null;
+        DUUIProfiler profiler = null;
         try {
-            if (prometheusProfilerOutputPath != null) {
-                profiler = new AppMetrics(identifier, prometheusProfilerOutputPath);
-                profiler.start();
-                Thread currentThread = Thread.currentThread();
-                currentThread.setName("DUUIComposer-" + currentThread.getId());
-                profiler.addThread(currentThread);
-            }
+            process.setProfiler(prometheusProfilerOutputPath, identifier);
 
             if (_storage != null) {
                 _storage.addNewRun(identifier, this);
@@ -2360,6 +2322,8 @@ public class DUUIComposer {
                 );
 
                 arr[i].start();
+
+                process.registerWorker(arr[i]);
 
                 // Track worker threads in profiler, if enabled
                 if (profiler != null) {
@@ -2423,8 +2387,8 @@ public class DUUIComposer {
                 _storage.finalizeRun(identifier, starttime, Instant.now());
             }
 
+            logger.updateStatus(DUUIStatus.COMPLETED);
             logger.info("Process finished");
-            isFinished.set(true);
             shutdown();
         } catch (InterruptedException e) {
             cancelRunFromInterrupt(e);
@@ -2438,6 +2402,8 @@ public class DUUIComposer {
             shutdown();
             throw e;
         } finally {
+            resetProcess();
+            
             if (profiler != null) {
                 profiler.close();
             }
@@ -2542,25 +2508,17 @@ public class DUUIComposer {
         if (minLevel != DebugLevel.NONE) {
             DebugLevel eventLevel = event.getDebugLevel();
             if (eventLevel.ordinal() >= minLevel.ordinal()) {
-                System.Logger.Level level = switch (eventLevel) {
-                    case TRACE -> System.Logger.Level.TRACE;
-                    case DEBUG -> System.Logger.Level.DEBUG;
-                    case INFO -> System.Logger.Level.INFO;
-                    case WARN -> System.Logger.Level.WARNING;
-                    case ERROR, CRITICAL -> System.Logger.Level.ERROR;
-                    case NONE -> System.Logger.Level.INFO;
-                };
-                EVENT_LOGGER.log(level, event::toString);
+                System.out.print(event.toString());
             }
         }
     }
 
-    public DUUIProcess getProcess() {
+    public IDUUIProcess getProcess() {
         return process;
     }
 
     public Set<DUUIDocument> getDocuments() {
-        return new HashSet<>(documents.values());
+        return process.getDocuments();
     }
 
     /**
@@ -2569,7 +2527,7 @@ public class DUUIComposer {
      * @return Document
      */
     public DUUIDocument findDocumentByPath(String path) {
-        return documents.get(path);
+        return process.findDocumentByPath(path);
     }
 
 
@@ -2580,16 +2538,12 @@ public class DUUIComposer {
      * @return The added document if it is not already present in the set otherwise the existing document.
      */
     public DUUIDocument addDocument(DUUIDocument document) {
-        if (documents.containsKey(document.getPath())) {
-            return documents.get(document.getPath());
-        }
-
-        documents.put(document.getPath(), document);
+        DUUIDocument out = process.addDocument(document);
         logger.debug(
             "Added Document %s for processing",
             document.getPath()
         );
-        return document;
+        return out;
     }
 
     /**
@@ -2597,9 +2551,7 @@ public class DUUIComposer {
      * @param documents List of documents
      */
     public void addDocuments(Collection<DUUIDocument> documents) {
-        for (DUUIDocument document : documents) {
-            DUUIDocument ignored = addDocument(document);
-        }
+        process.addDocuments(documents);
     }
 
     /**
@@ -2607,23 +2559,23 @@ public class DUUIComposer {
      * @return Set of document paths
      */
     public Set<String> getDocumentPaths() {
-        return documents
-            .values()
-            .stream()
-            .map(DUUIDocument::getPath)
-            .collect(Collectors.toSet());
+        return process.getDocumentPaths();
     }
 
+    /**
+     * @deprecated Pipeline status is run-scoped state; prefer consuming {@link DUUIProcess} updates instead.
+     */
+    @Deprecated
     public Map<String, String> getPipelineStatus() {
-        return pipelineStatus;
+        return process.getPipelineStatus();
     }
 
+    /**
+     * @deprecated Pipeline status is run-scoped state; prefer consuming {@link DUUIProcess} updates instead.
+     */
+    @Deprecated
     public Map<String, DUUIStatus> getPipelineStatusEnum() {
-        Map<String, DUUIStatus> mapped = new HashMap<>();
-        for (Map.Entry<String, String> entry : pipelineStatus.entrySet()) {
-            mapped.put(entry.getKey(), DUUIStatus.fromString(entry.getValue()));
-        }
-        return mapped;
+        return process.getPipelineStatusEnum();
     }
 
     /**
@@ -2637,11 +2589,15 @@ public class DUUIComposer {
      */
     @Deprecated
     public void setPipelineStatus(String name, String status) {
-        pipelineStatus.put(name, status);
+        process.setPipelineStatus(name, status);
     }
 
+    /**
+     * @deprecated Pipeline status is run-scoped state; prefer consuming {@link DUUIProcess} updates instead.
+     */
+    @Deprecated
     public void setPipelineStatus(String name, DUUIStatus status) {
-        pipelineStatus.put(name, status.toString());
+        process.setPipelineStatus(name, status);
     }
 
     public DebugLevel getDebugLevel() {
@@ -2684,7 +2640,14 @@ public class DUUIComposer {
      */
     public void interrupt(String reason) {
         _shutdownAtomic.set(true);
-        addEvent(DUUIEvent.Sender.COMPOSER, String.format("Execution has been interrupted. Reason: %s.", reason));
+        logger.updateStatus(DUUIStatus.CANCELLED);
+        logger.info(String.format("Execution has been interrupted. Reason: %s.", reason));
+        markUnfinishedDocumentsFailed();
+        for (Thread t : process.workers()) {
+            if (t != null) {
+                t.interrupt();
+            }
+        }
     }
 
     /**
@@ -2694,10 +2657,12 @@ public class DUUIComposer {
         interrupt("User request");
     }
 
+    public void resetProcess() {
+        process = process == null ? new DUUIProcess() : process.reset();
+    }
+
     public void resetService() {
-        resetProcess();
-        documents.clear();
-        progress.set(0);
+        process.clearDocuments();
         _shutdownAtomic.set(false);
         isServiceStarted = isService;
     }
@@ -2707,11 +2672,13 @@ public class DUUIComposer {
     }
 
     public boolean isFinished() {
-        return isFinished.get();
+        return process.isFinished();
     }
 
     public void setFinished(boolean isFinished) {
-        this.isFinished.set(isFinished);
+        if (!isFinished) return;
+        logger.updateStatus(DUUIStatus.COMPLETED);
+        logger.trace("Process marked finished.");
     }
 
     public long getInstantiationDuration() {
@@ -2729,20 +2696,15 @@ public class DUUIComposer {
     }
 
     public int getProgress() {
-        return progress.get();
+        return process.progress();
     }
 
-    public AtomicInteger getProgressAtomic() { return progress;}
-
     public int getDocumentCount() {
-        return documents.size();
+        return process.getDocumentCount();
     }
 
     public void incrementProgress() {
-        int progress = this.progress.incrementAndGet();
-        addEvent(
-            DUUIEvent.Sender.COMPOSER,
-            String.format("%d Documents have been processed", progress));
+        addEvent(DUUIEvent.Sender.COMPOSER, "Document processed.", DebugLevel.INFO);
     }
 
     public boolean get_isServiceStarted() {

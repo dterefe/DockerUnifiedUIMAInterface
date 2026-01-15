@@ -1,8 +1,13 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring;
 
+import java.time.Duration;
+import java.util.Objects;
+
 import javax.annotation.Nonnull;
 
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.DebugLevel;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUIDocument;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContext.DocumentComponentProcessContext;
 
 /**
  * Lightweight logging facade used throughout DUUI.
@@ -29,6 +34,110 @@ public interface DUUILogger extends DUUIEventEmitter {
          */
         default DUUIEvent.Sender sender() {
             return DUUIEvent.Sender.SYSTEM;
+        }
+
+
+
+        interface MeasurementScope extends AutoCloseable {
+            void markError();
+            @Override void close();
+        }
+
+        MeasurementScope NOOP_MEASUREMENT = new MeasurementScope() {
+            @Override public void markError() {}
+            @Override public void close() {}
+        };
+        
+
+        default MeasurementScope measureStep(@Nonnull DUUIStatus step, Duration elapsed, String format, Object... args) {
+            Objects.requireNonNull(step);
+
+            updateStatus(step);
+
+            if (elapsed != null) {
+                measureStep(getContext(), elapsed, format, args);
+                return NOOP_MEASUREMENT;
+            } else {
+                return measureStep(getContext(), format, args);
+            }
+        }
+
+        default MeasurementScope measureStep(@Nonnull DUUIStatus step, String format, Object... args) {
+            return measureStep(step, null, format, args);
+        }
+
+        default MeasurementScope measureStep(DUUIContext ctx, String format, Object... args) {
+            return measureStep(ctx, String.format(format, args));
+        }
+
+        default MeasurementScope measureStep(DUUIContext ctx, final String message) {
+            var composer = DUUIContextTL.COMPOSER.get();
+
+            if (composer == null || composer.getProcess() == null || !composer.getProcess().hasProfiler()) {
+                return NOOP_MEASUREMENT;
+            }
+
+            String stepLabel = ctx.status().toString();
+            String  tmp = "(none)";
+            
+            if (ctx instanceof DocumentComponentProcessContext dctx) {
+                tmp = dctx.component().component().componentName();
+            }
+
+            final String componentLabel = tmp;
+
+            DUUIProfiler.Timer timer = DUUIProfiler.timeStep(stepLabel, componentLabel);
+            return new MeasurementScope() {
+                @Override public void markError() { DUUIProfiler.Timer.markError(stepLabel, componentLabel); }
+                @Override public void close() { 
+                    timer.close(); 
+                    String elapsedString = String.format(" %d ms", timer.elapsed().toMillis());
+                    debug(ctx.metric(timer.elapsed()), message + elapsedString);
+                }
+            };
+        }
+
+        default void measureStep(DUUIContext ctx, Duration elapsed, String format, Object... args) {
+            String message = String.format(format, args);
+
+            var composer = DUUIContextTL.COMPOSER.get();
+
+            if (composer == null || composer.getProcess() == null || !composer.getProcess().hasProfiler()) {
+                return;
+            }
+
+            String stepLabel = ctx.status().toString();
+            String  tmp = "(none)";
+            
+            if (ctx instanceof DocumentComponentProcessContext dctx) {
+                tmp = dctx.component().component().componentName();
+            }
+
+            final String componentLabel = tmp;
+
+            DUUIProfiler.timeStep(stepLabel, componentLabel, elapsed);
+
+            String elapsedString = String.format(" %d ms", elapsed.toMillis());
+            debug(ctx.metric(elapsed), message + elapsedString);
+
+        }
+
+        default MeasurementScope measureDocument(DUUIContext ctx, DUUIDocument document) {
+            var composer = DUUIContextTL.COMPOSER.get();
+
+            if (composer == null || composer.getProcess() == null || !composer.getProcess().hasProfiler()) {
+                return NOOP_MEASUREMENT;
+            }
+
+            DUUIProfiler.DocRun docRun = DUUIProfiler.docRun(document);
+            return new MeasurementScope() {
+                @Override public void markError() { docRun.markError(); }
+                @Override public void close() { 
+                    docRun.close(); 
+                    debug(ctx.metric(docRun.elapsed()), 
+                        "%s has been processed after %d ms", document, docRun.elapsed().toMillis());
+                }
+            };
         }
 
         /**

@@ -22,6 +22,7 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.TypeSystemUtil;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
@@ -168,6 +169,11 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
                     final String uuidCopy = uuid;
                     String prefix = String.format("[DUUIDockerDriver][%s][Replica %d/%d]", uuidCopy.substring(0, 5) + "...", iCopy, comp.getScale());
 
+                    AnnotatorDescriptor desc = get_annotator_descriptor(containerURL, _client, prefix);
+                    if (desc != null) {
+                        component.withAnnotatorDescriptor(desc);
+                    }
+
                     DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
                         containerURL,
                         jc,
@@ -175,7 +181,8 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
                         _client,
                         _luaContext,
                         skipVerification,
-                        prefix
+                        prefix,
+                        component
                     );
 
                     IDUUICommunicationLayer layer = get_communication_layer(requestContext);

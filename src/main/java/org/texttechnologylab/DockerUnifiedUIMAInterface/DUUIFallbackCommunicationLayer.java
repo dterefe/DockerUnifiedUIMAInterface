@@ -1,13 +1,11 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface;
 
-import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.cas.impl.XmiCasDeserializer;
 import org.apache.uima.cas.impl.XmiCasSerializer;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.TypeSystemUtil;
 import org.json.JSONObject;
-import org.luaj.vm2.LuaValue;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.xml.sax.SAXException;
@@ -15,7 +13,6 @@ import org.xml.sax.SAXException;
 import java.io.*;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Map;
 
 public class DUUIFallbackCommunicationLayer implements IDUUICommunicationLayer {
@@ -85,16 +82,5 @@ public class DUUIFallbackCommunicationLayer implements IDUUICommunicationLayer {
 
     public IDUUICommunicationLayer copy() {
         return new DUUIFallbackCommunicationLayer();
-    }
-
-    @Override
-    public ByteArrayInputStream merge(List<ByteArrayInputStream> results) {
-        return null;
-    }
-
-    @Override
-    public String myLuaTestMerging() {
-        // das ist eine Test-Funktion
-        return "Hallo ich bin in DUUIFallbackCommunicationLayer";
     }
 }

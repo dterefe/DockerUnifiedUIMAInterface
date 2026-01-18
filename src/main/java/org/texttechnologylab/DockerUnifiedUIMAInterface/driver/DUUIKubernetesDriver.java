@@ -26,6 +26,7 @@ import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.InvalidXMLException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
@@ -302,8 +303,10 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
             String kubeUrl = _interface.getHostUrl(port);
 
             try {
-
-
+                AnnotatorDescriptor desc = get_annotator_descriptor(kubeUrl, _client, prefix);
+                if (desc != null) {
+                    component.withAnnotatorDescriptor(desc);
+                }
 
                 DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
                     kubeUrl,
@@ -312,7 +315,8 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
                     _client,
                     _luaContext,
                     skipVerification,
-                    prefix
+                    prefix,
+                    component
                 );
 
                 logger().debug("%s Port %d", prefix, port);

@@ -17,6 +17,7 @@ import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUICompressionHelper;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
@@ -83,6 +84,11 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
                 endpointIndex++;
                 String prefix = comp.prefix(endpointIndex);
 
+                AnnotatorDescriptor descFromApi = get_annotator_descriptor(url, _client, prefix);
+                if (descFromApi != null) {
+                    component.withAnnotatorDescriptor(descFromApi);
+                }
+
                 DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
                     url,
                     jc,
@@ -90,7 +96,8 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
                     _client,
                     _luaContext,
                     skipVerification,
-                    prefix
+                    prefix,
+                    component
                 );
 
                 IDUUICommunicationLayer layer = get_communication_layer(requestContext);

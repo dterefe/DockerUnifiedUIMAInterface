@@ -10,6 +10,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.InvalidParameterException;
 import java.time.Duration;
@@ -23,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeoutException;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
@@ -36,6 +38,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationL
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUIMsgPckCommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
@@ -67,6 +71,9 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
     static int MAX_HTTP_RETRIES = 10;
     static Duration RETRY_DELAY = Duration.ofMillis(2000);
     static int BODY_PREVIEW_LIMIT = 500;
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    private record DUUIBinV1Signal(String kind, String format, int version) {}
 
     @Override
     public void setLogger(DUUILogger delegate) {
@@ -246,7 +253,8 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
             HttpClient client,
             DUUILuaContext luaContext,
             boolean skipVerification,
-            String logPrefix) {
+            String logPrefix,
+            DUUIPipelineComponent pipelineComponent) {
 
         protected DUUICommunicationLayerRequestContext {
             Objects.requireNonNull(url, "url");
@@ -254,6 +262,40 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
             Objects.requireNonNull(timeout, "timeout");
             Objects.requireNonNull(client, "client");
             Objects.requireNonNull(logPrefix, "logPrefix");
+            Objects.requireNonNull(pipelineComponent, "pipelineComponent");
+        }
+    }
+
+    /**
+     * Best-effort fetch of the DUUI-BIN input/output descriptor for REST components.
+     *
+     * Returns {@code null} for non-200 responses (incl. 404) and must not fail instantiation.
+     */
+    public AnnotatorDescriptor get_annotator_descriptor(
+            String url,
+            HttpClient client,
+            String prefix) {
+        try {
+            Instant deadline = Instant.now().plus(_timeout);
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_DETAILS_INPUT_OUTPUT))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .timeout(_timeout)
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> resp = sendWithRetries(client, request, deadline, _timeout, prefix);
+            if (resp.statusCode() != 200) {
+                return null;
+            }
+            return OBJECT_MAPPER.readValue(resp.body(), AnnotatorDescriptor.class);
+        } catch (Exception e) {
+            logger().debug(
+                    DUUIContexts.exception(e),
+                    "%s Failed to retrieve annotator descriptor, continuing without it: %s",
+                    prefix,
+                    e.getMessage()
+            );
+            return null;
         }
     }
     
@@ -294,34 +336,50 @@ public abstract class DUUIRestDriver<T extends DUUIRestDriver<T, Ic>, Ic extends
 
                 switch (resp.statusCode()) {
                     case 200 -> {
-                        String body2 = new String(resp.body(), Charset.defaultCharset());
+                        byte[] body = resp.body();
+                        String utf8 = new String(body, StandardCharsets.UTF_8).trim();
+
+                        // DUUI-BIN signal is JSON; legacy/custom communication layers are plain-text Lua.
+                        if (utf8.startsWith("{")) {
+                            DUUIBinV1Signal sig = OBJECT_MAPPER.readValue(body, DUUIBinV1Signal.class);
+                            if ("duui-bin-v1".equals(sig.kind()) && "messagepack".equals(sig.format()) && sig.version() == 1) {
+                                AnnotatorDescriptor desc = context.pipelineComponent().getAnnotatorDescriptor();
+                                if (desc == null) {
+                                    throw new IllegalStateException(
+                                            "duui-bin-v1 requires an AnnotatorDescriptor (override or " +
+                                                    DUUIComposer.V1_COMPONENT_ENDPOINT_DETAILS_INPUT_OUTPUT +
+                                                    ")"
+                                    );
+                                }
+                                layer = new DUUIMsgPckCommunicationLayer(desc, null);
+                                communicationLayerRetrieved = true;
+                                break OUTER;
+                            }
+                            throw new IllegalStateException("Unknown communication layer JSON: " + utf8);
+                        }
+
+                        String lua = new String(body, Charset.defaultCharset());
                         try {
                             log.info("%s Component lua communication layer, loading...%n", prefix);
+                            log.debug(DUUIContexts.lua(lua), "%s Received lua file body", prefix);
 
-                            log.debug(
-                                DUUIContexts.lua(body2),
-                                "%s Received lua file body", prefix
-                            );
-                            
-                            IDUUICommunicationLayer lua_com = new DUUILuaCommunicationLayer(body2, "requester", context.luaContext());
-                            layer = lua_com;
+                            layer = new DUUILuaCommunicationLayer(lua, "requester", context.luaContext());
                             log.info("%s Component lua communication layer, loaded.%n", prefix);
                             communicationLayerRetrieved = true;
                             break OUTER;
                         } catch (Exception e) {
                             fatal_error = true;
                             CommunicationLayerException nr = new CommunicationLayerException(
-                                format("%s Component provided a lua script which is not runnable.",
-                                prefix
-                            ), e);
-
+                                    format("%s Component provided a lua script which is not runnable.", prefix),
+                                    e
+                            );
                             log.error(DUUIContexts.exception(nr), "%s: %s", nr.getCause(), nr.getMessage());
-
                             throw nr;
                         }
                     }
                     case 404 -> {
                         log.debug("%s Component provided no own communication layer implementation using fallback.%n", prefix);
+                        layer = new DUUIFallbackCommunicationLayer();
                         communicationLayerRetrieved = true;
                         break OUTER;
                     }

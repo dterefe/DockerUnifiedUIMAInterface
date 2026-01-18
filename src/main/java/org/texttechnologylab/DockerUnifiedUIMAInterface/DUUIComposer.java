@@ -915,6 +915,7 @@ public class DUUIComposer {
     public static final String V1_COMPONENT_ENDPOINT_PROCESS_WEBSOCKET = "/v1/process_websocket";
     public static final String V1_COMPONENT_ENDPOINT_TYPESYSTEM = "/v1/typesystem";
     public static final String V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER = "/v1/communication_layer";
+    public static final String V1_COMPONENT_ENDPOINT_DETAILS_INPUT_OUTPUT = "/v1/details/input_output";
 
     public enum DebugLevel {
         TRACE,

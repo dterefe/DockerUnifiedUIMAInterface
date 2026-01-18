@@ -1,20 +1,11 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface;
 
-import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
-import org.luaj.vm2.LuaError;
-import org.luaj.vm2.LuaTable;
-import org.luaj.vm2.LuaValue;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
-import org.xml.sax.SAXException;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -63,14 +54,5 @@ public interface IDUUICommunicationLayer {
    * @return
    */
   public IDUUICommunicationLayer copy();
-
-  /**
-   *
-   * @param results
-   * @return
-   */
-  public ByteArrayInputStream merge(List<ByteArrayInputStream> results);
-
-  String myLuaTestMerging();
 
 }

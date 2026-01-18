@@ -26,6 +26,7 @@ import org.apache.uima.fit.factory.AnalysisEngineFactory;
 import org.apache.uima.util.InvalidXMLException;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
 import org.xml.sax.SAXException;
 
@@ -38,6 +39,8 @@ import com.google.common.collect.ImmutableList;
 public class DUUIPipelineComponent {
     private HashMap<String, String> _options;
     private HashMap<String,String> _parameters;
+
+    private AnnotatorDescriptor annotatorDescriptor;
 
     private AnalysisEngineDescription _engine;
     private String _finalizedEncoded;
@@ -83,6 +86,12 @@ public class DUUIPipelineComponent {
     private static String sourceView = "sourceView";
     private static String targetView = "targetView";
     private static String timeout = "timeout";
+
+    // reserved for future scheduling semantics (currently unused)
+    private int tier = 0;
+
+    // reserved for future selection semantics (currently unused)
+    private String selectionType;
 
     private String getVersion() throws URISyntaxException, IOException {
         ClassLoader classLoader = DUUIPipelineComponent.class.getClassLoader();
@@ -570,6 +579,33 @@ public class DUUIPipelineComponent {
     public DUUIPipelineComponent withTimeout(long lLong) {
         _parameters.put(timeout, String.valueOf(lLong));
         return this;
+    }
+
+    public DUUIPipelineComponent withAnnotatorDescriptor(AnnotatorDescriptor descriptor) {
+        this.annotatorDescriptor = descriptor;
+        return this;
+    }
+
+    public AnnotatorDescriptor getAnnotatorDescriptor() {
+        return annotatorDescriptor;
+    }
+
+    public DUUIPipelineComponent withTier(int tier) {
+        this.tier = tier;
+        return this;
+    }
+
+    public int getTier() {
+        return tier;
+    }
+
+    public DUUIPipelineComponent withSelectionType(String selectionType) {
+        this.selectionType = selectionType;
+        return this;
+    }
+
+    public String getSelectionType() {
+        return selectionType;
     }
 
     public static DUUIPipelineComponent fromJson(String json) throws URISyntaxException, IOException {

@@ -128,7 +128,7 @@ public interface IDUUIDriverInterface {
      * Builder for DUUIPipelineComponent.
      */
     abstract static class ComponentBuilder<Builder extends ComponentBuilder<Builder>> {
-        final protected DUUIPipelineComponent _component;
+        protected final DUUIPipelineComponent _component;
 
         protected ComponentBuilder(DUUIPipelineComponent component) {
             _component = component;
@@ -226,6 +226,34 @@ public interface IDUUIDriverInterface {
         @SuppressWarnings("unchecked")
         public Builder withTargetView(String targetView) {
             _component.withTargetView(targetView);
+            return (Builder) this;
+        }
+
+        /**
+         * Provide an annotator descriptor override for DUUI-BIN components.
+         * This may be overwritten by a component-provided descriptor at instantiation time.
+         */
+        @SuppressWarnings("unchecked")
+        public Builder withAnnotatorDescriptor(org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor descriptor) {
+            _component.withAnnotatorDescriptor(descriptor);
+            return (Builder) this;
+        }
+
+        /**
+         * Reserved for future selection semantics (currently unused).
+         */
+        @SuppressWarnings("unchecked")
+        public Builder withSelectionType(String selectionType) {
+            _component.withSelectionType(selectionType);
+            return (Builder) this;
+        }
+
+        /**
+         * Reserved for future scheduling semantics (currently unused).
+         */
+        @SuppressWarnings("unchecked")
+        public Builder withTier(int tier) {
+            _component.withTier(tier);
             return (Builder) this;
         }
 

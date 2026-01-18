@@ -3,6 +3,7 @@ package org.texttechnologylab.DockerUnifiedUIMAInterface.tools;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Locale;
 
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.commons.compress.compressors.CompressorOutputStream;
@@ -34,6 +35,25 @@ public class SerDeUtils {
             ThreadLocal.withInitial(() -> new ByteArrayOutputStream(1024 * 1024));
 
     private SerDeUtils() {
+    }
+
+    /**
+     * Match a mime type against a pattern supporting {@code |} alternatives and {@code major/*} wildcards.
+     * Ignores mime parameters (everything after {@code ;}).
+     */
+    public static boolean mimeMatches(String pattern, String actual) {
+        if (pattern == null || pattern.isBlank() || actual == null || actual.isBlank()) return false;
+        String a = actual.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+        for (String raw : pattern.split("\\|")) {
+            String p = raw.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+            if (p.endsWith("/*")) {
+                String major = p.substring(0, p.length() - 2);
+                if (a.startsWith(major + "/")) return true;
+            } else if (p.equals(a)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static final class XmiSharedIo {

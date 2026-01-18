@@ -20,6 +20,7 @@ import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.ClassScopedLogger;
@@ -170,6 +171,10 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
                     return null;
                 }
 
+                AnnotatorDescriptor desc = get_annotator_descriptor(swarmUrl, _client, prefix);
+                if (desc != null) {
+                    component.withAnnotatorDescriptor(desc);
+                }
 
                 DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
                     swarmUrl,
@@ -178,7 +183,8 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
                     _client,
                     _luaContext,
                     skipVerification,
-                    prefix
+                    prefix,
+                    component
                 );
 
                 layer = get_communication_layer(requestContext);

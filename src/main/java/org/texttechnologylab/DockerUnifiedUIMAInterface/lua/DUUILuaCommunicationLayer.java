@@ -114,19 +114,6 @@ public class DUUILuaCommunicationLayer implements IDUUICommunicationLayer {
         return new DUUILuaCommunicationLayer(_script,_origin,_globalContext);
     }
 
-    @Override
-    public ByteArrayInputStream merge(List<ByteArrayInputStream> results) {
-        return (ByteArrayInputStream) CoerceLuaToJava.coerce(_file.call("merge", CoerceJavaToLua.coerce(results)), ByteArrayInputStream.class);
-    }
-
-    @Override
-    public String myLuaTestMerging() {
-        // Die Funktion von Lua wird hier aufgerufen
-        _file.call("merging",null, null);
-        return "merging.................. ";
-    }
-
-
     private static LuaTable createLuaTableFromParameters(Map<String, String> parameters) {
         LuaTable params = new LuaTable();
         if (parameters != null) {

@@ -25,6 +25,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDockerDriver.ComponentInstance;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.model.AnnotatorDescriptor;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIContexts;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
@@ -314,6 +315,11 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                             final String uuidCopy = uuid;
                             String prefix = comp.prefix(iCopy);
 
+                            AnnotatorDescriptor desc = get_annotator_descriptor(containerUrl, _client, prefix);
+                            if (desc != null) {
+                                component.withAnnotatorDescriptor(desc);
+                            }
+
                             DUUICommunicationLayerRequestContext requestContext = new DUUICommunicationLayerRequestContext(
                                 containerUrl,
                                 jc,
@@ -321,7 +327,8 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
                                 _client,
                                 _luaContext,
                                 skipVerification,
-                                prefix
+                                prefix,
+                                component
                             );
 
                             IDUUICommunicationLayer layer = get_communication_layer(requestContext);

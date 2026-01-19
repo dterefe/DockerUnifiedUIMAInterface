@@ -8,6 +8,7 @@ import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.model.File;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import com.google.api.services.drive.model.FileList;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
@@ -164,8 +165,14 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
 
         document.setName(file.getName());
         document.setPath(file.getId());
+        String mimeType = file.getMimeType();
+        if (mimeType != null && !mimeType.isBlank()) {
+            document.setMimeType(mimeType.trim());
+        }
         document.setSize(data.length);
         document.setBytes(data);
+
+        SerDeUtils.ensureCanonicalMimeType(document);
 
         return document;
     }
@@ -260,7 +267,7 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
                 "" : String.format("and fileExtension = '%s'", fileExtension.replace(".", ""));
         FileList result = service.files().list()
                 .setQ(searchPath + " and mimeType != 'application/vnd.google-apps.folder' " + fileExtension_)
-                .setFields("files(id, name, size)")
+            .setFields("files(id, name, size, mimeType, isAppAuthorized)")
                 .execute();
 
         List<File> files =  result.getFiles();
@@ -272,7 +279,14 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
         } else {
             documents = files.stream()
                 .filter(File::getIsAppAuthorized)
-                .map(f -> new DUUIDocument(f.getName(), f.getId(), f.getSize()))
+                .map(f -> {
+                    DUUIDocument d = new DUUIDocument(f.getName(), f.getId(), f.getSize());
+                    String mimeType = f.getMimeType();
+                    if (mimeType != null && !mimeType.isBlank()) {
+                        d.setMimeType(mimeType.trim());
+                    }
+                    return d;
+                })
                 .collect(Collectors.toList());
         }
 

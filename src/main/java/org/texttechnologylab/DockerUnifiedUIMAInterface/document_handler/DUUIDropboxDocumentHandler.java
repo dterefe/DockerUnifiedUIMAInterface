@@ -4,6 +4,7 @@ import com.dropbox.core.*;
 import com.dropbox.core.oauth.DbxCredential;
 import com.dropbox.core.util.IOUtil;
 import com.dropbox.core.v2.DbxClientV2;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import com.dropbox.core.v2.files.*;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
@@ -226,6 +227,8 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
             document.setPath(metadata.getPathLower());
             document.setBytes(fileContentOutput.toByteArray());
             document.setSize(metadata.getSize());
+
+            SerDeUtils.ensureCanonicalMimeType(document);
 
             return document;
         } catch (DbxException e) {

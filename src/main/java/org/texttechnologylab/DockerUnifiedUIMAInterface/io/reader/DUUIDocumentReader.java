@@ -1,14 +1,17 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -39,6 +42,23 @@ import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 
 public class DUUIDocumentReader implements DUUICollectionReader {
 
+    /**
+     * Configuration options for document deserialization behavior.
+     */
+    public record DeserializationOptions(boolean repairInvalidXmi) {
+        public DeserializationOptions {
+            // Allow default constructor to proceed
+        }
+    }
+
+    /**
+     * Context passed to handlers during deserialization, enabling handler-specific logic
+     * and access to the document reader and composition context.
+     */
+    public record DeserializationContext(DUUIComposer composer, DUUIDocumentReader reader, DeserializationOptions options) {
+        // Allow default constructor to proceed
+    }
+
     private final long maximumMemory;
     private final AtomicInteger progress;
     private final AtomicLong currentMemorySize = new AtomicLong(0);
@@ -49,12 +69,14 @@ public class DUUIDocumentReader implements DUUICollectionReader {
     private List<DUUIDocument> preProcessor;
     private final Builder builder;
     private final DUUIComposer composer;
+    private final DeserializationOptions options;
     private final int initial;
     private final int skipped;
 
     private DUUIDocumentReader(Builder builder) {
         this.builder = builder;
         this.composer = builder.composer;
+        this.options = builder.deserializationOptions;
 
         // restoreFromSavePath(); This needs clarification.
         try {
@@ -254,55 +276,55 @@ public class DUUIDocumentReader implements DUUICollectionReader {
 
         DUUIDocument document = pollDocument();
         if (document == null) return null;
+
         document.setStartedAt();
 
-        Timer timer = new Timer();
+        // Ensure mimeType exists (handlers should set it, but keep safe fallback)
+        if (document.getMimeType() == null || document.getMimeType().isBlank()) {
+            String inferred = SerDeUtils.inferMimeTypeFromPathOrDefault(document);
+            document.setMimeType(inferred);
+        }
 
-        document.setStatus(DUUIStatus.DECODE);
-        
-        timer.start();
-        InputStream decodedDocument = decodeDocument(document, timer);
-        timer.stop();
-
-        document.setDurationDecode(timer.getDuration());
-
-        timer.restart();
+        Timer deserializeTimer = new Timer();
+        deserializeTimer.start();
 
         document.setStatus(DUUIStatus.DESERIALIZE);
-
         composer.getLogger().info(
             DUUIContexts.reader(this, document).status(DUUIStatus.DESERIALIZE),
-            "Deserializing %s ",
+            "Deserializing %s",
             document.getPath()
         );
 
-        if (decodedDocument != null) {
-            try {
-                SerDeUtils.XmiSharedIo.deserialize(decodedDocument, pCas.getCas(), true);
-            } catch (Exception e) {
-                composer.getLogger().warn(
-                    DUUIContexts.reader(this, document)
-                        .exception(e)
-                        .status(DUUIStatus.DESERIALIZE),
-                    "Failed to deserialize XMI for document %s, falling back to plain text: %s",
-                    document.getPath(),
-                    e.toString()
-                );
-                pCas.setDocumentText(document.getText().trim());
-            }
-        } else {
-            composer.getLogger().warn(
-                DUUIContexts.reader(this, document).status(DUUIStatus.DESERIALIZE),
-                "Decoded content for document %s is unavailable, using raw text representation if present.",
-                document.getPath()
+        try {
+            DeserializationContext ctx = new DeserializationContext(composer, this, options);
+            builder.inputHandler.deserialize(document, pCas, ctx);
+        } catch (Exception e) {
+            composer.getLogger().error(
+                DUUIContexts.reader(this, document)
+                    .exception(e)
+                    .status(DUUIStatus.DESERIALIZE),
+                "Failed to deserialize %s: %s%n%s",
+                document.getPath(),
+                e,
+                ExceptionUtils.getStackTrace(e)
             );
-            pCas.setDocumentText(document.getText().trim());
+
+            // Keep failure handling minimal: only fall back to plain text for text/*
+            if (document.isText()) {
+                try {
+                    pCas.setSofaDataString(document.getText().trim(), "text/plain");
+                } catch (Exception ignored) {
+                    pCas.setSofaDataString("", "text/plain");
+                }
+            } else {
+                pCas.setSofaDataString("", "text/plain");
+            }
+        } finally {
+            deserializeTimer.stop();
         }
 
-        timer.stop();
-        
-        document.setDurationDeserialize(timer.getDuration());
-        Duration deserializeDuration = Duration.ofMillis(timer.getDuration());
+        document.setDurationDeserialize(deserializeTimer.getDuration());
+        Duration deserializeDuration = Duration.ofMillis(deserializeTimer.getDuration());
         composer.getLogger().debug(
             DUUIContexts.reader(this, document)
                 .metric(deserializeDuration)
@@ -326,13 +348,13 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             }
         }
 
-        // Initialize marker and baseline annotation records after deserialization
         document.initializeMarker(pCas);
 
         if (builder.language != null && !builder.language.isEmpty()) {
             pCas.setDocumentLanguage(builder.language);
         }
 
+        // keep memory bounded: clear bytes after CAS has been created
         document.setBytes(new byte[]{});
 
         return document;
@@ -626,6 +648,7 @@ public class DUUIDocumentReader implements DUUICollectionReader {
         private boolean addMetadata = true;
         private boolean checkTarget = false;
         private boolean recursive = false;
+        private DeserializationOptions deserializationOptions = new DeserializationOptions(true);
 
         public Builder(DUUIComposer composer) {
             this.composer = composer;
@@ -705,6 +728,11 @@ public class DUUIDocumentReader implements DUUICollectionReader {
             return this;
         }
 
+        public Builder withDeserializationOptions(DeserializationOptions options) {
+            this.deserializationOptions = options;
+            return this;
+        }
+
     }
 
     public static List<DUUIDocument> loadDocumentsFromPath(String path, String fileExtension, boolean recursive) throws IOException {
@@ -716,5 +744,81 @@ public class DUUIDocumentReader implements DUUICollectionReader {
                 .map(DUUIDocument::getPath)
                 .collect(Collectors.toList())
         );
+    }
+
+    /**
+     * Standard deserialization logic: handle XMI (with optional repair), text, or binary formats.
+     * This is the default implementation used when handlers don't override deserialize().
+     *
+     * @param document the DUUIDocument to deserialize
+     * @param cas the JCas object to populate
+     * @param ctx deserialization context with options and composer reference
+     * @throws Exception if deserialization fails and no fallback is available
+     */
+    public void standardDeserialize(DUUIDocument document, JCas cas, DeserializationContext ctx) throws Exception {
+        // XMI format
+        if (document.isXmi()) {
+            document.setStatus(DUUIStatus.DECODE);
+
+            Timer decodeTimer = new Timer();
+            decodeTimer.start();
+            InputStream decoded = DUUIDocumentDecoder.decode(document);
+            decodeTimer.stop();
+
+            document.setDurationDecode(decodeTimer.getDuration());
+            composer.getLogger().info(
+                DUUIContexts.reader(this, document)
+                    .metric(Duration.ofMillis(decodeTimer.getDuration()))
+                    .status(DUUIStatus.DECODE),
+                "Decoded document %s after %d ms",
+                document.getPath(),
+                decodeTimer.getDuration()
+            );
+
+            document.setStatus(DUUIStatus.DESERIALIZE);
+
+            try (decoded) {
+                if (!ctx.options().repairInvalidXmi()) {
+                    // Simple path: deserialize without repair attempts
+                    SerDeUtils.XmiSharedIo.deserialize(decoded, cas.getCas(), true);
+                    return;
+                }
+
+                // Repair-enabled path: read all bytes, attempt deserialize, repair on failure
+                byte[] decodedBytes = decoded.readAllBytes();
+                try {
+                    SerDeUtils.XmiSharedIo.deserialize(new ByteArrayInputStream(decodedBytes), cas.getCas(), true);
+                } catch (Exception first) {
+                    String xml = new String(decodedBytes, StandardCharsets.UTF_8);
+                    Optional<InputStream> repaired = SerDeUtils.tryRepairXmi(first, xml);
+                    if (repaired.isEmpty()) throw first;
+                    try (InputStream repairedStream = repaired.get()) {
+                        SerDeUtils.XmiSharedIo.deserialize(repairedStream, cas.getCas(), true);
+                        composer.getLogger().info(
+                            DUUIContexts.reader(this, document).status(DUUIStatus.DESERIALIZE),
+                            "Successfully recovered document %s after XMI repair",
+                            document.getPath()
+                        );
+                    }
+                }
+            }
+            return;
+        }
+
+        // Text format (text/plain, text/html, etc.)
+        if (document.isText()) {
+            cas.setSofaDataString(document.getText(), "text/plain");
+            return;
+        }
+
+        // Binary format: store as binary sofa with appropriate MIME type
+        byte[] bytes = document.getBytes() == null ? new byte[0] : document.getBytes();
+        if (bytes.length > 0) {
+            org.apache.uima.jcas.cas.ByteArray sofa = new org.apache.uima.jcas.cas.ByteArray(cas, bytes.length);
+            sofa.copyFromArray(bytes, 0, 0, bytes.length);
+            cas.setSofaDataArray(sofa, document.getMimeType());
+        } else {
+            cas.setSofaDataString("", "text/plain");
+        }
     }
 }

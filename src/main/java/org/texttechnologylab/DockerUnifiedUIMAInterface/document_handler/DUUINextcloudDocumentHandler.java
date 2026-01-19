@@ -21,6 +21,7 @@ import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.config.AuthSchemes;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
@@ -322,6 +323,20 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
             throw new RuntimeException("Downloading following file failed: " + path, e);
         }
 
+        // Best-effort: ask WebDAV for content-type of this file
+        try {
+            List<DavResource> res = listFolderContent(path, 0);
+            if (res != null && !res.isEmpty()) {
+                String mimeType = res.get(0).getContentType();
+                if (mimeType != null && !mimeType.isBlank()) {
+                    document.setMimeType(mimeType.trim());
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        SerDeUtils.ensureCanonicalMimeType(document);
+
         return document;
     }
 
@@ -345,7 +360,12 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
                     long size = fsize != null && !fsize.isEmpty() ? Long.parseLong(fsize) : 0;
                     String fpath = removeWebDavFromPath(res.getPath());
 
-                    return new DUUIDocument(res.getDisplayName(), fpath, size);
+                    DUUIDocument d = new DUUIDocument(res.getDisplayName(), fpath, size);
+                    String mimeType = res.getContentType();
+                    if (mimeType != null && !mimeType.isBlank()) {
+                        d.setMimeType(mimeType.trim());
+                    }
+                    return d;
                 })
                 .collect(Collectors.toList())).get();
         } catch (InterruptedException | ExecutionException e) {
@@ -367,6 +387,7 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
             Set<QName> props= new HashSet<>();
             props.add(new QName("DAV:", "displayname", "d"));
             props.add(new QName("http://owncloud.org/ns", "size", "oc"));
+            props.add(new QName("DAV:", "getcontenttype", "d"));
 
 //            System.out.println("Searching for folder " + path);
 //            long startTime = System.currentTimeMillis();

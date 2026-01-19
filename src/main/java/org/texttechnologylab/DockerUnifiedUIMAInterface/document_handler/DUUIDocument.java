@@ -15,6 +15,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogContex
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILogger;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUILoggers;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIProcess;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.bson.Document;
 
 import java.io.ByteArrayInputStream;
@@ -22,11 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -49,6 +46,7 @@ public class DUUIDocument {
         private String path;
         private long size;
         private byte[] bytes;
+        private String mimeType = "";
         private final AtomicInteger progess = new AtomicInteger(0);
         private long durationDecode = 0L;
         private long durationDeserialize = 0L;
@@ -139,7 +137,8 @@ public class DUUIDocument {
                     components.entrySet().stream().collect(
                     Collectors.toMap(Map.Entry::getKey,
                     e -> e.getValue().toDocument()
-                )));
+                )))
+                .append("mime_type", mimeType);
 
             return out;
         }
@@ -168,20 +167,16 @@ public class DUUIDocument {
     }
 
     public DUUIDocument(String name, String path, long size) {
-        state.name = name;
-        state.path = path;
+        this(name, path, new byte[0]);
         state.size = size;
-        long now = Instant.now().toEpochMilli();
-        state.initStatus(DUUIStatus.WAITING, now);
-        touch(now);
     }
 
     public DUUIDocument(String name, String path) {
-        state.name = name;
-        state.path = path;
-        long now = Instant.now().toEpochMilli();
-        state.initStatus(DUUIStatus.WAITING, now);
-        touch(now);
+        this(name, path, new byte[0]);
+    }
+
+    public DUUIDocument(String name, String path, JCas jCas) {
+        this(name, path, SerDeUtils.getBytes(jCas));
     }
 
     public DUUIDocument(String name, String path, byte[] bytes) {
@@ -189,27 +184,6 @@ public class DUUIDocument {
         state.path = path;
         state.bytes = bytes;
         state.size = bytes.length;
-        long now = Instant.now().toEpochMilli();
-        state.initStatus(DUUIStatus.WAITING, now);
-        touch(now);
-    }
-
-    public DUUIDocument(String name, String path, JCas jCas) {
-        if (jCas.getDocumentText() != null) {
-            state.bytes = jCas.getDocumentText().getBytes(StandardCharsets.UTF_8);
-        }
-        else if (jCas.getSofaDataStream() != null) {
-            try {
-                state.bytes = jCas.getSofaDataStream().readAllBytes();
-            }
-            catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-
-        state.name = name;
-        state.path = path;
-        state.size = state.bytes == null ? 0 : state.bytes.length;
         long now = Instant.now().toEpochMilli();
         state.initStatus(DUUIStatus.WAITING, now);
         touch(now);
@@ -265,6 +239,38 @@ public class DUUIDocument {
         int extensionStartIndex = state.name.lastIndexOf('.');
         if (extensionStartIndex == -1) return "";
         return state.name.substring(extensionStartIndex);
+    }
+
+    public String getMimeType() {
+        return state.mimeType;
+    }
+
+    public void setMimeType(String mimeType) {
+        state.mimeType = mimeType == null ? "" : mimeType;
+        touch();
+    }
+
+    public boolean isText() {
+        String mime = getMimeType();
+        return SerDeUtils.mimeMatches(SerDeUtils.MimePrimitive.TEXT, mime);
+    }
+
+    public boolean isXmi() {
+        String name = getName() == null ? "" : getName();
+        String mime = getMimeType() == null ? "" : getMimeType();
+
+        return SerDeUtils.isXmiPath(name) || SerDeUtils.isMimeXmi(mime);
+    }
+
+    public boolean isCompressed() {
+        String ext = getFileExtension() == null ? "" : getFileExtension();
+        String mime = getMimeType() == null ? "" : getMimeType();
+
+        return SerDeUtils.isCompressedExtension(ext) || SerDeUtils.isMimeCompressed(mime);
+    }
+
+    public boolean isUncompressed() {
+        return !isCompressed();
     }
 
     public String getPath() {
@@ -510,6 +516,9 @@ public class DUUIDocument {
     }
 
     private AnnotationState state(TOP top) {
+        if (marker == null) {
+            return AnnotationState.BASELINE;
+        }
         return marker.isNew(top)
             ? AnnotationState.NEW : marker.isModified(top)
             ? AnnotationState.MODIFIED :

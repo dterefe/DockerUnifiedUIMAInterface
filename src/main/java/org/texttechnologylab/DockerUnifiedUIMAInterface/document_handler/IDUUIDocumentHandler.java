@@ -6,6 +6,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+import org.apache.uima.jcas.JCas;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader;
+
 public interface IDUUIDocumentHandler {
 
     /**
@@ -85,6 +88,22 @@ public interface IDUUIDocumentHandler {
                 })
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Deserialize document content into a JCas object. Default implementation delegates to
+     * the document reader's standardDeserialize method, which handles XMI, text, and binary formats.
+     *
+     * Handlers can override this method to provide custom deserialization logic (e.g., HTML parsing,
+     * custom compression, or metadata extraction).
+     *
+     * @param document the DUUIDocument to deserialize
+     * @param cas the JCas object to populate
+     * @param ctx deserialization context containing options and reader reference
+     * @throws Exception if deserialization fails
+     */
+    default void deserialize(DUUIDocument document, JCas cas, DUUIDocumentReader.DeserializationContext ctx) throws Exception {
+        ctx.reader().standardDeserialize(document, cas, ctx);
     }
 
     default void shutdown() {

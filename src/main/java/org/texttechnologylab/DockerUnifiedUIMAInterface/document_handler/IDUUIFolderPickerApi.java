@@ -1,5 +1,7 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.DUUIDirectoryNode;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -8,6 +10,30 @@ import java.util.stream.Collectors;
 
 public interface IDUUIFolderPickerApi {
 
+    /**
+     * Get the configured max concurrency used by this provider while building directory trees.
+     * Providers can override to expose current configuration.
+     */
+    default int getDirectoryTreeMaxConcurrency() {
+        return 32;
+    }
+
+    /**
+     * Configure max concurrency used by this provider while building directory trees.
+     * Implementations should clamp values <= 0 to a safe default.
+     * Default is a no-op for providers that don't support configuration.
+     */
+    default void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        // no-op by default
+    }
+
+    /**
+     * New folder picker API: unified, rich tree model.
+     * Providers are responsible for honoring maxDepth/includeFiles.
+     */
+    DUUIDirectoryNode getDirectoryTree(int maxDepth, boolean includeFiles);
+
+    @Deprecated
     public static class DUUIFolder {
 
         String id;
@@ -53,6 +79,7 @@ public interface IDUUIFolderPickerApi {
         }
     }
 
+    @Deprecated
     DUUIFolder getFolderStructure();
 
 }

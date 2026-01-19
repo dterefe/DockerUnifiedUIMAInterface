@@ -6,13 +6,18 @@ import com.dropbox.core.util.IOUtil;
 import com.dropbox.core.v2.DbxClientV2;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import com.dropbox.core.v2.files.*;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.DUUIDirectoryNode;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.FolderStructureService;
 
 import java.io.*;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.stream.Collectors;
 
 
@@ -23,6 +28,8 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
     private final DbxClientV2 client;
     private WriteMode writeMode = WriteMode.ADD;
     private boolean debug;
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
 
     /**
@@ -271,11 +278,15 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
             .filter(metadata
                 -> metadata.getPathLower().endsWith(fileExtension)
                 && metadata instanceof FileMetadata) // Only FileMetadata includes the size since folders have no size.
-            .map(metadata
-                -> new DUUIDocument(
-                metadata.getName(),
-                metadata.getPathLower(),
-                ((FileMetadata) metadata).getSize()))
+            .map(metadata -> {
+                DUUIDocument doc = new DUUIDocument(
+                    metadata.getName(),
+                    metadata.getPathLower(),
+                    ((FileMetadata) metadata).getSize()
+                );
+                SerDeUtils.ensureCanonicalMimeType(doc);
+                return doc;
+            })
             .collect(Collectors.toList());
 
     }
@@ -283,6 +294,162 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
     @Override
     public DUUIFolder getFolderStructure() {
         return getFolderStructure("", "Files");
+    }
+
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(int maxDepth, boolean includeFiles) {
+        try (ExecutorService executor = FolderStructureService.newVirtualThreadExecutor()) {
+            Semaphore semaphore = FolderStructureService.newSemaphore(getDirectoryTreeMaxConcurrency());
+            return getDirectoryTree("", "Files", 0, maxDepth, includeFiles, executor, semaphore);
+        }
+    }
+
+    private DUUIDirectoryNode getDirectoryTree(
+        String apiPath,
+        String name,
+        int depth,
+        int maxDepth,
+        boolean includeFiles,
+        ExecutorService executor,
+        Semaphore semaphore
+    ) {
+        String raw = (apiPath == null || apiPath.isEmpty()) ? "/" : apiPath;
+
+        if (maxDepth >= 0 && depth >= maxDepth) {
+            return DUUIDirectoryNode.from(
+                "dropbox",
+                raw,
+                name,
+                DUUIDirectoryNode.Type.DIR,
+                depth,
+                true,
+                null,
+                "inode/directory",
+                0L,
+                List.of()
+            );
+        }
+
+        ListFolderResult result;
+        try {
+            result = client.files().listFolderBuilder(apiPath).withRecursive(false).start();
+        } catch (DbxException e) {
+            return DUUIDirectoryNode.from(
+                "dropbox",
+                raw,
+                name,
+                DUUIDirectoryNode.Type.DIR,
+                depth,
+                false,
+                null,
+                "inode/directory",
+                0L,
+                List.of()
+            );
+        }
+
+        List<Metadata> all = new ArrayList<>(result.getEntries());
+        while (result.getHasMore()) {
+            try {
+                result = client.files().listFolderContinue(result.getCursor());
+            } catch (DbxException e) {
+                break;
+            }
+            all.addAll(result.getEntries());
+        }
+
+        List<FolderMetadata> folders = all.stream()
+            .filter(m -> m instanceof FolderMetadata)
+            .map(m -> (FolderMetadata) m)
+            .toList();
+
+        List<FileMetadata> files = includeFiles
+            ? all.stream()
+                .filter(m -> m instanceof FileMetadata)
+                .map(m -> (FileMetadata) m)
+                .toList()
+            : List.of();
+
+        List<DUUIDirectoryNode> children = new ArrayList<>(folders.size() + files.size());
+
+        CompletionService<DUUIDirectoryNode> cs = new ExecutorCompletionService<>(executor);
+        int submitted = 0;
+        for (FolderMetadata fm : folders) {
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            cs.submit(() -> {
+                try {
+                    return getDirectoryTree(
+                        fm.getPathLower(),
+                        fm.getName(),
+                        depth + 1,
+                        maxDepth,
+                        includeFiles,
+                        executor,
+                        semaphore
+                    );
+                } finally {
+                    semaphore.release();
+                }
+            });
+            submitted++;
+        }
+
+        for (int i = 0; i < submitted; i++) {
+            try {
+                DUUIDirectoryNode child = cs.take().get();
+                if (child != null) {
+                    children.add(child);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        for (FileMetadata fm : files) {
+            long mtime = fm.getServerModified() == null ? 0L : fm.getServerModified().getTime();
+            children.add(
+                DUUIDirectoryNode.from(
+                    "dropbox",
+                    fm.getPathLower(),
+                    fm.getName(),
+                    DUUIDirectoryNode.Type.FILE,
+                    depth + 1,
+                    false,
+                    fm.getSize(),
+                    null,
+                    mtime,
+                    List.of()
+                )
+            );
+        }
+
+        boolean hasChildren = !children.isEmpty();
+        return DUUIDirectoryNode.from(
+            "dropbox",
+            raw,
+            name,
+            DUUIDirectoryNode.Type.DIR,
+            depth,
+            hasChildren,
+            null,
+            "inode/directory",
+            0L,
+            children
+        );
     }
 
     public DUUIFolder getFolderStructure(String path, String name) {

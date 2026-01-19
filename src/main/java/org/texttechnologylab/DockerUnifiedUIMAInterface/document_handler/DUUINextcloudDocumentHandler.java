@@ -23,7 +23,8 @@ import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.apache.http.impl.client.HttpClientBuilder;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.DUUIDirectoryNode;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.FolderStructureService;
 
 import javax.xml.namespace.QName;
 import java.io.*;
@@ -33,10 +34,16 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
     class NCFolders extends Folders {
 
@@ -434,5 +441,173 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
         }
 
         return root;
+    }
+
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(int maxDepth, boolean includeFiles) {
+        try (ExecutorService executor = FolderStructureService.newVirtualThreadExecutor()) {
+            Semaphore semaphore = FolderStructureService.newSemaphore(getDirectoryTreeMaxConcurrency());
+            return getDirectoryTree0("/", "Files", 0, maxDepth, includeFiles, executor, semaphore);
+        }
+    }
+
+    private DUUIDirectoryNode getDirectoryTree0(
+        String raw,
+        String name,
+        int depth,
+        int maxDepth,
+        boolean includeFiles,
+        ExecutorService executor,
+        Semaphore semaphore
+    ) {
+        if (maxDepth >= 0 && depth >= maxDepth) {
+            return DUUIDirectoryNode.from(
+                "nextcloud",
+                raw,
+                name,
+                DUUIDirectoryNode.Type.DIR,
+                depth,
+                true,
+                null,
+                "inode/directory",
+                0L,
+                List.of()
+            );
+        }
+
+        List<DavResource> resources;
+        try {
+            resources = listFolderContent(raw, 1);
+        } catch (Exception e) {
+            return DUUIDirectoryNode.from(
+                "nextcloud",
+                raw,
+                name,
+                DUUIDirectoryNode.Type.DIR,
+                depth,
+                false,
+                null,
+                "inode/directory",
+                0L,
+                List.of()
+            );
+        }
+
+        List<DavResource> dirs = resources.stream()
+            .filter(DavResource::isDirectory)
+            .filter(r -> {
+                String p = "/" + removeWebDavFromPath(r.getPath());
+                return !p.equals(raw);
+            })
+            .toList();
+
+        List<DavResource> fileResources = includeFiles
+            ? resources.stream()
+                .filter(r -> !r.isDirectory())
+                .toList()
+            : List.of();
+
+        List<DUUIDirectoryNode> children = new ArrayList<>(dirs.size() + fileResources.size());
+
+        CompletionService<DUUIDirectoryNode> cs = new ExecutorCompletionService<>(executor);
+        int submitted = 0;
+        for (DavResource dir : dirs) {
+            String childRaw = "/" + removeWebDavFromPath(dir.getPath());
+            String childName = dir.getDisplayName();
+
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            cs.submit(() -> {
+                try {
+                    return getDirectoryTree0(
+                        childRaw,
+                        childName,
+                        depth + 1,
+                        maxDepth,
+                        includeFiles,
+                        executor,
+                        semaphore
+                    );
+                } finally {
+                    semaphore.release();
+                }
+            });
+            submitted++;
+        }
+
+        for (int i = 0; i < submitted; i++) {
+            try {
+                DUUIDirectoryNode child = cs.take().get();
+                if (child != null) {
+                    children.add(child);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        for (DavResource f : fileResources) {
+            String fileRaw = "/" + removeWebDavFromPath(f.getPath());
+            String fileName = f.getDisplayName();
+            Long size = null;
+            try {
+                size = f.getContentLength();
+            } catch (Exception ignored) {
+            }
+
+            String mimeType = null;
+            try {
+                mimeType = f.getContentType();
+            } catch (Exception ignored) {
+            }
+
+            long mtime = 0L;
+            try {
+                mtime = f.getModified() == null ? 0L : f.getModified().getTime();
+            } catch (Exception ignored) {
+            }
+
+            children.add(
+                DUUIDirectoryNode.from(
+                    "nextcloud",
+                    fileRaw,
+                    fileName,
+                    DUUIDirectoryNode.Type.FILE,
+                    depth + 1,
+                    false,
+                    size,
+                    mimeType,
+                    mtime,
+                    List.of()
+                )
+            );
+        }
+
+        boolean hasChildren = !children.isEmpty();
+        return DUUIDirectoryNode.from(
+            "nextcloud",
+            raw,
+            name,
+            DUUIDirectoryNode.Type.DIR,
+            depth,
+            hasChildren,
+            null,
+            "inode/directory",
+            0L,
+            children
+        );
     }
 }

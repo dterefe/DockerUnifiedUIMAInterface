@@ -15,10 +15,14 @@ import java.util.concurrent.RecursiveTask;
 // import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.DUUILocalDrivesDocumentHandler.FolderTreeBuilder;
 
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIFolderPickerApi.DUUIFolder;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.DUUIDirectoryNode;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.folder.FolderStructureService;
 
 public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler implements IDUUIFolderPickerApi{
 
     String rootPath;
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
     public DUUILocalDrivesDocumentHandler(String rootPath) {
 
@@ -41,6 +45,37 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         Path rootDir = Paths.get(this.rootPath);
 
         return FolderTreeBuilder.buildTree(rootDir);
+    }
+
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(int maxDepth, boolean includeFiles) {
+        Path rootDir = Paths.get(this.rootPath);
+        return FolderStructureService.buildLocalTree(
+            rootDir,
+            maxDepth,
+            includeFiles,
+            p -> {
+                try {
+                    Path fn = p.getFileName();
+                    if (fn != null && fn.toString().startsWith(".")) {
+                        return false;
+                    }
+                    return Files.isReadable(p) && Files.isWritable(p);
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        );
     }
 
 

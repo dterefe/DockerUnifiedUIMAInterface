@@ -8,8 +8,9 @@ import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.model.File;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import com.google.api.services.drive.model.FileList;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -21,6 +22,10 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 
 
 public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
@@ -29,6 +34,9 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
     private static String root = "";
     private final Drive service;
+    private static final String FOLDER_MIME = "application/vnd.google-apps.folder";
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
     public DUUIGoogleDriveDocumentHandler(Credential credential) throws GeneralSecurityException, IOException {
         final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
@@ -168,52 +176,16 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
 
         document.setName(file.getName());
         document.setPath(file.getId());
+        String mimeType = file.getMimeType();
+        if (mimeType != null && !mimeType.isBlank()) {
+            document.setMimeType(mimeType.trim());
+        }
         document.setSize(data.length);
         document.setBytes(data);
 
+        SerDeUtils.ensureCanonicalMimeType(document);
+
         return document;
-    }
-
-    private String getFolderId(String folderName) {
-
-        FileList result = null;
-
-        try {
-            result = service.files().list()
-                    .setQ(String.format("name = '%s' and mimeType = 'application/vnd.google-apps.folder'", folderName))
-                    .setFields("files(parents, id, name)")
-                    .execute();
-
-        } catch (IOException e) {
-            return "";
-        }
-
-        List<File> files = result.getFiles();
-
-        if (files.isEmpty()) return "";
-
-        return files.get(0).getId();
-    }
-
-    private String getFileId(String fileName) {
-
-        FileList result = null;
-
-        try {
-            result = service.files().list()
-                    .setQ(String.format("name = '%s'", fileName))
-                    .setFields("files(parents, id, name)")
-                    .execute();
-
-        } catch (IOException e) {
-            return "";
-        }
-
-        List<File> files = result.getFiles();
-
-        if (files.isEmpty()) return "";
-
-        return files.get(0).getId();
     }
 
     @Override
@@ -272,10 +244,9 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
                         }
 
                         String fileExt = file.getFileExtension();
-                        if (!normalizedExtension.isEmpty()) {
-                            if (fileExt == null || !normalizedExtension.equalsIgnoreCase(fileExt)) {
+                        if (!normalizedExtension.isEmpty() 
+                            && (fileExt == null || !normalizedExtension.equalsIgnoreCase(fileExt))) {
                                 continue;
-                            }
                         }
 
                         documents.add(new DUUIDocument(file.getName(), file.getId(), file.getSize()));
@@ -325,6 +296,190 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
         DUUIFolder root = new DUUIFolder(DUUIGoogleDriveDocumentHandler.root, "Files");
 
         return getFolderStructure(root);
+    }
+
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+    
+    public static String namespace() {
+        return "gdrive";
+    }
+
+    public static String folderMime() {
+        return "application/vnd.google-apps.folder";
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(DUUIDirectoryNode node, int maxDepth, boolean includeFiles) throws Exception {
+        if (node == null) {
+            node = DUUIDirectoryNode.from(
+                "gdrive",
+                root,
+                "Files",
+                true,
+                0,
+                0L,
+                FOLDER_MIME,
+                0L
+            );
+        }
+
+        try (ExecutorService executor = FolderStructureService.newVirtualThreadExecutor()) {
+            Semaphore semaphore = FolderStructureService.newSemaphore(getDirectoryTreeMaxConcurrency());
+            return getDirectoryTree(node, maxDepth, includeFiles, executor, semaphore);
+        }
+    }
+
+    private DUUIDirectoryNode getDirectoryTree(
+        DUUIDirectoryNode node,
+        int maxDepth,
+        boolean includeFiles,
+        ExecutorService executor,
+        Semaphore semaphore
+    ) throws Exception {
+        if (!node.canTraverse(maxDepth)) return node;
+
+        List<File> children = new ArrayList<>();
+        try {
+            listChildren(node.path(), node, children);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+            return node;
+        }
+
+        if (children.isEmpty()) {
+            node.setNoChildren();
+            return node;
+        }
+
+        CompletionService<DUUIDirectoryNode> cs = new ExecutorCompletionService<>(executor);
+        int submitted = 0;
+        for (File f : children) {
+            boolean isDirectory = isFolder(f);
+            if (!includeFiles && !isDirectory) continue;
+
+            var childNode = DUUIDirectoryNode.from(
+                "gdrive",
+                f.getId(),
+                f.getName(),
+                isDirectory,
+                node.depth() + 1,
+                0L,
+                isDirectory 
+                    ? FOLDER_MIME 
+                    : SerDeUtils.Mime.inferMimeType(f.getMimeType(), f.getName()),
+                f.getModifiedTime().getValue()
+            );
+
+            node.children().add(childNode);
+
+            if (!isDirectory) continue;
+
+            semaphore.acquire();
+            
+            cs.submit(() -> {
+                try {
+                    return getDirectoryTree(
+                        childNode,
+                        maxDepth,
+                        includeFiles,
+                        executor,
+                        semaphore
+                    );
+                } finally {
+                    semaphore.release();
+                }
+            });
+            submitted++;
+        }
+
+        for (int i = 0; i < submitted; i++) {
+            try {
+                cs.take().get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+            }
+        }
+
+        node.state(DUUIDirectoryNode.TokenState.NO_MORE_PAGES);
+
+        return node;
+    }
+
+    private void listChildren(String parentId, DUUIDirectoryNode node, List<File> out) throws InterruptedException {
+
+        do {
+            FileList result;
+
+            int attempt = 0;
+            int maxAttempts = 5;
+            long backoffMs = 300;
+            while (true) {
+                try {
+                    var list = service.files().list()
+                        .setQ(String.format("'%s' in parents and trashed = false", parentId))
+                        .setOrderBy("folder,name")
+                        .setFields("nextPageToken, files(id, name, size, mimeType, modifiedTime, isAppAuthorized)");
+                    if (node.hasNextToken()) list.setPageToken(node.nextToken());
+
+                    result = list.execute();
+                    node.nextToken(result.getNextPageToken());
+                    break;
+                } catch (com.google.api.client.googleapis.json.GoogleJsonResponseException e) {
+                    int code = e.getStatusCode();
+                    boolean retryable = code == 429 || code == 500 || code == 502 || code == 503 || code == 504;
+                    if (!retryable || attempt >= maxAttempts) {
+                        if (code == 400) {
+                            String msg = e.getDetails() == null ? "" : String.valueOf(e.getDetails().getMessage());
+                            if (msg.toLowerCase().contains("page token")) {
+                                node.nextToken(null, DUUIDirectoryNode.TokenState.INVALID_PAGE_TOKEN.toString());
+                                if (attempt > 0) return;
+                                node.children().clear();
+                            }
+                        }
+                        node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+                        return;
+                    }
+                } catch (java.net.ConnectException | java.io.InterruptedIOException e) {
+                    if (attempt >= maxAttempts) {
+                        node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+                        return;
+                    }
+                } catch (Exception e) {
+                    node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+                    return;
+                }
+
+                long jitter = java.util.concurrent.ThreadLocalRandom.current().nextLong(0, 200);
+                Thread.sleep(Math.min(2000, backoffMs) + jitter);
+
+                attempt++;
+                backoffMs *= 2;
+            }
+
+            List<File> files = result.getFiles();
+            if (files != null && !files.isEmpty()) {
+                out.addAll(files.stream().filter(f -> Boolean.TRUE.equals(f.getIsAppAuthorized())).toList());
+            }
+
+            
+        } while (node.hasNextToken());
+    }
+
+    private static boolean isFolder(File f) {
+        String mt = f == null ? null : f.getMimeType();
+        return FOLDER_MIME.equals(mt);
     }
 
     public DUUIFolder getFolderStructure(DUUIFolder root) {

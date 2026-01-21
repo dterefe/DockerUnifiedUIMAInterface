@@ -7,7 +7,36 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public interface IDUUIFolderPickerApi {
+    
+    /**
+     * Get the configured max concurrency used by this provider while building directory trees.
+     * Providers can override to expose current configuration.
+     */
+    default int getDirectoryTreeMaxConcurrency() {
+        return 32;
+    }
 
+    /**
+     * Configure max concurrency used by this provider while building directory trees.
+     * Implementations should clamp values <= 0 to a safe default.
+     * Default is a no-op for providers that don't support configuration.
+     */
+    default void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        // no-op by default
+    }
+
+    /**
+     * New folder picker API: unified, rich tree model.
+     * Providers are responsible for honoring maxDepth/includeFiles.
+     * @throws Exception 
+     */
+    default DUUIDirectoryNode getDirectoryTree(int maxDepth, boolean includeFiles) throws Exception {
+        return getDirectoryTree(null, maxDepth, includeFiles);
+    }
+
+    DUUIDirectoryNode getDirectoryTree(DUUIDirectoryNode folder, int maxDepth, boolean includeFiles) throws Exception;
+
+    @Deprecated
     public static class DUUIFolder {
 
         String id;
@@ -53,6 +82,7 @@ public interface IDUUIFolderPickerApi {
         }
     }
 
+    @Deprecated
     DUUIFolder getFolderStructure();
 
 }

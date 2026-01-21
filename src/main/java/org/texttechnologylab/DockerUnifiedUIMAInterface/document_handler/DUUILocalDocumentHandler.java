@@ -4,13 +4,18 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 
 public class DUUILocalDocumentHandler implements IDUUIDocumentHandler{
 
@@ -38,11 +43,26 @@ public class DUUILocalDocumentHandler implements IDUUIDocumentHandler{
     @Override
     public DUUIDocument readDocument(String path) throws IOException {
         Path _path = Paths.get(path);
-        return new DUUIDocument(
+        DUUIDocument doc = new DUUIDocument(
             _path.getFileName().toString(),
             _path.toFile().getAbsolutePath().replace("\\", "/"),
             Files.readAllBytes(_path)
         );
+
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(_path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attrs.isDirectory()) {
+                doc.setSize(attrs.size());
+                try {
+                    doc.setMimeType(Files.probeContentType(_path));
+                } catch (IOException ignored) {
+                }
+            }
+        } catch (IOException ignored) {
+        }
+
+        SerDeUtils.ensureCanonicalMimeType(doc);
+        return doc;
     }
 
     @Override
@@ -65,10 +85,14 @@ public class DUUILocalDocumentHandler implements IDUUIDocumentHandler{
         return Stream
             .of(files)
             .filter(file -> !file.isDirectory() && file.getName().endsWith(fileExtension))
-            .map(file -> new DUUIDocument(
-                file.getName(),
-                file.getAbsolutePath().replace("\\", "/"),
-                file.length()))
+            .map(file -> {
+                DUUIDocument doc = new DUUIDocument(
+                    file.getName(),
+                    file.getAbsolutePath().replace("\\", "/"),
+                    file.length());
+                SerDeUtils.ensureCanonicalMimeType(doc);
+                return doc;
+            })
             .collect(Collectors.toList());
     }
 
@@ -76,13 +100,16 @@ public class DUUILocalDocumentHandler implements IDUUIDocumentHandler{
         try (Stream<Path> stream = Files.walk(Paths.get(path))) {
             return stream
                 .filter(Files::isRegularFile)
-                .map(file -> new DUUIDocument(
-                    file.getFileName().toString(),
-
-                    // This is only important if DUUI is run on Windows because Windows uses '\' as File.separator.
-                    file.toFile().getAbsolutePath().replace("\\", "/"),
-                    file.toFile().length())
-                ).filter(document -> document.getName().endsWith(fileExtension))
+                .map(file -> {
+                    DUUIDocument doc = new DUUIDocument(
+                        file.getFileName().toString(),
+                        // This is only important if DUUI is run on Windows because Windows uses '\' as File.separator.
+                        file.toFile().getAbsolutePath().replace("\\", "/"),
+                        file.toFile().length());
+                    SerDeUtils.ensureCanonicalMimeType(doc);
+                    return doc;
+                })
+                .filter(document -> document.getName().endsWith(fileExtension))
                 .collect(Collectors.toList());
         }
     }

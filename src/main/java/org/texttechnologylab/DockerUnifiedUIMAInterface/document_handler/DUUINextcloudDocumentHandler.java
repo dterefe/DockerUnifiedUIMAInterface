@@ -21,8 +21,8 @@ import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.config.AuthSchemes;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import org.apache.http.impl.client.HttpClientBuilder;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
 import javax.xml.namespace.QName;
 import java.io.*;
@@ -32,10 +32,16 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
     class NCFolders extends Folders {
 
@@ -322,6 +328,20 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
             throw new RuntimeException("Downloading following file failed: " + path, e);
         }
 
+        // Best-effort: ask WebDAV for content-type of this file
+        try {
+            List<DavResource> res = listFolderContent(path, 0);
+            if (res != null && !res.isEmpty()) {
+                String mimeType = res.get(0).getContentType();
+                if (mimeType != null && !mimeType.isBlank()) {
+                    document.setMimeType(mimeType.trim());
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        SerDeUtils.ensureCanonicalMimeType(document);
+
         return document;
     }
 
@@ -336,7 +356,8 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
     public List<DUUIDocument> listDocuments(String path, String fileExtension, boolean recursive) {
 
         try {
-            return CompletableFuture.supplyAsync(() -> listFolderContent(path, recursive ? -1 : 1)
+            return CompletableFuture.supplyAsync(() -> 
+                    listFolderContent(path, recursive ? -1 : 1)
                 .stream()
                 .filter(res -> !res.isDirectory())
                 .filter( res -> fileExtension.isEmpty() || res.getPath().endsWith(fileExtension))
@@ -345,7 +366,12 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
                     long size = fsize != null && !fsize.isEmpty() ? Long.parseLong(fsize) : 0;
                     String fpath = removeWebDavFromPath(res.getPath());
 
-                    return new DUUIDocument(res.getDisplayName(), fpath, size);
+                    DUUIDocument d = new DUUIDocument(res.getDisplayName(), fpath, size);
+                    String mimeType = res.getContentType();
+                    if (mimeType != null && !mimeType.isBlank()) {
+                        d.setMimeType(mimeType.trim());
+                    }
+                    return d;
                 })
                 .collect(Collectors.toList())).get();
         } catch (InterruptedException | ExecutionException e) {
@@ -367,12 +393,9 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
             Set<QName> props= new HashSet<>();
             props.add(new QName("DAV:", "displayname", "d"));
             props.add(new QName("http://owncloud.org/ns", "size", "oc"));
+            props.add(new QName("DAV:", "getcontenttype", "d"));
 
-//            System.out.println("Searching for folder " + path);
-//            long startTime = System.currentTimeMillis();
             resources = buildAuthSardine0().list(path, depth, props);
-//            startTime = System.currentTimeMillis() - startTime;
-//            System.out.println("Found " + resources.size() + " folders in " + startTime + "ms");
         } catch (IOException e) {
             throw new NextcloudApiException(e);
         }
@@ -413,5 +436,137 @@ public final class DUUINextcloudDocumentHandler implements IDUUIDocumentHandler,
         }
 
         return root;
+    }
+
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+
+    public static String namespace() {
+        return "nextcloud";
+    }
+
+    public static String folderMime() {
+        return "inode/directory";
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(DUUIDirectoryNode folder, int maxDepth, boolean includeFiles) throws Exception {
+        if (folder == null) {
+            folder = DUUIDirectoryNode.from(
+                namespace(),
+                "/",
+                "Files",
+                true,
+                0,
+                0L,
+                folderMime(),
+                0L
+            );
+        }
+
+        try (ExecutorService executor = FolderStructureService.newVirtualThreadExecutor()) {
+            Semaphore semaphore = FolderStructureService.newSemaphore(getDirectoryTreeMaxConcurrency());
+            return getDirectoryTree(folder, maxDepth, includeFiles, executor, semaphore);
+        }
+    }
+
+    private DUUIDirectoryNode getDirectoryTree(
+        DUUIDirectoryNode node,
+        int maxDepth,
+        boolean includeFiles,
+        ExecutorService executor,
+        Semaphore semaphore
+    ) throws Exception {
+        if (node.isFile() || maxDepth >= 0 && node.depth() >= maxDepth) {
+            node.setNoChildren();
+            return node;
+        }
+
+        List<DavResource> children;
+        try {
+            children = listFolderContent(node.path(), 1);
+        } catch (Exception e) {
+            node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+            return node;
+        }
+
+        if (children.isEmpty()) {
+            node.setNoChildren();
+            return node;
+        }
+        
+        CompletionService<DUUIDirectoryNode> cs = new ExecutorCompletionService<>(executor);
+        int submitted = 0;
+        for (DavResource f : children) {
+            boolean isDirectory = f.isDirectory();
+            if (!includeFiles && !isDirectory) continue;
+
+            String childRaw = "/" + removeWebDavFromPath(f.getPath());
+            String childName = f.getDisplayName();
+            Long size = null;
+            String mimeType = null;
+            long mtime = 0L;
+
+            try {
+                size = f.getContentLength();
+                mimeType = f.getContentType();
+                mtime = f.getModified() == null ? 0L : f.getModified().getTime();
+            } catch (Exception ignored) {
+            }
+
+            var childNode = DUUIDirectoryNode.from(
+                namespace(),
+                childRaw,
+                childName,
+                isDirectory,
+                node.depth() + 1,
+                size,
+                isDirectory 
+                    ? folderMime() 
+                    : mimeType,
+                mtime
+            );
+
+            node.children().add(childNode);
+
+            if (!isDirectory) continue;
+
+            semaphore.acquire();
+            cs.submit(() -> {
+                try {
+                    return getDirectoryTree(
+                        childNode,
+                        maxDepth,
+                        includeFiles,
+                        executor,
+                        semaphore
+                    );
+                } finally {
+                    semaphore.release();
+                }
+            });
+            submitted++;
+        }
+
+        for (int i = 0; i < submitted; i++) {
+            try {
+                cs.take().get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+            }
+        }
+
+        node.state(DUUIDirectoryNode.TokenState.NO_MORE_PAGES);
+
+        return node;
     }
 }

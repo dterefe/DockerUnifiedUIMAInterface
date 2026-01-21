@@ -4,8 +4,10 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -16,9 +18,11 @@ import java.util.concurrent.RecursiveTask;
 
 import org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIFolderPickerApi.DUUIFolder;
 
-public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler implements IDUUIFolderPickerApi{
+public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler implements IDUUIFolderPickerApi {
 
     String rootPath;
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
     public DUUILocalDrivesDocumentHandler(String rootPath) {
 
@@ -43,6 +47,57 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         return FolderTreeBuilder.buildTree(rootDir);
     }
 
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(int maxDepth, boolean includeFiles) {
+        Path rootDir = Paths.get(this.rootPath);
+        return FolderStructureService.buildLocalTree(
+            rootDir,
+            maxDepth,
+            includeFiles,
+            p -> {
+                try {
+                    Path fn = p.getFileName();
+                    if (fn != null && fn.toString().startsWith(".")) {
+                        return false;
+                    }
+                    return Files.isReadable(p) && Files.isWritable(p);
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        );
+    }
+
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(DUUIDirectoryNode node, int maxDepth, boolean includeFiles) {
+        if (node == null) {
+            return getDirectoryTree(maxDepth, includeFiles);
+        }
+
+        return FolderStructureService.buildLocalTree(node, maxDepth, includeFiles, this::defaultLocalFilter);
+    }
+
+    private boolean defaultLocalFilter(Path p) {
+        try {
+            Path fn = p.getFileName();
+            if (fn != null && fn.toString().startsWith(".")) {
+                return false;
+            }
+            return Files.isReadable(p) && Files.isWritable(p);
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     public static class FolderTreeBuilder {
 
@@ -149,31 +204,5 @@ public class DUUILocalDrivesDocumentHandler extends DUUILocalDocumentHandler imp
         }
         return out;
     }
-
-//     public static void main(String[] args) throws IOException {
-//         long start = System.nanoTime();
-//
-//         // String rootPath = System.getProperty("user.home");
-//         String rootPath = "/home/";
-//         DUUILocalDrivesDocumentHandler handler = new DUUILocalDrivesDocumentHandler(rootPath);
-//
-//         DUUIFolder folderStructure = handler.getFolderStructure();
-//         List<Path> allowedRoots = new ArrayList<>();
-//         allowedRoots.add(Path.of("/home/stud_homes/s0424382/projects/duui-fork/DockerUnifiedUIMAInterface/docs"));
-//
-//         // folderStructure = handler.filterTree(folderStructure, allowedRoots);
-//
-//         // JsonWriterSettings jsonWriterSettings = JsonWriterSettings.builder()
-//         //         .indent(true)
-//         //         .build();
-//
-//         // String fs = new Document(folderStructure.toJson()).toJson(jsonWriterSettings);
-//
-//         // System.out.println(fs);
-//
-//         long end = System.nanoTime();
-//         double seconds = (end - start) / 1_000_000_000.0;
-//         System.out.printf("Elapsed: %.3f s%n", seconds);
-//     }
 
 }

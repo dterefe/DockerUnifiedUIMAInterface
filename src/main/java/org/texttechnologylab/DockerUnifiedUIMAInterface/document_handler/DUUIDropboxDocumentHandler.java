@@ -4,14 +4,18 @@ import com.dropbox.core.*;
 import com.dropbox.core.oauth.DbxCredential;
 import com.dropbox.core.util.IOUtil;
 import com.dropbox.core.v2.DbxClientV2;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
 import com.dropbox.core.v2.files.*;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 
 import java.io.*;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.stream.Collectors;
 
 
@@ -24,6 +28,8 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
     private final DbxClientV2 client;
     private WriteMode writeMode = WriteMode.ADD;
     private boolean debug;
+
+    private volatile int directoryTreeMaxConcurrency = 32;
 
 
     /**
@@ -184,7 +190,8 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
                     .files()
                     .uploadSessionFinish(cursor, commitInfo)
                     .uploadAndFinish(stream, remaining, progressListener);
-
+                    
+                // successful upload -> exit
                 return;
             } catch (DbxException exception) {
                 if (attempt == MAX_CHUNK_UPLOAD_ATTEMPTS - 1) {
@@ -245,6 +252,8 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
             document.setBytes(fileContentOutput.toByteArray());
             document.setSize(metadata.getSize());
 
+            SerDeUtils.ensureCanonicalMimeType(document);
+
             return document;
         } catch (DbxException e) {
             throw new IOException(e);
@@ -286,13 +295,155 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
             .filter(metadata
                 -> metadata.getPathLower().endsWith(fileExtension)
                 && metadata instanceof FileMetadata) // Only FileMetadata includes the size since folders have no size.
-            .map(metadata
-                -> new DUUIDocument(
-                metadata.getName(),
-                metadata.getPathLower(),
-                ((FileMetadata) metadata).getSize()))
+            .map(metadata -> {
+                DUUIDocument doc = new DUUIDocument(
+                    metadata.getName(),
+                    metadata.getPathLower(),
+                    ((FileMetadata) metadata).getSize()
+                );
+                SerDeUtils.ensureCanonicalMimeType(doc);
+                return doc;
+            })
             .collect(Collectors.toList());
 
+    }
+
+    @Override
+    public int getDirectoryTreeMaxConcurrency() {
+        return directoryTreeMaxConcurrency;
+    }
+
+    @Override
+    public void setDirectoryTreeMaxConcurrency(int maxConcurrency) {
+        directoryTreeMaxConcurrency = maxConcurrency <= 0 ? 32 : maxConcurrency;
+    }
+    
+    public static String namespace() {
+        return "dropbox";
+    }
+
+    public static String folderMime() {
+        return "inode/directory";
+    }
+
+    
+    @Override
+    public DUUIDirectoryNode getDirectoryTree(DUUIDirectoryNode node, int maxDepth, boolean includeFiles) throws Exception {
+        if (node == null) {
+            node = DUUIDirectoryNode.from(
+                namespace(),
+                "",
+                "Files",
+                true,
+                0,
+                0L,
+                folderMime(),
+                0L
+            );
+        }
+
+        try (ExecutorService executor = FolderStructureService.newVirtualThreadExecutor()) {
+            Semaphore semaphore = FolderStructureService.newSemaphore(getDirectoryTreeMaxConcurrency());
+            return getDirectoryTree(node, maxDepth, includeFiles, executor, semaphore);
+        }
+    }
+
+    private DUUIDirectoryNode getDirectoryTree(
+        DUUIDirectoryNode node,
+        int maxDepth,
+        boolean includeFiles,
+        ExecutorService executor,
+        Semaphore semaphore
+    ) throws Exception {
+        if (!node.canTraverse(maxDepth)) return node;
+
+        ListFolderResult result;
+        try {
+            result = client.files().listFolderBuilder(node.path()).withRecursive(false).start();
+        } catch (Exception e) {
+            node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+            return node;
+        }
+        List<Metadata> all = new ArrayList<>(result.getEntries());
+
+        if (!result.getHasMore() && all.isEmpty()) {
+            node.setNoChildren();
+            return node;
+        }
+        
+        while (result.getHasMore()) {
+            node.nextToken(result.getCursor());
+            try {
+                result = client.files().listFolderContinue(node.nextToken());
+            } catch (Exception e) {
+                if (e instanceof ListFolderContinueErrorException apiEx && apiEx.errorValue.isReset()) {
+                    node.nextToken(null, DUUIDirectoryNode.TokenState.INVALID_PAGE_TOKEN.toString());
+                    return node;
+                }
+                
+                node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+                return node;
+            }
+            all.addAll(result.getEntries());
+        }
+
+        CompletionService<DUUIDirectoryNode> cs = new ExecutorCompletionService<>(executor);
+        int submitted = 0;
+        for (var f : all) {
+            boolean isDirectory = f instanceof FolderMetadata;
+            if (!includeFiles && !isDirectory) continue;
+
+            var childNode = DUUIDirectoryNode.from(
+                namespace(),
+                f.getPathLower(),
+                f.getName(),
+                isDirectory,
+                node.depth() + 1,
+                0L,
+                isDirectory 
+                    ? folderMime() 
+                    : SerDeUtils.Mime.guessMimeTypeFromNameOrEmpty(f.getName()),
+                f instanceof FileMetadata file 
+                ? file.getClientModified().getTime()
+                : 0L
+            );
+
+            node.children().add(childNode);
+
+            if (!childNode.isDirectory()) {
+                continue;
+            }
+
+            semaphore.acquire();
+            cs.submit(() -> {
+                try {
+                    return getDirectoryTree(
+                        childNode,
+                        maxDepth,
+                        includeFiles,
+                        executor,
+                        semaphore
+                    );
+                } finally {
+                    semaphore.release();
+                }
+            });
+            submitted++;
+        }
+
+        for (int i = 0; i < submitted; i++) {
+            try {
+                cs.take().get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                node.state(DUUIDirectoryNode.TokenState.MAYBE_MORE_PAGES);
+            }
+        }
+
+        node.state(DUUIDirectoryNode.TokenState.NO_MORE_PAGES);
+        
+        return node;
     }
 
     @Override

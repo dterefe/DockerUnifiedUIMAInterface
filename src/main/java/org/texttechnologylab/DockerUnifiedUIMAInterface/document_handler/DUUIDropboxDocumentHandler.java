@@ -18,7 +18,9 @@ import java.util.stream.Collectors;
 public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
 
     private static final long CHUNK_SIZE = 8L << 20; // 8MiB
-    private static final long MAX_RETRIES = 5;
+    private static final int MAX_CHUNK_UPLOAD_ATTEMPTS = 5;
+    private static final int MAX_RATE_LIMIT_ATTEMPTS = 3;
+    private static final long RATE_LIMIT_BACKOFF_MS = 2_000L;
     private final DbxClientV2 client;
     private WriteMode writeMode = WriteMode.ADD;
     private boolean debug;
@@ -87,8 +89,11 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
 
     @Override
     public void writeDocument(DUUIDocument document, String path) throws IOException {
-        try {
-            path = addTrailingSlashToPath(addLeadingSlashToPath(path));
+        String uploadPath = addTrailingSlashToPath(addLeadingSlashToPath(path));
+        document.setUploadProgress(0);
+        int rateLimitAttempts = 0;
+
+        while (true) {
             IOUtil.ProgressListener progressListener = new IOUtil.ProgressListener() {
                 long uploadProgress = 0;
 
@@ -100,27 +105,34 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
                 }
             };
 
-            if (document.getSize() >= CHUNK_SIZE) {
-                writeDocumentChunked(document, path + document.getName(), progressListener);
-            } else {
-                client.files()
-                    .uploadBuilder(path + document.getName())
-                    .withMode(writeMode)
-                    .uploadAndFinish(document.toInputStream(), progressListener);
-            }
-        } catch (RateLimitException exception) {
             try {
-                Thread.sleep(2000);
-                writeDocument(document, path);
-            } catch (InterruptedException sleepEx) {
-                Thread.currentThread().interrupt();
+                if (document.getSize() >= CHUNK_SIZE) {
+                    writeDocumentChunked(document, uploadPath + document.getName(), progressListener);
+                } else {
+                    client.files()
+                        .uploadBuilder(uploadPath + document.getName())
+                        .withMode(writeMode)
+                        .uploadAndFinish(document.toInputStream(), progressListener);
+                }
+                document.setUploadProgress(100);
+                return;
+            } catch (RateLimitException exception) {
+                rateLimitAttempts++;
+                document.setUploadProgress(0);
+                if (rateLimitAttempts >= MAX_RATE_LIMIT_ATTEMPTS) {
+                    throw new IOException(String.format(
+                        "Rate limit prevented uploading %s after %d attempts",
+                        document.getName(),
+                        rateLimitAttempts), exception);
+                }
+                backoff(rateLimitAttempts);
+            } catch (DbxException e) {
+                throw new IOException(String.format(
+                    "There has been a conflict because a file with the name %s already exists at %s.\n" +
+                        "To overwrite existing files use write mode Overwrite instead of Add.",
+                    document.getName(),
+                    path), e);
             }
-        } catch (DbxException e) {
-            throw new IOException(String.format(
-                "There has been a conflict because a file with the name %s already exists at %s.\n" +
-                    "To overwrite existing files use write mode Overwrite instead of Add.",
-                document.getName(),
-                path));
         }
     }
 
@@ -135,31 +147,21 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
      * @param progressListener A progress listener to track the write progress of the document.
      * @throws IOException If an error occurs, throws the error as an IOException.
      */
-    private void writeDocumentChunked(DUUIDocument document, String path, IOUtil.ProgressListener progressListener) throws IOException {
+    private void writeDocumentChunked(DUUIDocument document, String path, IOUtil.ProgressListener progressListener) throws IOException, DbxException {
         long size = document.getSize();
-        long uploadProgress = 0L;
-
-        String sessionId = null;
-
-        for (int i = 0; i < MAX_RETRIES; ++i) {
-            if (i > 0 && debug) {
-                System.out.printf("Upload try %d of %d.", i + 1, MAX_RETRIES);
+        for (int attempt = 0; attempt < MAX_CHUNK_UPLOAD_ATTEMPTS; attempt++) {
+            if (attempt > 0 && debug) {
+                System.out.printf("Upload try %d of %d.%n", attempt + 1, MAX_CHUNK_UPLOAD_ATTEMPTS);
             }
 
             try (InputStream stream = document.toInputStream()) {
-                // If this is not the first try. Skip already uploaded bytes.
-                long ignored = stream.skip(uploadProgress);
+                String sessionId = client
+                    .files()
+                    .uploadSessionStart()
+                    .uploadAndFinish(stream, CHUNK_SIZE, progressListener)
+                    .getSessionId();
 
-                // Initialize the sessionId and start the upload.
-                if (sessionId == null) {
-                    sessionId = client
-                        .files()
-                        .uploadSessionStart()
-                        .uploadAndFinish(stream, CHUNK_SIZE, progressListener)
-                        .getSessionId();
-                    uploadProgress += CHUNK_SIZE;
-                }
-
+                long uploadProgress = CHUNK_SIZE;
                 UploadSessionCursor cursor = new UploadSessionCursor(sessionId, uploadProgress);
 
                 while ((size - uploadProgress) > CHUNK_SIZE) {
@@ -183,11 +185,27 @@ public class DUUIDropboxDocumentHandler implements IDUUIDocumentHandler, IDUUIFo
                     .uploadSessionFinish(cursor, commitInfo)
                     .uploadAndFinish(stream, remaining, progressListener);
 
+                return;
             } catch (DbxException exception) {
-                throw new IOException(exception);
+                if (attempt == MAX_CHUNK_UPLOAD_ATTEMPTS - 1) {
+                    throw exception;
+                }
+                // Otherwise, retry
             }
         }
+    }
 
+    private void backoff(int attempt) throws IOException {
+        long delay = RATE_LIMIT_BACKOFF_MS * attempt;
+        if (debug) {
+            System.out.printf("Upload rate limited, waiting %d ms before retry (%d/%d).%n", delay, attempt, MAX_RATE_LIMIT_ATTEMPTS);
+        }
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting to retry after rate limit throttling", interrupted);
+        }
     }
 
     @Override

@@ -22,7 +22,7 @@ import org.bson.Document;
 import org.bson.conversions.Bson;
 import org.bson.types.ObjectId;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.MongoDBConfig;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.MongoDBConnectionHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.DUUIMongoDBConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionDBReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.format.IDUUIFormat;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.format.XmiLoader;
@@ -50,6 +50,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
+/**
+ * @deprecated Segmentation should now be exposed through small {@link org.texttechnologylab.DockerUnifiedUIMAInterface.document_handler.IDUUIDocumentHandler}
+ * adapters that register with {@link org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.DUUIDocumentReader.Builder}.
+ * The dedicated segmentation reader duplicates Mongo/GridFS wiring, keeps its own worker threads, and bypasses Composer’s unified
+ * progress/locking pipeline. Convert the segmentation pipeline into a handler that feeds filtered segments to {@code DUUIDocumentReader}
+ * so Composer’s {@code run*()} methods (which expect a single reader) can manage ingestion.
+ */
+@Deprecated
 public class DUUISegmentationReader implements DUUICollectionDBReader {
     private static final String MONGO_BUCKET_NAME = "duui_segmented_documents";
     private static final String MONGO_BUCKET_NAME_FILES = MONGO_BUCKET_NAME + ".files";
@@ -96,7 +104,7 @@ public class DUUISegmentationReader implements DUUICollectionDBReader {
             this.queue = queue;
 
             // TODO use single connection (pool?) for all threads?
-            MongoDBConnectionHandler mongoConnectionHandler = new MongoDBConnectionHandler(mongoConfig);
+            DUUIMongoDBConnectionHandler mongoConnectionHandler = new DUUIMongoDBConnectionHandler(mongoConfig);
 
             this.mongoBucket = GridFSBuckets.create(mongoConnectionHandler.getDatabase(), MONGO_BUCKET_NAME);
 
@@ -210,7 +218,7 @@ public class DUUISegmentationReader implements DUUICollectionDBReader {
             this.queue = queue;
             this.outPath = outPath;
             // TODO use single connection (pool?) for all threads?
-            MongoDBConnectionHandler mongoConnectionHandler = new MongoDBConnectionHandler(mongoConfig);
+            DUUIMongoDBConnectionHandler mongoConnectionHandler = new DUUIMongoDBConnectionHandler(mongoConfig);
 
             this.mongoBucket = GridFSBuckets.create(mongoConnectionHandler.getDatabase(), MONGO_BUCKET_NAME);
 
@@ -297,7 +305,7 @@ public class DUUISegmentationReader implements DUUICollectionDBReader {
         this.outPath = outPath;
         this.workers = workers;
         this.capacity = capacity;
-        MongoDBConnectionHandler mongoConnectionHandler = new MongoDBConnectionHandler(mongoConfig);
+        DUUIMongoDBConnectionHandler mongoConnectionHandler = new DUUIMongoDBConnectionHandler(mongoConfig);
         this.mongoCollection = mongoConnectionHandler.getCollection(MONGO_BUCKET_NAME_FILES);
         // TODO: Make this configurable
         GridFSBuckets.create(mongoConnectionHandler.getDatabase(), MONGO_BUCKET_NAME).drop();

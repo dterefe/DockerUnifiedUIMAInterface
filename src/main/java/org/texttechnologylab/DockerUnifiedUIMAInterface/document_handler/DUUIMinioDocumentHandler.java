@@ -7,12 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.texttechnologylab.DockerUnifiedUIMAInterface.tools.SerDeUtils;
+
 import io.minio.BucketExistsArgs;
 import io.minio.GetObjectArgs;
 import io.minio.ListObjectsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.StatObjectArgs;
+import io.minio.StatObjectResponse;
+import io.minio.GetObjectResponse;
 import io.minio.Result;
 import io.minio.credentials.Provider;
 import io.minio.messages.Item;
@@ -105,12 +110,21 @@ public class DUUIMinioDocumentHandler implements IDUUIDocumentHandler {
         if (object.startsWith("/")) object = object.substring(1);
         String name = Paths.get(path).getFileName().toString();
 
-        try (InputStream document = client.getObject(GetObjectArgs
+        try (GetObjectResponse document = client.getObject(GetObjectArgs
             .builder()
             .bucket(bucket)
             .object(object)
             .build())) {
-            return new DUUIDocument(name, path, document.readAllBytes());
+            DUUIDocument d = new DUUIDocument(name, path, document.readAllBytes());
+
+            // MIME is available from the same getObject() response headers (no extra request)
+            String mimeType = document.headers() == null ? null : document.headers().get("Content-Type");
+            if (mimeType != null && !mimeType.isBlank()) {
+                d.setMimeType(mimeType.trim());
+            }
+
+            SerDeUtils.ensureCanonicalMimeType(d);
+            return d;
         } catch (Exception e) {
             throw new IOException(e);
         }
@@ -146,11 +160,29 @@ public class DUUIMinioDocumentHandler implements IDUUIDocumentHandler {
             try {
                 if (result.get().isDir()) continue;
 
-                documents.add(
-                    new DUUIDocument(
-                        Paths.get(result.get().objectName()).getFileName().toString(),
-                        bucket + "/" + result.get().objectName(),
-                        result.get().size()));
+                String objectName = result.get().objectName();
+                DUUIDocument d = new DUUIDocument(
+                    Paths.get(objectName).getFileName().toString(),
+                    bucket + "/" + objectName,
+                    result.get().size()
+                );
+
+                // Best-effort: stat object for content-type
+                try {
+                    StatObjectResponse stat = client.statObject(
+                        StatObjectArgs.builder()
+                            .bucket(bucket)
+                            .object(objectName)
+                            .build()
+                    );
+                    String mimeType = stat.contentType();
+                    if (mimeType != null && !mimeType.isBlank()) {
+                        d.setMimeType(mimeType.trim());
+                    }
+                } catch (Exception ignored) {
+                }
+
+                documents.add(d);
             } catch (Exception exception) {
                 throw new IOException(exception);
             }

@@ -14,10 +14,13 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 
 public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDUUIFolderPickerApi {
@@ -43,7 +46,7 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
         String parentFolderName = "Apps";
 
         // Search for the Docker Unified UIMA Interface folder
-        String parentQuery = "mimeType='application/vnd.google-apps.folder' and name='" + parentFolderName + "'";
+        String parentQuery = "mimeType='application/vnd.google-apps.folder' and name=" + literal(parentFolderName);
         FileList parentResult = service.files().list()
                 .setQ(parentQuery)
                 .setFields("files(id)")
@@ -75,7 +78,8 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
         }
 
         String query =
-            "mimeType='application/vnd.google-apps.folder' and name='" + folderName + "' and '" + maybeParentFolder.get().getId() + "' in parents";
+            "mimeType='application/vnd.google-apps.folder' and name=" + literal(folderName) +
+            " and " + literal(maybeParentFolder.get().getId()) + " in parents";
         FileList result = service.files().list()
                 .setQ(query)
                 .setFields("files(id, name, parents)")
@@ -212,71 +216,107 @@ public class DUUIGoogleDriveDocumentHandler implements IDUUIDocumentHandler, IDU
         return files.get(0).getId();
     }
 
-    private String getAllSubFolders(String parent)  {
-
-        FileList result = null;
-        try {
-            result = service.files().list()
-                    .setQ(String.format("'%s' in parents", parent) + " and mimeType = 'application/vnd.google-apps.folder'")
-                    .setFields("files(parents, id, name)")
-                    .execute();
-        } catch (IOException e) {
-            return String.format("'%s' in parents ", parent);
-        }
-
-        List<File> files =  result.getFiles();
-
-        String subfolders = files.stream()
-                .map(File::getId)
-                .map(this::getAllSubFolders)
-                .collect(Collectors.joining(" or "));
-
-        String addOn = !files.isEmpty() ? " or " + subfolders : "";
-
-        return String.format("'%s' in parents", parent) + addOn;
-    }
-
     @Override
     public List<DUUIDocument> listDocuments(String path, String fileExtension, boolean recursive) throws IOException {
-
-        String searchPath = recursive ? getAllSubFolders(path) : String.format("'%s' in parents ", path);
-
-        return listDocuments_(searchPath, fileExtension);
+        return listDocuments(List.of(path), fileExtension, recursive);
     }
 
     @Override
     public List<DUUIDocument> listDocuments(List<String> paths, String fileExtension, boolean recursive) throws IOException {
+        if (paths == null || paths.isEmpty()) {
+            return List.of();
+        }
 
-        String searchPath = paths.stream()
-                .map(path -> String.format("'%s' in parents ", path))
-                .collect(Collectors.joining(" or "));
+        List<String> startingFolders = new ArrayList<>();
+        for (String path : paths) {
+            if (path != null && !path.isBlank()) {
+                startingFolders.add(path);
+            }
+        }
 
-        return listDocuments_(searchPath, fileExtension);
+        if (startingFolders.isEmpty()) {
+            return List.of();
+        }
+
+        return collectDocuments(startingFolders, normalizeExtension(fileExtension), recursive);
     }
 
-    public List<DUUIDocument> listDocuments_(String searchPath, String fileExtension) throws IOException {
+    private List<DUUIDocument> collectDocuments(List<String> folderIds, String normalizedExtension, boolean recursive) throws IOException {
+        List<DUUIDocument> documents = new ArrayList<>();
+        Deque<String> foldersToBrowse = new ArrayDeque<>(folderIds);
 
-        String fileExtension_ = fileExtension.isEmpty() ?
-                "" : String.format("and fileExtension = '%s'", fileExtension.replace(".", ""));
-        FileList result = service.files().list()
-                .setQ(searchPath + " and mimeType != 'application/vnd.google-apps.folder' " + fileExtension_)
-                .setFields("files(id, name, size)")
-                .execute();
+        while (!foldersToBrowse.isEmpty()) {
+            String folderId = foldersToBrowse.removeFirst();
+            String query = buildListQuery(folderId, normalizedExtension, recursive);
 
-        List<File> files =  result.getFiles();
+            String pageToken = null;
+            do {
+                FileList result = service.files().list()
+                        .setQ(query)
+                        .setFields("nextPageToken, files(id, name, size, mimeType, fileExtension)")
+                        .setPageToken(pageToken)
+                        .execute();
 
-        List<DUUIDocument> documents;
+                List<File> files = result.getFiles();
+                if (files != null) {
+                    for (File file : files) {
+                        if (file == null || !file.getIsAppAuthorized()) {
+                            continue;
+                        }
+                        boolean isFolder = "application/vnd.google-apps.folder".equals(file.getMimeType());
+                        if (isFolder) {
+                            if (recursive && file.getId() != null) {
+                                foldersToBrowse.addLast(file.getId());
+                            }
+                            continue;
+                        }
 
-        if (files == null || files.isEmpty()) {
-            documents = List.of();
-        } else {
-            documents = files.stream()
-                .filter(File::getIsAppAuthorized)
-                .map(f -> new DUUIDocument(f.getName(), f.getId(), f.getSize()))
-                .collect(Collectors.toList());
+                        String fileExt = file.getFileExtension();
+                        if (!normalizedExtension.isEmpty()) {
+                            if (fileExt == null || !normalizedExtension.equalsIgnoreCase(fileExt)) {
+                                continue;
+                            }
+                        }
+
+                        documents.add(new DUUIDocument(file.getName(), file.getId(), file.getSize()));
+                    }
+                }
+
+                pageToken = result.getNextPageToken();
+            } while (pageToken != null);
         }
 
         return documents;
+    }
+
+    private static String buildListQuery(String folderId, String normalizedExtension, boolean recursive) {
+        StringBuilder query = new StringBuilder();
+        query.append(literal(folderId)).append(" in parents");
+        if (!recursive) {
+            query.append(" and mimeType != 'application/vnd.google-apps.folder'");
+        }
+        if (!normalizedExtension.isBlank()) {
+            query.append(" and fileExtension = ").append(literal(normalizedExtension));
+        }
+        return query.toString();
+    }
+
+    private static String normalizeExtension(String extension) {
+        if (extension == null) {
+            return "";
+        }
+        String trimmed = extension.trim().toLowerCase(Locale.ROOT);
+        if (trimmed.startsWith(".")) {
+            trimmed = trimmed.substring(1);
+        }
+        return trimmed;
+    }
+
+    private static String literal(String value) {
+        if (value == null) {
+            return "''";
+        }
+        return "'" + value.replace("'", "\\'") + "'";
     }
 
     @Override

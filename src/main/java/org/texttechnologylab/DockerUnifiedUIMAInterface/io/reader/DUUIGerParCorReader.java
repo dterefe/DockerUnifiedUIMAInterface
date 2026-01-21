@@ -11,7 +11,7 @@ import org.apache.uima.util.CasIOUtils;
 import org.bson.BsonDocument;
 import org.bson.Document;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.MongoDBConfig;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.MongoDBConnectionHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.DUUIMongoDBConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.DUUICollectionReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.ProgressMeter;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.AdvancedProgressMeter;
@@ -39,7 +39,7 @@ public class DUUIGerParCorReader implements DUUICollectionReader {
     private ConcurrentLinkedQueue<Document> items = new ConcurrentLinkedQueue();
 
     private MongoDBConfig dbConfig = null;
-    private MongoDBConnectionHandler mongoDBConnectionHandler = null;
+    private DUUIMongoDBConnectionHandler mongoDBConnectionHandler = null;
 
     private GridFSBucket gridFS = null;
 
@@ -85,7 +85,7 @@ public class DUUIGerParCorReader implements DUUICollectionReader {
 
     private void init() {
 
-        this.mongoDBConnectionHandler = new MongoDBConnectionHandler(dbConfig);
+        this.mongoDBConnectionHandler = new DUUIMongoDBConnectionHandler(dbConfig);
 
         this.gridFS = GridFSBuckets.create(mongoDBConnectionHandler.getDatabase(), "grid");
         results = mongoDBConnectionHandler.getCollection().find(BsonDocument.parse(sQuery)).limit(iLimit).cursor();

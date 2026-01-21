@@ -19,7 +19,7 @@ import org.bson.Document;
 import org.bson.conversions.Bson;
 import org.dkpro.core.api.io.JCasFileWriter_ImplBase;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.MongoDBConfig;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.MongoDBConnectionHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb.DUUIMongoDBConnectionHandler;
 import org.texttechnologylab.annotation.AnnotationComment;
 import org.texttechnologylab.utilities.helper.ArchiveUtils;
 import org.texttechnologylab.utilities.helper.TempFileHandler;
@@ -51,7 +51,7 @@ public class GerParCorWriter extends JCasFileWriter_ImplBase {
 
     private boolean bCompress = true;
 
-    MongoDBConnectionHandler dbConnectionHandler = null;
+    DUUIMongoDBConnectionHandler dbConnectionHandler = null;
     GridFSBucket gridFS = null;
 
     @Override
@@ -61,7 +61,7 @@ public class GerParCorWriter extends JCasFileWriter_ImplBase {
         MongoDBConfig dbConfig = null;
         try {
             dbConfig = new MongoDBConfig(dbconnection);
-            dbConnectionHandler = new MongoDBConnectionHandler(dbConfig);
+            dbConnectionHandler = new DUUIMongoDBConnectionHandler(dbConfig);
             this.gridFS = GridFSBuckets.create(dbConnectionHandler.getDatabase(), "grid");
         } catch (IOException e) {
             throw new RuntimeException(e);

@@ -1,6 +1,10 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.connection.mongodb;
 
-import com.mongodb.MongoClient;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.MongoCredential;
+import com.mongodb.ServerAddress;
+import com.mongodb.MongoClientSettings;
 import com.mongodb.*;
 import com.mongodb.client.*;
 import com.mongodb.client.model.Filters;
@@ -12,7 +16,7 @@ import org.bson.types.ObjectId;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-public class MongoDBConnectionHandler {
+public class DUUIMongoDBConnectionHandler {
 
     /**
      * MongoDBConfig Object
@@ -22,7 +26,7 @@ public class MongoDBConnectionHandler {
     /**
      * The connection with the MongoDB
      */
-    private com.mongodb.MongoClient pClient = null;
+    private MongoClient pClient = null;
 
     /**
      * The object for the selected Database
@@ -39,7 +43,7 @@ public class MongoDBConnectionHandler {
      *
      * @param pConfig
      */
-    public MongoDBConnectionHandler(MongoDBConfig pConfig) {
+    public DUUIMongoDBConnectionHandler(MongoDBConfig pConfig) {
         this.pConfig = pConfig;
         init();
     }
@@ -53,21 +57,20 @@ public class MongoDBConnectionHandler {
         MongoCredential credential = MongoCredential.createScramSha1Credential(pConfig.getMongoUsername(), pConfig.getAuthDatabase(), pConfig.getMongoPassword().toCharArray());
         // defining Hostname and Port
         ServerAddress seed = new ServerAddress(pConfig.getMongoHostname(), pConfig.getMongoPort());
-        List<ServerAddress> seeds = new ArrayList(0);
+        List<ServerAddress> seeds = new ArrayList<>(0);
         seeds.add(seed);
-        // defining some Options
-        MongoClientOptions options = MongoClientOptions.builder()
-                .connectionsPerHost(pConfig.getConnectionCount())
-                .socketTimeout(pConfig.getSocketTimeOut())
-                .maxWaitTime(pConfig.getMaxWaitTime())
-                .socketKeepAlive(true)
-                .serverSelectionTimeout(pConfig.getServerSelectionTimeout())
-                .connectTimeout(pConfig.getConnectionCount())
-                .sslEnabled(pConfig.getConnectionSSL())
-                .build();
+        
+        // defining some Options using MongoClientSettings
+        MongoClientSettings.Builder settingsBuilder = MongoClientSettings.builder()
+                .credential(credential)
+                .applyToClusterSettings(builder ->
+                    builder.hosts(seeds))
+                .applyToConnectionPoolSettings(builder -> 
+                    builder.maxSize(pConfig.getConnectionCount())
+                           .minSize(1));
 
         // connect to MongoDB
-        pClient = new MongoClient(seeds, credential, options);
+        pClient = MongoClients.create(settingsBuilder.build());
 
         // select database
         pDatabase = pClient.getDatabase(pConfig.getMongoDatabase());
@@ -85,7 +88,7 @@ public class MongoDBConnectionHandler {
      *
      * @return MongoCollection
      */
-    public MongoCollection getCollection() {
+    public MongoCollection<Document> getCollection() {
         return this.pCollection;
     }
 
@@ -94,7 +97,7 @@ public class MongoDBConnectionHandler {
      *
      * @return MongoCollection
      */
-    public MongoCollection getCollection(String sCollection) {
+    public MongoCollection<Document> getCollection(String sCollection) {
         return this.pDatabase.getCollection(sCollection);
     }
 
@@ -159,9 +162,8 @@ public class MongoDBConnectionHandler {
      * @param query
      * @return
      */
-    public FindIterable doQuery(BasicDBObject query) {
-        FindIterable result = this.getCollection().find(query);
-        return result;
+    public FindIterable<?> doQuery(BasicDBObject query) {
+        return this.getCollection().find(query);
     }
 
     /**
@@ -192,7 +194,7 @@ public class MongoDBConnectionHandler {
      */
 
     public MongoCursor<Document> doQueryIterator(BasicDBObject query, String sCollection, int iSkip, int iLimit) {
-        FindIterable result = this.getCollection(sCollection).find(query);
+        var result = this.getCollection(sCollection).find(query);
         if (iLimit > 0) {
             result = result.limit(iLimit);
         }
@@ -216,8 +218,8 @@ public class MongoDBConnectionHandler {
      * @param returnType
      * @return
      */
-    public MongoCursor doQueryIteratorDistinct(String sField, Class returnType, String sCollection) {
-        DistinctIterable result = this.getCollection(sCollection).distinct(sField, returnType);
+    public MongoCursor<?> doQueryIteratorDistinct(String sField, Class returnType, String sCollection) {
+        var result = this.getCollection(sCollection).distinct(sField, returnType);
         return result.iterator();
     }
 
@@ -257,7 +259,7 @@ public class MongoDBConnectionHandler {
      * @return
      */
     public Set<String> listCollections() {
-        Set<String> rSet = new HashSet<>(0);
+        Set<String> rSet = HashSet.newHashSet(0);
         rSet.addAll((Collection<? extends String>) this.getDatabase().listCollectionNames().spliterator());
         return rSet;
     }

@@ -32,7 +32,7 @@ public final class ClassScopedLogger implements DUUILogger {
 
     @Override
     public DUUIContext getContext() {
-        return context;
+        return context != null ? context : DUUILogContext.getContext();
     }
 
     @Override

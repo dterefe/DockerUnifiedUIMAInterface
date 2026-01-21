@@ -32,7 +32,7 @@ public class DUUIReaderComposer extends DUUIComposer {
             int index = 0;
             for (DUUIPipelineComponent comp : get_pipeline()) {
                 IDUUIDriverInterface driver = get_drivers().get(comp.getDriver());
-                Integer nDocs = driver.initReaderComponent(get_instantiatedPipeline().get(index).getUUID(), filePath);
+                Integer nDocs = driver.initReaderComponent(get_instantiatedPipeline().get(index).uuid(), filePath);
                 docCounts.add(nDocs);
                 index++;
             }
@@ -56,7 +56,7 @@ public class DUUIReaderComposer extends DUUIComposer {
                 System.out.println(get_instantiatedPipeline().size());
                 System.out.println(index);
                 if (get_instantiatedPipeline() != null && !get_instantiatedPipeline().isEmpty() && get_instantiatedPipeline().size() > index) {
-                    Integer nDocs = driver.initReaderComponent(get_instantiatedPipeline().get(index).getUUID(), filePath);
+                    Integer nDocs = driver.initReaderComponent(get_instantiatedPipeline().get(index).uuid(), filePath);
                     docCounts.add(nDocs);
 
                 } else {
@@ -233,10 +233,8 @@ public class DUUIReaderComposer extends DUUIComposer {
         try {
             for (PipelinePart comp : pipeline) {
                 if (shouldShutdown()) break;
-                getPipelineStatus().put(comp.getName(), DUUIStatus.ACTIVE);
+                getPipelineStatus().put(comp.name(), DUUIStatus.ACTIVE);
 
-                // Segment document for each item in the pipeline separately
-                // TODO support "complete pipeline" segmentation to only segment once
                 DUUISegmentationStrategy segmentationStrategy = comp.getSegmentationStrategy();
 
                 addEvent(
@@ -244,36 +242,19 @@ public class DUUIReaderComposer extends DUUIComposer {
                         String.format(
                                 "%s is being processed by component %s",
                                 document.getPath(),
-                                comp.getName())
+                                comp.name())
                 );
 
-                if (segmentationStrategy instanceof DUUISegmentationStrategyNone) {
-                    System.out.println("2");
-                    comp.getDriver().run(comp.getUUID(), jc, perf, this);
-                    System.out.println("3");
-                } else {
-                    segmentationStrategy.initialize(jc);
+                System.out.println("2");
+                comp.run(jc, perf, this, segmentationStrategy, document, getLogger());
+                System.out.println("3");
 
-                    JCas jCasSegmented = segmentationStrategy.getNextSegment();
-
-                    while (jCasSegmented != null) {
-                        // Process each cas sequentially
-                        // TODO add parallel variant later
-
-                        comp.getDriver().run(comp.getUUID(), jCasSegmented, perf, this);
-
-                        segmentationStrategy.merge(jCasSegmented);
-                        jCasSegmented = segmentationStrategy.getNextSegment();
-                    }
-
-                    segmentationStrategy.finalize(jc);
-                }
                 addEvent(
                         DUUIEvent.Sender.DOCUMENT,
                         String.format(
                                 "%s has been processed by component %s",
                                 document.getPath(),
-                                comp.getName())
+                                comp.name())
                 );
                 document.incrementProgress();
             }

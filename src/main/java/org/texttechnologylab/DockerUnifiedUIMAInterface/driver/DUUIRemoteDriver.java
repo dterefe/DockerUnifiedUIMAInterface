@@ -1,5 +1,13 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import org.apache.uima.fit.factory.JCasFactory;
+
+
+import java.net.URI;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.DUUIComponentDescriptors;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.base.AbstractComponentDescriptor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.instances.DUUIInstanceDescriptors;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
@@ -29,6 +37,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.monitoring.DUUIStatus;
  */
 public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemoteDriver.InstantiatedComponent> {
     private Map<String, InstantiatedComponent> _components;
+    private final Map<String, List<String>> _newRemoteUrls = new HashMap<>();
+
     private HttpClient _client;
     private DUUICompressionHelper _helper;
 
@@ -260,4 +270,35 @@ public class DUUIRemoteDriver extends DUUIRestDriver<DUUIRemoteDriver, DUUIRemot
 
     }
 
+    // New refactor API (descriptor-based instantiation)
+    public IDUUIPipelineComponent instantiate(
+            DUUIComponentDescriptors.IDUUIRemoteComponentDescriptor<IDUUIPipelineComponent> descriptor
+    ) throws Exception {
+        String uuid = descriptor.uuid();
+        if (_newRemoteUrls.containsKey(uuid)) {
+            throw new IllegalArgumentException("UUID already in use: " + uuid);
+        }
+
+        List<String> urls = new ArrayList<>();
+        for (String url : descriptor.urls()
+                .orElseThrow(() -> new InvalidParameterException("No URLs provided."))) {
+            urls.add(url);
+
+            for (int workerIndex = 0; workerIndex < descriptor.concurrency(); workerIndex++) {
+                String instanceIdentifier = "%s-%s-Endpoint-%d-Worker-%d".formatted(
+                        descriptor.name().orElse("component"),
+                        uuid.substring(0, 5),
+                        urls.size(),
+                        workerIndex + 1
+                );
+
+                DUUIInstanceDescriptors.IDUUIHttpInstanceOptions<?> options = descriptor.createHttpInstance();
+                options.withInstanceId(instanceIdentifier);
+                options.withEndpoint(URI.create(url));
+            }
+        }
+
+        _newRemoteUrls.put(uuid, urls);
+        return descriptor.finalization();
+    }
 }

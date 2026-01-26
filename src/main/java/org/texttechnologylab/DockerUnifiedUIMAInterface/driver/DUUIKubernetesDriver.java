@@ -1,5 +1,15 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import org.apache.uima.fit.factory.JCasFactory;
+
+
+import java.net.URI;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.DUUIComponentDescriptors;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.base.AbstractComponentDescriptor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.instances.DUUIInstanceDescriptors;
+
 
 import static io.fabric8.kubernetes.client.impl.KubernetesClientImpl.logger;
 import static java.lang.String.format;
@@ -54,6 +64,8 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
     private final KubernetesClient _kube_client;
 
     private final HashMap<String, InstantiatedComponent> _active_components;
+    private final HashMap<String, String> _newKubernetesNames = new HashMap<>();
+
     private final DUUIDockerInterface _interface;
     private final HttpClient _client;
 
@@ -568,5 +580,59 @@ public class DUUIKubernetesDriver extends DUUIRestDriver<DUUIKubernetesDriver, D
             _component.withDriver(DUUIKubernetesDriver.class);
             return _component;
         }
+    }
+
+    // New refactor API (descriptor-based instantiation)
+    public IDUUIPipelineComponent instantiate(
+            DUUIComponentDescriptors.IDUUIKubernetesComponentDescriptor<IDUUIPipelineComponent> descriptor
+    ) throws Exception {
+        String uuid = descriptor.uuid();
+        if (_newKubernetesNames.containsKey(uuid)) {
+            throw new IllegalArgumentException("UUID already in use: " + uuid);
+        }
+
+        String name = "a" + uuid;
+
+        List<String> labels = new ArrayList<>();
+        for (Map.Entry<String, String> entry : descriptor.kubernetesLabelSelector().entrySet()) {
+            labels.add(entry.getKey() + "=" + entry.getValue());
+        }
+
+        Service service;
+        try {
+            createDeployment(
+                    name,
+                    descriptor.imageName()
+                            .orElseThrow(() -> new InvalidParameterException("No docker image name provided.")),
+                    descriptor.replicas() + getScaleBuffer(),
+                    labels
+            );
+            service = createService(name);
+        } catch (Exception e) {
+            deleteDeployment(name);
+            deleteService(name);
+            throw e;
+        }
+
+        int port = service.getSpec().getPorts().get(0).getNodePort();
+        String kubeUrl = _interface.getHostUrl(port);
+
+        for (int replicaIndex = 0; replicaIndex < descriptor.replicas(); replicaIndex++) {
+            for (int workerIndex = 0; workerIndex < descriptor.concurrency(); workerIndex++) {
+                String instanceIdentifier = "%s-%s-Pod-%d-Worker-%d".formatted(
+                        descriptor.name().orElse("component"),
+                        uuid.substring(0, 5),
+                        replicaIndex + 1,
+                        workerIndex + 1
+                );
+
+                DUUIInstanceDescriptors.IDUUIHttpInstanceOptions<?> options = descriptor.createHttpInstance();
+                options.withInstanceId(instanceIdentifier);
+                options.withEndpoint(URI.create(kubeUrl));
+            }
+        }
+
+        _newKubernetesNames.put(uuid, name);
+        return descriptor.finalization();
     }
 }

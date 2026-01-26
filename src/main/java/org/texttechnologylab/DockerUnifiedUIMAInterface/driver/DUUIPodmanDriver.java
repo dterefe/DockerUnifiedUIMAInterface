@@ -1,5 +1,11 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import java.net.URI;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.DUUIComponentDescriptors;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.instances.DUUIInstanceDescriptors;
+
 import static java.lang.String.format;
 import static org.awaitility.Awaitility.await;
 
@@ -492,4 +498,88 @@ public class DUUIPodmanDriver extends DUUIRestDriver<DUUIPodmanDriver, DUUIDocke
 
     }
 
+    // New refactor API (descriptor-based instantiation)
+    public IDUUIPipelineComponent instantiate(
+            DUUIComponentDescriptors.IDUUIContainerComponentDescriptor<IDUUIPipelineComponent> descriptor
+    ) throws Exception {
+        String uuid = descriptor.uuid();
+
+        String image = descriptor.imageName()
+            .orElseThrow(() -> new InvalidParameterException("No docker image name provided."));
+
+        if (descriptor.fetchImage()) {
+            pull(image);
+        }
+
+            ;
+        try {
+            if (Boolean.FALSE.equals(awaitResult(_interface.images().exists(image)))) {
+                throw new InvalidParameterException(
+                        format(
+                                "Could not find local image '%s'. Did you misspell it or forget to enable image fetching?",
+                                image
+                        )
+                );
+            }
+        } catch (Throwable e) {
+            throw new RuntimeException(e);
+        }
+
+        for (int replicaIndex = 0; replicaIndex < descriptor.replicas(); replicaIndex++) {
+            ContainerCreateOptions pOptions = new ContainerCreateOptions();
+            pOptions.image(image);
+            pOptions.remove(true);
+            pOptions.publishImagePorts(true);
+
+            if (descriptor.useGPU()) {
+                List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
+                linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 0, "/dev/nvidia0", "c", 0));
+                pOptions.hostDeviceList(linuxDevices);
+            }
+
+            String containerId;
+            int port;
+            try {
+                JsonObject created = awaitResult(_interface.containers().create(pOptions));
+                containerId = created.getString("Id");
+
+                _interface.containers().start(containerId);
+
+                JsonObject inspected = awaitResult(
+                        _interface.containers().inspect(containerId, new ContainerInspectOptions().setSize(false))
+                );
+                JSONObject nObject = new org.json.JSONObject(inspected);
+                port = nObject.getJSONObject("map")
+                        .getJSONObject("HostConfig")
+                        .getJSONObject("PortBindings")
+                        .getJSONArray("9714/tcp")
+                        .getJSONObject(0)
+                        .getInt("HostPort");
+            } catch (Throwable e) {
+                throw new RuntimeException(e);
+            }
+
+            if (port == 0) {
+                throw new UnknownError("Could not read the container port!");
+            }
+
+            String endpointUrl = resolveHostUrl(port);
+
+            for (int workerIndex = 0; workerIndex < descriptor.concurrency(); workerIndex++) {
+                String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
+                        descriptor.name().orElse("component"),
+                        uuid.substring(0, 5),
+                        replicaIndex + 1,
+                        workerIndex + 1
+                );
+
+                DUUIInstanceDescriptors.IDUUIContainerInstanceOptions<?> options = descriptor.createContainerInstance();
+                options.withInstanceId(instanceIdentifier);
+                options.withEndpoint(URI.create(endpointUrl));
+                options.withContainerId(containerId);
+            }
+        }
+
+        return descriptor.finalization();
+    }
 }

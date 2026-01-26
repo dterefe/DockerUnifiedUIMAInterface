@@ -1,6 +1,13 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
+
+import java.net.URI;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.DUUIComponentDescriptors;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.base.AbstractComponentDescriptor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.instances.DUUIInstanceDescriptors;
 import static java.lang.String.format;
 
 import java.io.IOException;
@@ -41,6 +48,8 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
     private HttpClient _client;
 
     private HashMap<String, InstantiatedComponent> _active_components;
+    private final HashMap<String, List<String>> _newContainerIds = new HashMap<>();
+
 
     private static final DUUILogger LOG = DUUILoggers.getLogger(DUUIDockerDriver.class);
 
@@ -406,5 +415,67 @@ public class DUUIDockerDriver extends DUUIRestDriver<DUUIDockerDriver, DUUIDocke
             return _component;
         }
 
+    }
+
+    // New refactor API (descriptor-based instantiation)
+    public IDUUIPipelineComponent instantiate(
+            DUUIComponentDescriptors.IDUUIContainerComponentDescriptor<IDUUIPipelineComponent> descriptor
+    ) throws Exception {
+        String uuid = descriptor.uuid();
+        if (_newContainerIds.containsKey(uuid)) {
+            throw new IllegalArgumentException("UUID already in use: " + uuid);
+        }
+
+        AtomicBoolean shutdown = new AtomicBoolean(false);
+
+        if (descriptor.fetchImage()) {
+            _interface.pullImage(
+                    descriptor.imageName()
+                            .orElseThrow(() -> new InvalidParameterException("No docker image name provided.")),
+                    descriptor.registryUsername().orElse(null),
+                    descriptor.registryPassword().orElse(null),
+                    shutdown
+            );
+        }
+
+        List<String> env = new java.util.ArrayList<>();
+        for (Map.Entry<String, String> entry : descriptor.envs().entrySet()) {
+            env.add(entry.getKey() + "=" + entry.getValue());
+        }
+
+        List<String> containerIds = new java.util.ArrayList<>();
+
+        for (int replicaIndex = 0; replicaIndex < descriptor.replicas(); replicaIndex++) {
+            String containerId = _interface.run(
+                    descriptor.imageName()
+                            .orElseThrow(() -> new InvalidParameterException("No docker image name provided.")),
+                    env,
+                    descriptor.useGPU(),
+                    !descriptor.dockerNoShutdown(),
+                    9714,
+                    false
+            );
+            containerIds.add(containerId);
+
+            int hostPort = _interface.extract_port_mapping(containerId, 9714);
+            String endpointUrl = _interface.getHostUrl(hostPort);
+
+            for (int workerIndex = 0; workerIndex < descriptor.concurrency(); workerIndex++) {
+                String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
+                        descriptor.name().orElse("component"),
+                        uuid.substring(0, 5),
+                        replicaIndex + 1,
+                        workerIndex + 1
+                );
+
+                DUUIInstanceDescriptors.IDUUIContainerInstanceOptions<?> options = descriptor.createContainerInstance();
+                options.withInstanceId(instanceIdentifier);
+                options.withEndpoint(URI.create(endpointUrl));
+                options.withContainerId(containerId);
+            }
+        }
+
+        _newContainerIds.put(uuid, containerIds);
+        return descriptor.finalization();
     }
 }

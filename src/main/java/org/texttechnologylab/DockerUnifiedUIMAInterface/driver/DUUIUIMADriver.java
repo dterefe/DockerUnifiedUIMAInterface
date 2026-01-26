@@ -1,5 +1,13 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import org.apache.uima.fit.factory.JCasFactory;
+
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.DUUIComponentDescriptors;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.base.AbstractComponentDescriptor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.instances.DUUIInstanceDescriptors;
+
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
@@ -45,6 +53,8 @@ import org.xml.sax.SAXException;
  */
 public class DUUIUIMADriver implements IDUUIDriverInterface {
     private HashMap<String, InstantiatedComponent> _engines;
+    private final HashMap<String, List<AnalysisEngine>> _newEngines = new HashMap<>();
+
     private boolean _enable_debug;
     private static final DUUILogger logger = DUUILoggers.getLogger(DUUIUIMADriver.class);
 
@@ -423,5 +433,31 @@ public class DUUIUIMADriver implements IDUUIDriverInterface {
         }
 
         return true;
+    }
+
+    // New refactor API (descriptor-based instantiation)
+    public IDUUIPipelineComponent instantiate(
+            DUUIComponentDescriptors.IDUUIUimaComponentDescriptor<IDUUIPipelineComponent> descriptor
+    ) throws Exception {
+        String uuid = descriptor.uuid();
+        if (_newEngines.containsKey(uuid)) {
+            throw new IllegalArgumentException("UUID already in use: " + uuid);
+        }
+
+        AnalysisEngineDescription analysisEngineDesc = descriptor.analysisEngineDescription()
+                .orElseThrow(() -> new InvalidParameterException("No analysis engine description provided."));
+
+        List<AnalysisEngine> engines = new ArrayList<>();
+        for (int i = 0; i < descriptor.replicas(); i++) {
+            AnalysisEngine engine = AnalysisEngineFactory.createEngine(analysisEngineDesc);
+            engines.add(engine);
+
+            DUUIInstanceDescriptors.IDUUIUimaInstanceOptions<?> options = descriptor.createUimaInstance();
+            options.withInstanceId(uuid + "-Engine-" + (i + 1));
+            options.withEngine(engine);
+        }
+
+        _newEngines.put(uuid, engines);
+        return descriptor.finalization();
     }
 }

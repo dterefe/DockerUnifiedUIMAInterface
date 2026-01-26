@@ -1,5 +1,12 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
+import java.net.URI;
+
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.DUUIComponentDescriptors;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.IDUUIPipelineComponent;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.base.AbstractComponentDescriptor;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.components.instances.DUUIInstanceDescriptors;
+
 
 import static java.lang.String.format;
 
@@ -37,6 +44,8 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
     private final DUUIDockerInterface _interface;
     private HttpClient _client;
     private final HashMap<String, DUUISwarmDriver.InstantiatedComponent> _active_components;
+    private final HashMap<String, String> _newSwarmServices = new HashMap<>();
+
     private String _withSwarmVisualizer;
     private String _host = "localhost";
 
@@ -402,5 +411,53 @@ public class DUUISwarmDriver extends DUUIRestDriver<DUUISwarmDriver, DUUISwarmDr
             _component.withDriver(DUUISwarmDriver.class);
             return _component;
         }
+    }
+
+    // New refactor API (descriptor-based instantiation)
+    public IDUUIPipelineComponent instantiate(
+            DUUIComponentDescriptors.IDUUISwarmComponentDescriptor<IDUUIPipelineComponent> descriptor
+    ) throws Exception {
+        String uuid = descriptor.uuid();
+        if (_newSwarmServices.containsKey(uuid)) {
+            throw new IllegalArgumentException("UUID already in use: " + uuid);
+        }
+
+        if (!_interface.isSwarmManagerNode()) {
+            throw new InvalidParameterException(
+                    "This node is not a Docker Swarm Manager, thus cannot create and schedule new services!"
+            );
+        }
+
+        List<String> constraints = new ArrayList<>();
+        for (Map.Entry<String, String> entry : descriptor.swarmConstraints().entrySet()) {
+            constraints.add("node.labels." + entry.getKey() + "==" + entry.getValue());
+        }
+
+        String serviceId = _interface.run_service(
+                descriptor.imageName()
+                        .orElseThrow(() -> new InvalidParameterException("No docker image name provided.")),
+                descriptor.replicas(),
+                constraints
+        );
+        int port = _interface.extract_service_port_mapping(serviceId);
+        String serviceUrl = format("http://%s:%d", getHostname(), port);
+
+        for (int replicaIndex = 0; replicaIndex < descriptor.replicas(); replicaIndex++) {
+            for (int workerIndex = 0; workerIndex < descriptor.concurrency(); workerIndex++) {
+                String instanceIdentifier = "%s-%s-Replica-%d-Worker-%d".formatted(
+                        descriptor.name().orElse("component"),
+                        uuid.substring(0, 5),
+                        replicaIndex + 1,
+                        workerIndex + 1
+                );
+
+                DUUIInstanceDescriptors.IDUUIHttpInstanceOptions<?> options = descriptor.createHttpInstance();
+                options.withInstanceId(instanceIdentifier);
+                options.withEndpoint(URI.create(serviceUrl));
+            }
+        }
+
+        _newSwarmServices.put(uuid, serviceId);
+        return descriptor.finalization();
     }
 }

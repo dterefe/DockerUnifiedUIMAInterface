@@ -1,0 +1,17 @@
+package org.texttechnologylab.duui.exception;
+
+public enum DUUIFailureCategory {
+    VALIDATION,
+    TRANSIENT_INFRASTRUCTURE,
+    PERSISTENT_INFRASTRUCTURE,
+    PARSE,
+    SEMANTIC_DATA,
+    CONFLICT,
+    CONCURRENCY,
+    RESOURCE_EXHAUSTION,
+    PROGRAMMING_BUG,
+    OPTIONAL_FEATURE,
+    CONSISTENCY,
+    CANCELLATION,
+    TIMEOUT
+}

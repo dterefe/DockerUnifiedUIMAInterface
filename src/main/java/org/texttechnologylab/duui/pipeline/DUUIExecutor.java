@@ -96,7 +96,15 @@ public final class DUUIExecutor implements AutoCloseable {
         return DUUIExecutionResult.success(current, 0, current.state().attempt());
     }
 
-    private static int continuationStage(DUUIArtifact<?> artifact) {
+    public DUUIDispatchPolicy dispatchPolicyFor(DUUICheckpoint<?> checkpoint, DUUIArtifact<?> artifact) {
+        if (checkpoint == null || checkpoint.stages().isEmpty()) {
+            return DUUIDispatchPolicy.CALLER;
+        }
+        int stageIndex = Math.min(continuationStage(artifact), checkpoint.stages().size() - 1);
+        return checkpoint.stages().get(stageIndex).dispatchPolicy();
+    }
+
+    public static int continuationStage(DUUIArtifact<?> artifact) {
         String value = artifact.metadata().get(CONTINUATION_STAGE);
         if (value == null || value.isBlank()) return 0;
         try {

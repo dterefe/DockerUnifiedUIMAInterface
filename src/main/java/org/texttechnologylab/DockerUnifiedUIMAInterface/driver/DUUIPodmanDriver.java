@@ -203,6 +203,17 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
 
     }
 
+    public List<String> getEndpointUrls(String uuid) {
+        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
+        if (comp == null) {
+            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
+        }
+        return comp.getInstances().stream()
+                .map(DUUIDockerDriver.ComponentInstance::generateURL)
+                .distinct()
+                .toList();
+    }
+
     @Override
     public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws Exception {
 

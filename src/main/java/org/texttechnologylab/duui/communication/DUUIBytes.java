@@ -2,6 +2,7 @@ package org.texttechnologylab.duui.communication;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 public final class DUUIBytes {
@@ -23,6 +24,14 @@ public final class DUUIBytes {
 
     public static int unsignedByte(byte[] bytes, int index) {
         return bytes[index] & 0xFF;
+    }
+
+    public static void write(OutputStream output, int value) throws IOException {
+        output.write(value);
+    }
+
+    public static void write(OutputStream output, byte[] bytes) throws IOException {
+        output.write(bytes);
     }
 
     public static byte[] utf8(String value) {

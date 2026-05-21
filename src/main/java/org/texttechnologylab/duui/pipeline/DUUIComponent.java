@@ -15,11 +15,16 @@ import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
-public class DUUIComponent<T> extends DUUIActor {
+public class DUUIComponent<T> extends DUUIActor implements AutoCloseable {
     private final BlockingQueue<DUUINode<T>> nodes;
     private final int capacity;
+    private final AutoCloseable closeAction;
 
     public DUUIComponent(String id, List<DUUINode<T>> nodes) {
+        this(id, nodes, null);
+    }
+
+    public DUUIComponent(String id, List<DUUINode<T>> nodes, AutoCloseable closeAction) {
         super(id);
         Objects.requireNonNull(nodes, "nodes");
         if (nodes.isEmpty()) {
@@ -27,6 +32,7 @@ public class DUUIComponent<T> extends DUUIActor {
         }
         this.nodes = new LinkedBlockingQueue<>(nodes);
         this.capacity = nodes.size();
+        this.closeAction = closeAction;
     }
 
     public static DUUIComponent<org.apache.uima.jcas.JCas> v1(String id, List<DUUIV1Annotator> replicas) {
@@ -99,5 +105,12 @@ public class DUUIComponent<T> extends DUUIActor {
 
     public int availableNodes() {
         return nodes.size();
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (closeAction != null) {
+            closeAction.close();
+        }
     }
 }

@@ -348,6 +348,17 @@ public class DUUIKubernetesDriver implements IDUUIDriverInterface {
 
     }
 
+    public List<String> getEndpointUrls(String uuid) {
+        InstantiatedComponent comp = _active_components.get(uuid);
+        if (comp == null) {
+            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
+        }
+        return comp._components.stream()
+                .map(ComponentInstance::generateURL)
+                .distinct()
+                .toList();
+    }
+
     @Override
     public TypeSystemDescription get_typesystem(String uuid) throws InterruptedException, IOException, SAXException, CompressorException, ResourceInitializationException {
         InstantiatedComponent comp = _active_components.get(uuid);

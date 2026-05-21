@@ -8,7 +8,6 @@ import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrator;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestratorConfig;
 import org.texttechnologylab.duui.orchestration.DUUIScheduler;
-import org.texttechnologylab.duui.orchestration.DUUISequentialScheduler;
 import org.texttechnologylab.duui.orchestration.DUUITypeDirector;
 import org.texttechnologylab.duui.pipeline.DUUIExecutor;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
@@ -22,7 +21,7 @@ public final class DUUISystemScope implements AutoCloseable {
     private final String id;
     private final Map<String, DUUIPipeline> pipelines = new LinkedHashMap<>();
     private DUUIExecutor executor;
-    private DUUIScheduler scheduler = new DUUISequentialScheduler();
+    private DUUIScheduler scheduler = new DUUIScheduler();
     private DUUIDirector director = new DUUITypeDirector();
     private DUUIOrchestratorConfig orchestratorConfig = DUUIOrchestratorConfig.DEFAULT;
     private DUUIEventService eventService;
@@ -58,7 +57,7 @@ public final class DUUISystemScope implements AutoCloseable {
     }
 
     void scheduler(DUUIScheduler scheduler) {
-        this.scheduler = scheduler == null ? new DUUISequentialScheduler() : scheduler;
+        this.scheduler = scheduler == null ? new DUUIScheduler() : scheduler;
     }
 
     void director(DUUIDirector director) {
@@ -131,6 +130,19 @@ public final class DUUISystemScope implements AutoCloseable {
             return;
         }
         closed = true;
+        for (DUUIPipeline pipeline : pipelines.values()) {
+            for (var checkpoint : pipeline.checkpoints()) {
+                for (var stage : checkpoint.stages()) {
+                    for (var component : stage.components()) {
+                        try {
+                            component.close();
+                        } catch (Exception e) {
+                            throw new IllegalStateException("Failed to close DUUI component " + component.id(), e);
+                        }
+                    }
+                }
+            }
+        }
         if (executor != null) {
             executor.close();
         }

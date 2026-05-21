@@ -9,8 +9,11 @@ import org.texttechnologylab.duui.pipeline.DUUIGenerator;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
@@ -25,7 +28,7 @@ public final class DUUIOrchestrator {
     private final DUUIOrchestratorConfig config;
 
     public DUUIOrchestrator(DUUIPipeline pipeline) {
-        this(UUID.randomUUID().toString(), pipeline, new DUUISequentialScheduler(), new DUUITypeDirector(), null, DUUIOrchestratorConfig.DEFAULT);
+        this(UUID.randomUUID().toString(), pipeline, new DUUIScheduler(), new DUUITypeDirector(), null, DUUIOrchestratorConfig.DEFAULT);
     }
 
     public DUUIOrchestrator(
@@ -48,7 +51,7 @@ public final class DUUIOrchestrator {
     ) {
         this.orchestratorId = orchestratorId == null ? UUID.randomUUID().toString() : orchestratorId;
         this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
-        this.scheduler = scheduler == null ? new DUUISequentialScheduler() : scheduler;
+        this.scheduler = scheduler == null ? new DUUIScheduler() : scheduler;
         this.director = director == null ? new DUUITypeDirector() : director;
         this.executor = executor == null ? new DUUIExecutor(this.orchestratorId) : executor;
         this.config = config == null ? DUUIOrchestratorConfig.DEFAULT : config;
@@ -94,50 +97,113 @@ public final class DUUIOrchestrator {
             }
         }
 
-        while (hasQueuedArtifacts(queues)) {
-            for (Map.Entry<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> entry : queues.entrySet()) {
-                Queue<DUUIArtifact<?>> queue = entry.getValue();
-                while (!queue.isEmpty()) {
-                    DUUIArtifact<?> artifact = queue.remove();
-                    DUUIExecutionContext executionContext = contexts.remove(artifact.id());
-                    if (executionContext == null) {
-                        executionContext = initialContext.copyValues();
-                    }
-                    DUUIExecutionResult<?> result = scheduleUnchecked(entry.getKey(), artifact, executionContext);
-                    orchestrationResult.addResult(result);
-                    java.util.List<DUUIArtifact<?>> emittedArtifacts = executionContext.drainEmittedArtifacts();
-                    if (isSuspendedForFork(result.artifact())) {
-                        if (emittedArtifacts.isEmpty()) {
-                            contexts.put(result.artifact().id(), executionContext.copyValues());
-                            if (!enqueue(queues, result.artifact(), orchestrationResult)) return orchestrationResult;
-                        } else {
-                            parkedParents.put(result.artifact().id(), result.artifact());
-                            pendingChildren.put(result.artifact().id(), emittedArtifacts.size());
-                            contexts.put(result.artifact().id(), executionContext.copyValues());
-                        }
-                    }
-                    for (DUUIArtifact<?> emitted : emittedArtifacts) {
-                        contexts.put(emitted.id(), executionContext.copyValues());
-                        if (!enqueue(queues, emitted, orchestrationResult)) return orchestrationResult;
-                    }
-                    if (!isSuspendedForFork(result.artifact())) {
-                        String parentId = result.artifact().context().parentArtifactId();
-                        if (parentId != null && pendingChildren.containsKey(parentId)) {
-                            int remaining = pendingChildren.compute(parentId, (ignored, count) -> count == null ? 0 : count - 1);
-                            if (remaining <= 0) {
-                                pendingChildren.remove(parentId);
-                                DUUIArtifact<?> parent = parkedParents.remove(parentId);
-                                if (parent != null && !enqueue(queues, parent, orchestrationResult)) return orchestrationResult;
-                            }
-                        }
-                    }
-                    if (result.status() == DUUIExecutionStatus.FAILED && config.failFast()) {
-                        return orchestrationResult;
-                    }
+        List<ScheduledArtifact> inFlight = new ArrayList<>();
+        while (hasQueuedArtifacts(queues) || !inFlight.isEmpty()) {
+            DUUIScheduler.Selection selection = scheduler.select(queues, inFlight.size(), executor);
+            boolean dispatched = false;
+            if (selection != null) {
+                DUUIArtifact<?> artifact = selection.artifact();
+                DUUIExecutionContext executionContext = contexts.remove(artifact.id());
+                if (executionContext == null) {
+                    executionContext = initialContext.copyValues();
+                }
+                DUUITask<DUUIExecutionResult<?>> task = taskUnchecked(selection.checkpoint(), artifact, executionContext);
+                scheduler.dispatch(task, executor, executor.dispatchPolicyFor(selection.checkpoint(), artifact));
+                inFlight.add(new ScheduledArtifact(selection.checkpoint(), artifact, executionContext, task));
+                dispatched = true;
+            }
+
+            boolean completed = drainCompleted(
+                    inFlight,
+                    contexts,
+                    queues,
+                    orchestrationResult,
+                    parkedParents,
+                    pendingChildren
+            );
+            if (completed && orchestrationResult.hasFailures() && config.failFast()) {
+                return orchestrationResult;
+            }
+
+            if (!dispatched && !completed && !inFlight.isEmpty()) {
+                ScheduledArtifact scheduled = inFlight.remove(0);
+                if (!completeScheduled(
+                        scheduled,
+                        contexts,
+                        queues,
+                        orchestrationResult,
+                        parkedParents,
+                        pendingChildren
+                )) {
+                    return orchestrationResult;
                 }
             }
         }
         return orchestrationResult;
+    }
+
+    private boolean drainCompleted(
+            List<ScheduledArtifact> inFlight,
+            Map<String, DUUIExecutionContext> contexts,
+            Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues,
+            DUUIOrchestrationResult orchestrationResult,
+            Map<String, DUUIArtifact<?>> parkedParents,
+            Map<String, Integer> pendingChildren
+    ) {
+        boolean completed = false;
+        Iterator<ScheduledArtifact> iterator = inFlight.iterator();
+        while (iterator.hasNext()) {
+            ScheduledArtifact scheduled = iterator.next();
+            if (!scheduled.task().isDone()) {
+                continue;
+            }
+            iterator.remove();
+            completed = true;
+            if (!completeScheduled(scheduled, contexts, queues, orchestrationResult, parkedParents, pendingChildren)) {
+                return true;
+            }
+        }
+        return completed;
+    }
+
+    private boolean completeScheduled(
+            ScheduledArtifact scheduled,
+            Map<String, DUUIExecutionContext> contexts,
+            Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues,
+            DUUIOrchestrationResult orchestrationResult,
+            Map<String, DUUIArtifact<?>> parkedParents,
+            Map<String, Integer> pendingChildren
+    ) {
+        DUUIExecutionResult<?> result = scheduled.task().await();
+        DUUIExecutionContext executionContext = scheduled.context();
+        orchestrationResult.addResult(result);
+        List<DUUIArtifact<?>> emittedArtifacts = executionContext.drainEmittedArtifacts();
+        if (isSuspendedForFork(result.artifact())) {
+            if (emittedArtifacts.isEmpty()) {
+                contexts.put(result.artifact().id(), executionContext.copyValues());
+                if (!enqueue(queues, result.artifact(), orchestrationResult)) return false;
+            } else {
+                parkedParents.put(result.artifact().id(), result.artifact());
+                pendingChildren.put(result.artifact().id(), emittedArtifacts.size());
+                contexts.put(result.artifact().id(), executionContext.copyValues());
+            }
+        }
+        for (DUUIArtifact<?> emitted : emittedArtifacts) {
+            contexts.put(emitted.id(), executionContext.copyValues());
+            if (!enqueue(queues, emitted, orchestrationResult)) return false;
+        }
+        if (!isSuspendedForFork(result.artifact())) {
+            String parentId = result.artifact().context().parentArtifactId();
+            if (parentId != null && pendingChildren.containsKey(parentId)) {
+                int remaining = pendingChildren.compute(parentId, (ignored, count) -> count == null ? 0 : count - 1);
+                if (remaining <= 0) {
+                    pendingChildren.remove(parentId);
+                    DUUIArtifact<?> parent = parkedParents.remove(parentId);
+                    if (parent != null && !enqueue(queues, parent, orchestrationResult)) return false;
+                }
+            }
+        }
+        return result.status() != DUUIExecutionStatus.FAILED || !config.failFast();
     }
 
     private static boolean isSuspendedForFork(DUUIArtifact<?> artifact) {
@@ -167,9 +233,16 @@ public final class DUUIOrchestrator {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private DUUIExecutionResult<?> scheduleUnchecked(DUUICheckpoint checkpoint, DUUIArtifact artifact, DUUIExecutionContext context) {
-        DUUITask task = executor.task(context, () -> executor.execute(checkpoint, artifact));
-        return scheduler.schedule(task, executor);
+    private DUUITask<DUUIExecutionResult<?>> taskUnchecked(DUUICheckpoint checkpoint, DUUIArtifact artifact, DUUIExecutionContext context) {
+        return executor.task(context, () -> executor.execute(checkpoint, artifact));
+    }
+
+    private record ScheduledArtifact(
+            DUUICheckpoint<?> checkpoint,
+            DUUIArtifact<?> artifact,
+            DUUIExecutionContext context,
+            DUUITask<DUUIExecutionResult<?>> task
+    ) {
     }
 
     public String orchestratorId() { return executor.orchestratorId(); }

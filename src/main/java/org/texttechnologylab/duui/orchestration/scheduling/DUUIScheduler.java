@@ -1,8 +1,9 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.scheduling;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
-import org.texttechnologylab.duui.pipeline.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.DUUITask;
 
 import java.util.Map;
 import java.util.Queue;

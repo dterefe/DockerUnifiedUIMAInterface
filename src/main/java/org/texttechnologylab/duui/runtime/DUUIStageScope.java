@@ -1,8 +1,8 @@
 package org.texttechnologylab.duui.runtime;
 
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchPolicy;
-import org.texttechnologylab.duui.pipeline.DUUIComponent;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.texttechnologylab.duui.pipeline.DUUILambda;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.apache.uima.jcas.JCas;

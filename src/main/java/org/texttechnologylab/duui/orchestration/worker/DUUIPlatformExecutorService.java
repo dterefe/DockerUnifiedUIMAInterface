@@ -1,4 +1,6 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.worker;
+
+import org.texttechnologylab.duui.orchestration.DUUITask;
 
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -20,7 +22,7 @@ public final class DUUIPlatformExecutorService extends ThreadPoolExecutor {
     protected void beforeExecute(Thread thread, Runnable runnable) {
         super.beforeExecute(thread, runnable);
         if (runnable instanceof DUUITask<?> task) {
-            DUUIWorker.current().bind(new DUUIWorker.DUITaskBinding(task));
+            DUUIWorker.current().bind(task);
         }
     }
 
@@ -28,7 +30,7 @@ public final class DUUIPlatformExecutorService extends ThreadPoolExecutor {
     protected void afterExecute(Runnable runnable, Throwable throwable) {
         try {
             if (runnable instanceof DUUITask<?> task && DUUIWorker.current().currentTask() == task) {
-                DUUIWorker.current().clear(new DUUIWorker.DUITaskBinding(task));
+                DUUIWorker.current().clear(task);
             }
         } finally {
             super.afterExecute(runnable, throwable);

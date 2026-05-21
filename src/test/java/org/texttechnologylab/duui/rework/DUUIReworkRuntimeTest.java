@@ -1,14 +1,14 @@
 package org.texttechnologylab.duui.rework;
 
 import org.junit.jupiter.api.Test;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchPolicy;
-import org.texttechnologylab.duui.orchestration.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
-import org.texttechnologylab.duui.orchestration.DUUIPlatformExecutorService;
+import org.texttechnologylab.duui.orchestration.worker.DUUIPlatformExecutorService;
 import org.texttechnologylab.duui.orchestration.DUUITask;
-import org.texttechnologylab.duui.orchestration.DUUIVirtualExecutorService;
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
-import org.texttechnologylab.duui.pipeline.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.worker.DUUIVirtualExecutorService;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
 
 import java.util.concurrent.TimeUnit;
 
@@ -32,7 +32,7 @@ class DUUIReworkRuntimeTest {
                 return worker.kind().name() + ":" + worker.orchestratorId();
             });
 
-            executor.submit(task, DUUIDispatchPolicy.of(org.texttechnologylab.duui.orchestration.DUUIDispatchMode.CPU, 1));
+            executor.submit(task, DUUIDispatchPolicy.of(org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode.CPU, 1));
 
             assertEquals("PLATFORM:runtime-platform", task.await());
         }

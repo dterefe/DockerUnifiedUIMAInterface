@@ -2,14 +2,14 @@ package org.texttechnologylab.duui.runtime;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.event.DUUIEventService;
-import org.texttechnologylab.duui.orchestration.DUUIExecutionContext;
-import org.texttechnologylab.duui.orchestration.DUUIDirector;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDirector;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrator;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestratorConfig;
-import org.texttechnologylab.duui.orchestration.DUUIScheduler;
-import org.texttechnologylab.duui.orchestration.DUUITypeDirector;
-import org.texttechnologylab.duui.pipeline.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIScheduler;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUITypeDirector;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
 
 import java.util.Collection;

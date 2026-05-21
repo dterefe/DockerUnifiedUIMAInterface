@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.worker;
 
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;

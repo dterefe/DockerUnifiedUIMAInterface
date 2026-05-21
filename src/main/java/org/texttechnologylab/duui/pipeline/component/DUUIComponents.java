@@ -1,6 +1,9 @@
-package org.texttechnologylab.duui.pipeline;
+package org.texttechnologylab.duui.pipeline.component;
 
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
+import org.texttechnologylab.duui.pipeline.DUUIAdapter;
+import org.texttechnologylab.duui.pipeline.DUUIFork;
+import org.texttechnologylab.duui.pipeline.DUUITarget;
 
 public final class DUUIComponents {
     private DUUIComponents() {}

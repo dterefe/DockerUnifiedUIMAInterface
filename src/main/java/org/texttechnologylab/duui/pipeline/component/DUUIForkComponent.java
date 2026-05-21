@@ -1,7 +1,8 @@
-package org.texttechnologylab.duui.pipeline;
+package org.texttechnologylab.duui.pipeline.component;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
+import org.texttechnologylab.duui.pipeline.DUUIFork;
 
 final class DUUIForkComponent<P, C> extends DUUIComponent<P> {
     private final DUUIFork<P, C> fork;
@@ -15,5 +16,10 @@ final class DUUIForkComponent<P, C> extends DUUIComponent<P> {
     public DUUIArtifact<P> process(DUUIArtifact<P> artifact) throws Exception {
         fork.fork(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
         return artifact;
+    }
+
+    @Override
+    public boolean fork() {
+        return true;
     }
 }

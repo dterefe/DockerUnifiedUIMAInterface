@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.pipeline;
+package org.texttechnologylab.duui.pipeline.component;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 

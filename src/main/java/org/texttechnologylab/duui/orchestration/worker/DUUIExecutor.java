@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.pipeline;
+package org.texttechnologylab.duui.orchestration.worker;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.exception.DUUIExecutionResult;
@@ -8,17 +8,17 @@ import org.texttechnologylab.duui.exception.DUUIFailureAction;
 import org.texttechnologylab.duui.exception.DUUIFailureClassifier;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.exception.DUUIFailureSeverity;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchMode;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchPolicy;
-import org.texttechnologylab.duui.orchestration.DUUIExecutionContext;
-import org.texttechnologylab.duui.orchestration.DUUIPlatformExecutorService;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
 import org.texttechnologylab.duui.orchestration.DUUINode;
 import org.texttechnologylab.duui.orchestration.DUUITask;
-import org.texttechnologylab.duui.orchestration.DUUIVirtualExecutorService;
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
 import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
+import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.DUUIStage;
+import org.texttechnologylab.duui.pipeline.DUUIStageType;
 
 import java.util.ArrayList;
 import java.util.List;

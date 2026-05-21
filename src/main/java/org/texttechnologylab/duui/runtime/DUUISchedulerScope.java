@@ -1,8 +1,8 @@
 package org.texttechnologylab.duui.runtime;
 
-import org.texttechnologylab.duui.orchestration.DUUIDirector;
-import org.texttechnologylab.duui.orchestration.DUUIScheduler;
-import org.texttechnologylab.duui.orchestration.DUUITypeDirector;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDirector;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIScheduler;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUITypeDirector;
 
 public final class DUUISchedulerScope implements AutoCloseable {
     private final DUUISystemScope system;

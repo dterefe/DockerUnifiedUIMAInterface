@@ -1,6 +1,8 @@
 package org.texttechnologylab.duui.orchestration;
 
 import org.texttechnologylab.duui.event.DUUIEventContext;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -37,7 +39,7 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
         }
     }
 
-    public DUUITask<T> submit(org.texttechnologylab.duui.pipeline.DUUIExecutor executor) {
+    public DUUITask<T> submit(org.texttechnologylab.duui.orchestration.worker.DUUIExecutor executor) {
         this.submittedFuture = Objects.requireNonNull(executor, "executor").submit(this);
         return this;
     }

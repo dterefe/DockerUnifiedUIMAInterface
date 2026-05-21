@@ -1,9 +1,9 @@
 package org.texttechnologylab.duui.event;
 
-import org.texttechnologylab.duui.orchestration.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
 import org.texttechnologylab.duui.orchestration.DUUITask;
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;

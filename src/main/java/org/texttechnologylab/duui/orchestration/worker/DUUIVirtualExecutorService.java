@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.worker;
 
 import java.util.List;
 import java.util.Collection;

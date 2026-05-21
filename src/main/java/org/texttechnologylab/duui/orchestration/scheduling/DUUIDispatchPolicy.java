@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.scheduling;
 
 public final class DUUIDispatchPolicy {
     public static final DUUIDispatchPolicy INHERIT = new DUUIDispatchPolicy(null, null, false);

@@ -1,6 +1,6 @@
 package org.texttechnologylab.duui.runtime;
 
-import org.texttechnologylab.duui.pipeline.DUUIComponents;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponents;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.DUUITarget;
 

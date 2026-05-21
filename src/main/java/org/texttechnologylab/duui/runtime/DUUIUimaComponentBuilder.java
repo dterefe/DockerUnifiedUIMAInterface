@@ -4,8 +4,8 @@ import org.apache.uima.analysis_engine.AnalysisEngine;
 import org.apache.uima.analysis_engine.AnalysisEngineDescription;
 import org.apache.uima.fit.factory.AnalysisEngineFactory;
 import org.apache.uima.jcas.JCas;
-import org.texttechnologylab.duui.pipeline.DUUIComponent;
-import org.texttechnologylab.duui.pipeline.DUUINode;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
 
 import java.util.ArrayList;
 import java.util.List;

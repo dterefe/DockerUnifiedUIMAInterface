@@ -1,7 +1,7 @@
 package org.texttechnologylab.duui.runtime;
 
 import org.texttechnologylab.duui.exception.DUUIFailureClassifier;
-import org.texttechnologylab.duui.pipeline.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
 
 public final class DUUIExecutorScope implements AutoCloseable {
     private final DUUISystemScope system;

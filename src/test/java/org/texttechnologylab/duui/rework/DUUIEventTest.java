@@ -8,12 +8,12 @@ import org.texttechnologylab.duui.event.DUUIEventType;
 import org.texttechnologylab.duui.event.DUUIInMemoryEventSink;
 import org.texttechnologylab.duui.event.DUUIJulHandler;
 import org.texttechnologylab.duui.event.DUUILogger;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchMode;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchPolicy;
-import org.texttechnologylab.duui.orchestration.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUITask;
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
-import org.texttechnologylab.duui.pipeline.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
 
 import java.util.List;
 import java.util.logging.Level;

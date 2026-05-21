@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.worker;
 
 public enum DUUIWorkerKind {
     ORIGIN,

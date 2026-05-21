@@ -1,10 +1,18 @@
 package org.texttechnologylab.duui.orchestration;
 
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDirector;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIScheduler;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUITypeDirector;
+
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.exception.DUUIExecutionResult;
 import org.texttechnologylab.duui.exception.DUUIExecutionStatus;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
-import org.texttechnologylab.duui.pipeline.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorkerKind;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorkerRegistry;
+import org.texttechnologylab.duui.orchestration.DUUITask;
 import org.texttechnologylab.duui.pipeline.DUUIGenerator;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
 

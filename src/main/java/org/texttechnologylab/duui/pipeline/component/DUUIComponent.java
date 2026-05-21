@@ -1,13 +1,13 @@
-package org.texttechnologylab.duui.pipeline;
+package org.texttechnologylab.duui.pipeline.component;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.ems.DUUIActor;
 import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
-import org.texttechnologylab.duui.orchestration.DUUIExecutionContext;
+import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUITask;
-import org.texttechnologylab.duui.orchestration.DUUIWorker;
+import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 
 import java.util.List;
@@ -105,6 +105,10 @@ public class DUUIComponent<T> extends DUUIActor implements AutoCloseable {
 
     public int availableNodes() {
         return nodes.size();
+    }
+
+    public boolean fork() {
+        return false;
     }
 
     @Override

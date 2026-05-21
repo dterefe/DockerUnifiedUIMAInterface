@@ -1,4 +1,4 @@
-package org.texttechnologylab.duui.pipeline;
+package org.texttechnologylab.duui.pipeline.component;
 
 import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;

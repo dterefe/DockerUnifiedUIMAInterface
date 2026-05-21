@@ -8,8 +8,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIKubernetesDri
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.LuaConsts;
 import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
 import org.texttechnologylab.duui.event.DUUIEventSink;
-import org.texttechnologylab.duui.pipeline.DUUIComponent;
-import org.texttechnologylab.duui.pipeline.DUUINode;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1TelemetryConfig;

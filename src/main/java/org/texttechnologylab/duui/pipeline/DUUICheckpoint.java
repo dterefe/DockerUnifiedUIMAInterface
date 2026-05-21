@@ -2,6 +2,7 @@ package org.texttechnologylab.duui.pipeline;
 
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.artifact.DUUIArtifactType;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 
 import java.util.ArrayList;
 import java.util.Collections;

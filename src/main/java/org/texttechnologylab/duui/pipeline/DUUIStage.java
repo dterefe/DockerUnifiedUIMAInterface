@@ -1,7 +1,8 @@
 package org.texttechnologylab.duui.pipeline;
 
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
-import org.texttechnologylab.duui.orchestration.DUUIDispatchPolicy;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -63,7 +64,7 @@ public final class DUUIStage<T> {
     public DUUIStageType type() { return type; }
     public List<DUUIComponent<T>> components() { return components; }
     public DUUIComponent<T> component() { return components.get(0); }
-    public boolean forks() { return components.stream().anyMatch(DUUIForkComponent.class::isInstance); }
+    public boolean forks() { return components.stream().anyMatch(DUUIComponent::fork); }
     public String componentId() { return componentId; }
     public DUUIDispatchPolicy dispatchPolicy() { return dispatchPolicy; }
     public DUUIFailurePolicy failurePolicy() { return failurePolicy; }

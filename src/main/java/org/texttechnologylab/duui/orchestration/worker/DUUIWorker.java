@@ -1,4 +1,7 @@
-package org.texttechnologylab.duui.orchestration;
+package org.texttechnologylab.duui.orchestration.worker;
+
+import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
+import org.texttechnologylab.duui.orchestration.DUUITask;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -32,16 +35,16 @@ public final class DUUIWorker {
         return task;
     }
 
-    void bind(DUITaskBinding binding) {
-        DUUITask<?> task = binding.task();
+    public void bind(DUUITask<?> task) {
+        Objects.requireNonNull(task, "task");
         if (!orchestratorId.equals(task.orchestratorId())) {
             throw new DUUIFrameworkStateException("Cannot bind task from orchestrator " + task.orchestratorId() + " to worker from orchestrator " + orchestratorId);
         }
         this.currentTask = task;
     }
 
-    void clear(DUITaskBinding binding) {
-        if (currentTask == binding.task()) {
+    public void clear(DUUITask<?> task) {
+        if (currentTask == task) {
             currentTask = null;
         }
     }
@@ -60,9 +63,4 @@ public final class DUUIWorker {
     public boolean originThread() { return originThread; }
     public DUUITask<?> currentTask() { return currentTask; }
 
-    record DUITaskBinding(DUUITask<?> task) {
-        DUITaskBinding {
-            Objects.requireNonNull(task, "task");
-        }
-    }
 }

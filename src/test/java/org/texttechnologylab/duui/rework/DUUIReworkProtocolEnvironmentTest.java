@@ -64,7 +64,7 @@ class DUUIReworkProtocolEnvironmentTest {
                     cas -> cas.setDocumentText("processed"));
             JCas cas = JCasFactory.createJCas();
 
-            annotator.process(DUUIArtifact.of(cas, JCas.class));
+            annotator.process(DUUIArtifact.of(cas));
 
             assertEquals("processed", cas.getDocumentText());
             assertEquals(endpoint, annotator.endpoint());

@@ -12,7 +12,6 @@ import org.apache.uima.util.XMLInputSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
-import org.texttechnologylab.duui.artifact.DUUIArtifactType;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIEventSink;
 import org.texttechnologylab.duui.event.DUUIEventSinks;
@@ -50,7 +49,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DUUIDistributedBiofidPipelineTest {
-    private static final DUUIArtifactType<JCas> BIOFID_JCAS = DUUIArtifactType.of("biofid/distributed/jcas");
     private static final String EXAMPLES = "../duui-py/examples";
 
     @TempDir
@@ -83,7 +81,6 @@ class DUUIDistributedBiofidPipelineTest {
              DUUISystemScope system = DUUI.system("biofid-distributed-" + mode.name().toLowerCase()).events(events)) {
             try (DUUIPipelineScope pipeline = system.pipeline("biofid-distributed")) {
                 try (DUUIGeneratorScope<JCas> documents = DUUIXmiCollectionReader.builder()
-                        .artifactType(BIOFID_JCAS)
                         .typeSystem(typeSystem)
                         .source(input)
                         .open(pipeline)) {
@@ -104,7 +101,6 @@ class DUUIDistributedBiofidPipelineTest {
                         component(mode, taxonerd, ComponentSpec.taxonerd(), sink, geonamesBackend);
                     }
                     try (var ignored = DUUIXmiTarget.builder()
-                            .artifactType(BIOFID_JCAS)
                             .output(output)
                             .open(documents)) {
                         // target scope is registered by construction

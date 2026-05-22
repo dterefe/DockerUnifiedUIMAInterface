@@ -125,7 +125,7 @@ class DUUIDuuiPyTextExamplesIntegrationTest {
                     endpoint,
                     "geonames",
                     Map.of("backend_url", "http://127.0.0.1:" + backend.getAddress().getPort()));
-            annotator.process(DUUIArtifact.of(cas, JCas.class));
+            annotator.process(DUUIArtifact.of(cas));
 
             assertCovered(cas, "org.texttechnologylab.annotation.geonames.GeoNamesEntity", "Frankfurt am Main");
         } finally {
@@ -135,7 +135,7 @@ class DUUIDuuiPyTextExamplesIntegrationTest {
 
     private static JCas run(URI endpoint, String id, String text, Map<String, String> parameters) throws Exception {
         JCas cas = casFor(endpoint, text);
-        annotator(endpoint, id, parameters).process(DUUIArtifact.of(cas, JCas.class));
+        annotator(endpoint, id, parameters).process(DUUIArtifact.of(cas));
         return cas;
     }
 

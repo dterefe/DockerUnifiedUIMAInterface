@@ -89,6 +89,15 @@ public final class DUUIEventService implements AutoCloseable {
                 .build());
     }
 
+    public void metric(String category, String name, double value, String unit, long intervalMs, java.util.Map<String, String> tags) {
+        emit(DUUIEvent.builder(DUUIEventType.METRIC)
+                .context(currentContext())
+                .name(category)
+                .metric(name, value, unit, intervalMs)
+                .metricTags(tags)
+                .build());
+    }
+
     public void error(String name, Throwable error, DUUIEventContext context) {
         error(name, error == null ? null : error.getMessage(), error, context);
     }
@@ -115,13 +124,22 @@ public final class DUUIEventService implements AutoCloseable {
             if (context == null) {
                 context = new DUUIEventContext(null, worker.orchestratorId(), null, null, null, null, null, null, null, worker.id());
             }
-            return context.toBuilder()
+            DUUIEventContext.Builder builder = context.toBuilder()
                     .orchestratorId(context.orchestratorId() == null ? worker.orchestratorId() : context.orchestratorId())
                     .taskId(task == null ? context.taskId() : task.id())
-                    .workerId(worker.id())
-                    .build();
+                    .workerId(worker.id());
+            DUUIEventContext.phase().ifPresent(phase -> builder
+                    .phaseId(phase.id())
+                    .phaseStatus(phase.status().name())
+                    .phaseLifecycle(phase.lifecycle().name()));
+            return builder.build();
         } catch (DUUIFrameworkStateException ignored) {
-            return new DUUIEventContext(null, null, null, null, null, null, null, null, null, null);
+            DUUIEventContext.Builder builder = new DUUIEventContext.Builder();
+            DUUIEventContext.phase().ifPresent(phase -> builder
+                    .phaseId(phase.id())
+                    .phaseStatus(phase.status().name())
+                    .phaseLifecycle(phase.lifecycle().name()));
+            return builder.build();
         }
     }
 

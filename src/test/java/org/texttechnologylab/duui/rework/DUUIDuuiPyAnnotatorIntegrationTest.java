@@ -35,7 +35,7 @@ class DUUIDuuiPyAnnotatorIntegrationTest {
         JCas cas = JCasFactory.createJCas();
         cas.setDocumentText("duui py works");
 
-        annotator.process(DUUIArtifact.of(cas, JCas.class));
+        annotator.process(DUUIArtifact.of(cas));
 
         assertEquals("duui-py-uppercase", annotator.documentation().annotator_name());
         assertEquals("DUUI PY WORKS", cas.getView("duui_py_result").getDocumentText());

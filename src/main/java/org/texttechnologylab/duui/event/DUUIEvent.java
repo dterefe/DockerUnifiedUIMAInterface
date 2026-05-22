@@ -18,6 +18,7 @@ public final class DUUIEvent {
     private final String metricName;
     private final Double metricValue;
     private final String metricUnit;
+    private final long metricIntervalMs;
     private final Map<String, String> metricTags;
     private final String errorType;
     private final String stackTrace;
@@ -36,6 +37,7 @@ public final class DUUIEvent {
         this.metricName = builder.metricName;
         this.metricValue = builder.metricValue;
         this.metricUnit = builder.metricUnit;
+        this.metricIntervalMs = builder.metricIntervalMs;
         this.metricTags = Map.copyOf(builder.metricTags);
         this.errorType = builder.errorType;
         this.stackTrace = builder.stackTrace;
@@ -70,6 +72,7 @@ public final class DUUIEvent {
     public String metricName() { return metricName; }
     public Double metricValue() { return metricValue; }
     public String metricUnit() { return metricUnit; }
+    public long metricIntervalMs() { return metricIntervalMs; }
     public Map<String, String> metricTags() { return metricTags; }
     public String errorType() { return errorType; }
     public String stackTrace() { return stackTrace; }
@@ -88,6 +91,7 @@ public final class DUUIEvent {
         private String metricName;
         private Double metricValue;
         private String metricUnit;
+        private long metricIntervalMs;
         private final Map<String, String> metricTags = new LinkedHashMap<>();
         private String errorType;
         private String stackTrace;
@@ -106,9 +110,13 @@ public final class DUUIEvent {
         public Builder name(String name) { this.name = name; return this; }
         public Builder message(String message) { this.message = message; return this; }
         public Builder metric(String name, Double value, String unit) {
+            return metric(name, value, unit, 0L);
+        }
+        public Builder metric(String name, Double value, String unit, long intervalMs) {
             this.metricName = name;
             this.metricValue = value;
             this.metricUnit = unit;
+            this.metricIntervalMs = Math.max(0L, intervalMs);
             return this;
         }
         public Builder metricTags(Map<String, String> tags) {

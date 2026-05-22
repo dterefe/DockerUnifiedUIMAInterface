@@ -1,9 +1,8 @@
 package org.texttechnologylab.duui.runtime;
 
-import org.apache.uima.analysis_engine.AnalysisEngine;
 import org.apache.uima.analysis_engine.AnalysisEngineDescription;
-import org.apache.uima.fit.factory.AnalysisEngineFactory;
 import org.apache.uima.jcas.JCas;
+import org.texttechnologylab.duui.pipeline.DUUIAnalysisEngine;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.texttechnologylab.duui.pipeline.component.DUUINode;
 
@@ -38,16 +37,20 @@ public final class DUUIUimaComponentBuilder implements DUUIStageContribution {
         }
         try {
             List<DUUINode<JCas>> nodes = new ArrayList<>();
+            List<DUUIAnalysisEngine> engines = new ArrayList<>();
             for (int i = 0; i < scale; i++) {
-                AnalysisEngine engine = AnalysisEngineFactory.createEngine(description);
-                nodes.add(new DUUINode<>(id + "-slot-" + i, artifact -> {
-                    JCas cas = artifact.payload();
-                    JCas view = cas.getView(sourceView);
-                    engine.process(view);
-                    return artifact;
-                }));
+                DUUIAnalysisEngine engine = DUUIAnalysisEngine.builder(id + "-slot-" + i)
+                        .analysisEngine(description)
+                        .sourceView(sourceView)
+                        .build();
+                engines.add(engine);
+                nodes.add(new DUUINode<>(engine.id(), engine, engine));
             }
-            stage.jcasComponent(new DUUIComponent<>(id, nodes));
+            stage.jcasComponent(new DUUIComponent<>(id, nodes, () -> {
+                for (DUUIAnalysisEngine engine : engines) {
+                    engine.shutdown();
+                }
+            }));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build DUUI UIMA component: " + id, e);
         }

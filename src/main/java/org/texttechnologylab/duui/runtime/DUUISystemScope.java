@@ -8,7 +8,7 @@ import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrator;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestratorConfig;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIScheduler;
-import org.texttechnologylab.duui.orchestration.scheduling.DUUITypeDirector;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUITraitDirector;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
 
@@ -22,7 +22,7 @@ public final class DUUISystemScope implements AutoCloseable {
     private final Map<String, DUUIPipeline> pipelines = new LinkedHashMap<>();
     private DUUIExecutor executor;
     private DUUIScheduler scheduler = new DUUIScheduler();
-    private DUUIDirector director = new DUUITypeDirector();
+    private DUUIDirector director = new DUUITraitDirector();
     private DUUIOrchestratorConfig orchestratorConfig = DUUIOrchestratorConfig.DEFAULT;
     private DUUIEventService eventService;
     private boolean closed;
@@ -61,7 +61,7 @@ public final class DUUISystemScope implements AutoCloseable {
     }
 
     void director(DUUIDirector director) {
-        this.director = director == null ? new DUUITypeDirector() : director;
+        this.director = director == null ? new DUUITraitDirector() : director;
     }
 
     void orchestratorConfig(DUUIOrchestratorConfig orchestratorConfig) {
@@ -132,7 +132,8 @@ public final class DUUISystemScope implements AutoCloseable {
         closed = true;
         for (DUUIPipeline pipeline : pipelines.values()) {
             for (var checkpoint : pipeline.checkpoints()) {
-                for (var stage : checkpoint.stages()) {
+                var stage = checkpoint.stage();
+                if (stage != null) {
                     for (var component : stage.components()) {
                         try {
                             component.close();

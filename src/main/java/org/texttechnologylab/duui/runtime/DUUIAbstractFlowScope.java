@@ -1,22 +1,22 @@
 package org.texttechnologylab.duui.runtime;
 
-import org.texttechnologylab.duui.artifact.DUUIArtifactType;
+import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 
 abstract class DUUIAbstractFlowScope<T> implements DUUIFlowScope<T> {
     private final DUUIPipelineScope pipeline;
-    private final DUUIArtifactType<T> artifactType;
+    private DUUICheckpoint<T> checkpoint;
     private boolean closed;
 
-    DUUIAbstractFlowScope(DUUIPipelineScope pipeline, DUUIArtifactType<T> artifactType) {
+    DUUIAbstractFlowScope(DUUIPipelineScope pipeline, DUUICheckpoint<T> checkpoint) {
         this.pipeline = pipeline;
-        this.artifactType = artifactType;
-        this.pipeline.ensureCheckpoint(artifactType);
+        this.checkpoint = checkpoint;
+        this.pipeline.checkpoint(checkpoint);
     }
 
     @Override
-    public DUUIArtifactType<T> artifactType() {
-        return artifactType;
+    public DUUICheckpoint<T> checkpoint() {
+        return checkpoint;
     }
 
     @Override
@@ -30,8 +30,20 @@ abstract class DUUIAbstractFlowScope<T> implements DUUIFlowScope<T> {
     }
 
     @Override
-    public void addStage(DUUIStage<T> stage) {
-        pipeline.addStage(artifactType, stage);
+    public DUUICheckpoint<T> addStage(DUUIStage<T> stage) {
+        checkpoint.stage(stage);
+        if (stage.continuation() != null) {
+            this.checkpoint = stage.continuation();
+        } else if (stage.output() != null && stage.output() instanceof DUUICheckpoint<?> next) {
+            @SuppressWarnings("unchecked")
+            DUUICheckpoint<T> typed = (DUUICheckpoint<T>) next;
+            this.checkpoint = typed;
+        }
+        return this.checkpoint;
+    }
+
+    void current(DUUICheckpoint<T> checkpoint) {
+        this.checkpoint = checkpoint;
     }
 
     @Override

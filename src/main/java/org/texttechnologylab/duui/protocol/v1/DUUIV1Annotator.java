@@ -7,7 +7,8 @@ import org.texttechnologylab.duui.clients.http.DUUIHttpMethod;
 import org.texttechnologylab.duui.clients.http.DUUISignal;
 import org.texttechnologylab.duui.communication.DUUICommunicationLayer;
 import org.texttechnologylab.duui.communication.DUUILuaCommunicationLayer;
-import org.texttechnologylab.duui.ems.DUUIActor;
+import org.texttechnologylab.duui.ems.DUUITraits;
+import org.texttechnologylab.duui.ems.GID;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.apache.uima.UIMAFramework;
 import org.apache.uima.cas.CASException;
@@ -21,6 +22,7 @@ import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIRemoteEventStream;
+import org.texttechnologylab.duui.pipeline.component.DUUIAnnotator;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -31,7 +33,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-public final class DUUIV1Annotator extends DUUIActor {
+public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @FunctionalInterface
@@ -39,6 +41,9 @@ public final class DUUIV1Annotator extends DUUIActor {
         void process(JCas cas) throws Exception;
     }
 
+    private final GID gid;
+    private final DUUITraits traits;
+    private final String id;
     private final IDUUIEndpoint endpointHandle;
     private final DUUIV1Config config;
     private final Documentation documentation;
@@ -52,7 +57,9 @@ public final class DUUIV1Annotator extends DUUIActor {
     private final DUUIRemoteEventStream eventStream;
 
     public DUUIV1Annotator(String id, IDUUIEndpoint endpoint, DUUIV1Config config) throws Exception {
-        super(id);
+        this.gid = GID.create();
+        this.traits = DUUITraits.empty();
+        this.id = Objects.requireNonNull(id, "id");
         this.endpointHandle = Objects.requireNonNull(endpoint, "endpoint");
         this.config = Objects.requireNonNull(config, "config");
         this.documentationSignal = documentationSignal(endpoint);
@@ -75,7 +82,9 @@ public final class DUUIV1Annotator extends DUUIActor {
         DUUICommunicationLayer communicationLayer,
         Processor processor
     ) {
-        super(id);
+        this.gid = GID.create();
+        this.traits = DUUITraits.empty();
+        this.id = Objects.requireNonNull(id, "id");
         this.endpointHandle = Objects.requireNonNull(endpoint, "endpoint");
         this.config = Objects.requireNonNull(config, "config");
         this.documentation = Objects.requireNonNull(documentation, "documentation");
@@ -87,6 +96,21 @@ public final class DUUIV1Annotator extends DUUIActor {
         this.communicationLayerSignal = communicationLayerSignal(endpoint);
         this.eventStream = DUUIRemoteEventStream.connect(endpoint, config.telemetry(), id);
         this.processChannel = processChannel(endpoint, communicationLayer, config);
+    }
+
+    @Override
+    public GID gid() {
+        return gid;
+    }
+
+    @Override
+    public DUUITraits traits() {
+        return traits;
+    }
+
+    @Override
+    public String id() {
+        return id;
     }
 
     public IDUUIEndpoint endpoint() {
@@ -117,12 +141,14 @@ public final class DUUIV1Annotator extends DUUIActor {
         communicationLayer.deserialize(cas, stream, targetView);
     }
 
-    public void process(DUUIArtifact<JCas> artifact) throws Exception {
+    @Override
+    public DUUIArtifact<JCas> process(DUUIArtifact<JCas> artifact) throws Exception {
         DUUIEventService service = DUUIEventService.current();
         service.logger("duui.v1").info("Sending artifact " + artifact.id() + " to v1 annotator " + id());
         DUUIEventScope scope = service.scope("v1.process");
         try {
             processor.process(artifact.payload());
+            return artifact;
         } catch (Exception error) {
             scope.fail(error);
             throw error;

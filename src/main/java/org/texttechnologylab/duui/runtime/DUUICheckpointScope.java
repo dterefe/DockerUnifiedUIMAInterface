@@ -1,28 +1,22 @@
 package org.texttechnologylab.duui.runtime;
 
-import org.texttechnologylab.duui.artifact.DUUIArtifactType;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
 import org.texttechnologylab.duui.pipeline.DUUICheckpointConfig;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 
 public final class DUUICheckpointScope<T> implements AutoCloseable {
     private final DUUIPipelineScope pipeline;
-    private final String id;
-    private final DUUIArtifactType<T> artifactType;
-    private final List<DUUIStage<T>> stages = new ArrayList<>();
+    private final DUUICheckpoint<T> checkpoint;
     private DUUICheckpointConfig config;
     private DUUIFailurePolicy failurePolicy;
     private boolean closed;
 
-    DUUICheckpointScope(DUUIPipelineScope pipeline, String id, DUUIArtifactType<T> artifactType) {
+    DUUICheckpointScope(DUUIPipelineScope pipeline, DUUICheckpoint<T> checkpoint) {
         this.pipeline = pipeline;
-        this.id = Objects.requireNonNull(id, "id");
-        this.artifactType = Objects.requireNonNull(artifactType, "artifactType");
+        this.checkpoint = Objects.requireNonNull(checkpoint, "checkpoint");
     }
 
     public DUUIStageScope<T> linear(String id) {
@@ -34,7 +28,7 @@ public final class DUUICheckpointScope<T> implements AutoCloseable {
     }
 
     public DUUICheckpointScope<T> stage(DUUIStage<T> stage) {
-        stages.add(stage);
+        checkpoint.stage(stage);
         return this;
     }
 
@@ -48,8 +42,22 @@ public final class DUUICheckpointScope<T> implements AutoCloseable {
         return this;
     }
 
-    void addStage(DUUIStage<T> stage) {
-        stages.add(stage);
+    DUUICheckpoint<T> checkpoint() {
+        return checkpoint;
+    }
+
+    DUUIPipelineScope pipeline() {
+        return pipeline;
+    }
+
+    DUUICheckpoint<T> addStage(DUUIStage<T> stage) {
+        checkpoint.stage(stage);
+        return stage.output() == null ? checkpoint : cast(stage.output());
+    }
+
+    @SuppressWarnings("unchecked")
+    private DUUICheckpoint<T> cast(DUUICheckpoint<?> checkpoint) {
+        return (DUUICheckpoint<T>) checkpoint;
     }
 
     @Override
@@ -58,12 +66,6 @@ public final class DUUICheckpointScope<T> implements AutoCloseable {
             return;
         }
         closed = true;
-        DUUICheckpoint.Builder<T> checkpoint = DUUICheckpoint.route(id, artifactType)
-                .config(config)
-                .failurePolicy(failurePolicy);
-        for (DUUIStage<T> stage : stages) {
-            checkpoint.stage(stage);
-        }
-        pipeline.checkpoint(checkpoint.build());
+        pipeline.checkpoint(checkpoint);
     }
 }

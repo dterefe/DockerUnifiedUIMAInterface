@@ -14,7 +14,6 @@ import org.apache.uima.util.XMLInputSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
-import org.texttechnologylab.duui.artifact.DUUIArtifactType;
 import org.texttechnologylab.duui.event.DUUIEventType;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIEventSink;
@@ -51,7 +50,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DUUIDuuiPyPipelineXmiIntegrationTest {
     private static final String TAXON_TYPE = "org.texttechnologylab.annotation.biofid.gnfinder.Taxon";
-    private static final DUUIArtifactType<JCas> XMI_JCAS = DUUIArtifactType.of("duui-py/gnfinder/xmi-jcas");
 
     @TempDir
     Path tempDir;
@@ -81,7 +79,6 @@ class DUUIDuuiPyPipelineXmiIntegrationTest {
         try (DUUISystemScope system = DUUI.system("duui-py-pipeline-e2e").events(eventService)) {
             try (DUUIPipelineScope pipeline = system.pipeline("xmi-gnfinder")) {
                 try (DUUIGeneratorScope<JCas> documents = DUUIXmiCollectionReader.builder()
-                        .artifactType(XMI_JCAS)
                         .typeSystem(typeSystem)
                         .source(inputDirectory)
                         .open(pipeline)) {
@@ -97,10 +94,14 @@ class DUUIDuuiPyPipelineXmiIntegrationTest {
                                 .parameters(Map.of("lang", "en", "verify", "true"));
                     }
                     try (DUUIStageScope<JCas> collect = documents.linear("collect")) {
-                        collect.lambda(new CollectProcessedJCas(processed));
+                        collect.lambda(DUUILambda.<JCas>builder("collect-processed-jcas")
+                                .processor(artifact -> {
+                                    processed.add(artifact.payload());
+                                    return artifact;
+                                })
+                                .build());
                     }
                     try (var ignored = DUUIXmiTarget.builder()
-                            .artifactType(XMI_JCAS)
                             .output(outputDirectory)
                             .open(documents)) {
                         // target scope is registered by construction
@@ -200,16 +201,4 @@ class DUUIDuuiPyPipelineXmiIntegrationTest {
         }
     }
 
-    private record CollectProcessedJCas(List<JCas> processed) implements DUUILambda<JCas> {
-        @Override
-        public DUUIArtifactType<JCas> inputType() {
-            return XMI_JCAS;
-        }
-
-        @Override
-        public DUUIArtifact<JCas> process(DUUIArtifact<JCas> artifact) {
-            processed.add(artifact.payload());
-            return artifact;
-        }
-    }
 }

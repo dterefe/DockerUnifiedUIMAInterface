@@ -1,11 +1,13 @@
 package org.texttechnologylab.duui.runtime;
 
+import org.apache.uima.jcas.JCas;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
-import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
+import org.texttechnologylab.duui.pipeline.DUUIExecutionMode;
 import org.texttechnologylab.duui.pipeline.DUUILambda;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
-import org.apache.uima.jcas.JCas;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -43,10 +45,7 @@ public final class DUUIStageScope<T> implements AutoCloseable {
 
     public DUUIStageScope<T> lambda(DUUILambda<T> lambda) {
         Objects.requireNonNull(lambda, "lambda");
-        if (flow != null && !flow.artifactType().equals(lambda.inputType())) {
-            throw new IllegalArgumentException("Lambda input type does not match stage flow.");
-        }
-        components.add(DUUIComponent.processor(lambda.inputType().id() + "-lambda", lambda::process));
+        components.add(DUUIComponent.processor(lambda.id(), lambda));
         return this;
     }
 
@@ -86,24 +85,23 @@ public final class DUUIStageScope<T> implements AutoCloseable {
         for (DUUIStageContribution contribution : contributions) {
             contribution.contribute();
         }
-        DUUIStage<T> stage = parallel
-                ? DUUIStage.parallel(id, components)
-                : DUUIStage.linear(id, components);
-        if (dispatchPolicy != null || failurePolicy != null) {
-            stage = new DUUIStage<>(
-                    stage.id(),
-                    stage.name(),
-                    stage.type(),
-                    stage.components(),
-                    stage.componentId(),
-                    dispatchPolicy == null ? stage.dispatchPolicy() : dispatchPolicy,
-                    failurePolicy == null ? stage.failurePolicy() : failurePolicy
-            );
-        }
+        DUUICheckpoint<T> output = ownerPipeline().createCheckpoint(id + "-out");
+        DUUIStage<T> stage = DUUIStage.processor(
+                id,
+                parallel ? DUUIExecutionMode.PARALLEL : DUUIExecutionMode.LINEAR,
+                components,
+                output,
+                dispatchPolicy,
+                failurePolicy
+        );
         if (flow == null) {
             checkpoint.addStage(stage);
         } else {
             flow.addStage(stage);
         }
+    }
+
+    private DUUIPipelineScope ownerPipeline() {
+        return flow == null ? checkpoint.pipeline() : flow.pipeline();
     }
 }

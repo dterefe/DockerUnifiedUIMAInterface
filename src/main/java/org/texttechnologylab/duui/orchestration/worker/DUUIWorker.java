@@ -1,12 +1,13 @@
 package org.texttechnologylab.duui.orchestration.worker;
 
+import org.texttechnologylab.duui.ems.DUUIActor;
 import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
 import org.texttechnologylab.duui.orchestration.DUUITask;
 
 import java.util.Objects;
 import java.util.UUID;
 
-public final class DUUIWorker {
+public final class DUUIWorker implements DUUIActor {
     private final String id;
     private volatile String orchestratorId;
     private final long threadId;

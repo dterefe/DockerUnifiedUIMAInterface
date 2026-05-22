@@ -1,6 +1,7 @@
 package org.texttechnologylab.duui.orchestration.scheduling;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
+import org.texttechnologylab.duui.ems.DUUIActor;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
 import org.texttechnologylab.duui.orchestration.DUUITask;
@@ -8,28 +9,27 @@ import org.texttechnologylab.duui.orchestration.DUUITask;
 import java.util.Map;
 import java.util.Queue;
 
-public final class DUUIScheduler {
+public final class DUUIScheduler implements DUUIActor {
+    private final DUUISchedulerPolicy policy;
+
+    public DUUIScheduler() {
+        this(DUUISchedulerPolicy.firstReady());
+    }
+
+    public DUUIScheduler(DUUISchedulerPolicy policy) {
+        this.policy = policy == null ? DUUISchedulerPolicy.firstReady() : policy;
+    }
 
     public Selection select(Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues) {
         return select(queues, 0, null);
     }
 
     public Selection select(Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues, int inFlight, DUUIExecutor executor) {
-        if (queues == null || queues.isEmpty()) {
+        DUUISchedulerPolicy.Selection selected = policy.select(new DUUISchedulerPolicy.Snapshot(queues, inFlight, executor));
+        if (selected == null) {
             return null;
         }
-        for (Map.Entry<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> entry : queues.entrySet()) {
-            Queue<DUUIArtifact<?>> queue = entry.getValue();
-            if (queue == null || queue.isEmpty()) {
-                continue;
-            }
-            DUUIArtifact<?> artifact = queue.peek();
-            if (executor != null && !canDispatch(inFlight, executor.dispatchPolicyFor(entry.getKey(), artifact))) {
-                continue;
-            }
-            return new Selection(entry.getKey(), queue.remove());
-        }
-        return null;
+        return new Selection(selected.checkpoint(), selected.artifact());
     }
 
     public <T> DUUITask<T> dispatch(DUUITask<T> task, DUUIExecutor executor, DUUIDispatchPolicy dispatchPolicy) {
@@ -41,11 +41,15 @@ public final class DUUIScheduler {
         return task;
     }
 
-    public boolean canDispatch(int inFlight, DUUIDispatchPolicy dispatchPolicy) {
+    public static boolean canDispatch(int inFlight, DUUIDispatchPolicy dispatchPolicy) {
         if (dispatchPolicy == null || dispatchPolicy.parallelism() == null) {
             return true;
         }
         return inFlight < Math.max(1, dispatchPolicy.parallelism());
+    }
+
+    public DUUISchedulerPolicy policy() {
+        return policy;
     }
 
     public record Selection(DUUICheckpoint<?> checkpoint, DUUIArtifact<?> artifact) {

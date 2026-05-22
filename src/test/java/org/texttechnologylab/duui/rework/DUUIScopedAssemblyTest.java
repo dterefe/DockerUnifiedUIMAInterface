@@ -3,7 +3,6 @@ package org.texttechnologylab.duui.rework;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.artifact.DUUIArtifactEmitter;
-import org.texttechnologylab.duui.artifact.DUUIArtifactType;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.pipeline.DUUIAdapter;
 import org.texttechnologylab.duui.pipeline.DUUIFork;
@@ -23,10 +22,6 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class DUUIScopedAssemblyTest {
-    private static final DUUIArtifactType<UCEImport> UCE_IMPORT = DUUIArtifactType.of("uce/import");
-    private static final DUUIArtifactType<UCECorpus> UCE_CORPUS = DUUIArtifactType.of("uce/corpus");
-    private static final DUUIArtifactType<UCEDocument> UCE_DOCUMENT = DUUIArtifactType.of("uce/document");
-
     @Test
     void scopedPipelineRunsGeneratorAdapterForkLambdaAndJoin() {
         List<UCEDocument> persisted = new ArrayList<>();
@@ -74,13 +69,8 @@ class DUUIScopedAssemblyTest {
         }
 
         @Override
-        public DUUIArtifactType<UCEImport> outputType() {
-            return UCE_IMPORT;
-        }
-
-        @Override
         public void generate(DUUIArtifactEmitter<UCEImport> emitter) throws Exception {
-            emitter.emit(DUUIArtifact.of(new UCEImport(root), UCE_IMPORT));
+            emitter.emit(DUUIArtifact.of(new UCEImport(root)));
         }
 
         static final class Builder {
@@ -103,16 +93,6 @@ class DUUIScopedAssemblyTest {
         }
 
         @Override
-        public DUUIArtifactType<UCEImport> inputType() {
-            return UCE_IMPORT;
-        }
-
-        @Override
-        public DUUIArtifactType<UCECorpus> outputType() {
-            return UCE_CORPUS;
-        }
-
-        @Override
         public DUUIArtifact<UCECorpus> adapt(DUUIArtifact<UCEImport> artifact) throws Exception {
             return successor(artifact, new UCECorpus(artifact.payload().root()));
         }
@@ -130,16 +110,6 @@ class DUUIScopedAssemblyTest {
         }
 
         @Override
-        public DUUIArtifactType<UCECorpus> inputType() {
-            return UCE_CORPUS;
-        }
-
-        @Override
-        public DUUIArtifactType<UCEDocument> outputType() {
-            return UCE_DOCUMENT;
-        }
-
-        @Override
         public void fork(DUUIArtifact<UCECorpus> artifact, DUUIArtifactEmitter<UCEDocument> emitter) throws Exception {
             emitter.emit(child(artifact, new UCEDocument("doc-1", false)));
             emitter.emit(child(artifact, new UCEDocument("doc-2", false)));
@@ -152,48 +122,23 @@ class DUUIScopedAssemblyTest {
         }
     }
 
-    private static final class LoadDocument implements DUUILambda<UCEDocument> {
+    private static final class LoadDocument {
         static Builder builder() {
             return new Builder();
         }
 
-        @Override
-        public DUUIArtifactType<UCEDocument> inputType() {
-            return UCE_DOCUMENT;
-        }
-
-        @Override
-        public DUUIArtifact<UCEDocument> process(DUUIArtifact<UCEDocument> artifact) throws Exception {
-            return artifact.successorArtifact(new UCEDocument(artifact.payload().id(), true), UCE_DOCUMENT);
-        }
-
         static final class Builder {
-            LoadDocument build() {
-                return new LoadDocument();
+            DUUILambda<UCEDocument> build() {
+                return DUUILambda.<UCEDocument>builder("load-document")
+                        .processor(artifact -> DUUIArtifact.of(new UCEDocument(artifact.payload().id(), true)))
+                        .build();
             }
         }
     }
 
-    private static final class PersistDocument implements DUUILambda<UCEDocument> {
-        private final List<UCEDocument> target;
-
-        private PersistDocument(List<UCEDocument> target) {
-            this.target = target;
-        }
-
+    private static final class PersistDocument {
         static Builder builder() {
             return new Builder();
-        }
-
-        @Override
-        public DUUIArtifactType<UCEDocument> inputType() {
-            return UCE_DOCUMENT;
-        }
-
-        @Override
-        public DUUIArtifact<UCEDocument> process(DUUIArtifact<UCEDocument> artifact) throws Exception {
-            target.add(artifact.payload());
-            return artifact;
         }
 
         static final class Builder {
@@ -204,32 +149,20 @@ class DUUIScopedAssemblyTest {
                 return this;
             }
 
-            PersistDocument build() {
-                return new PersistDocument(target);
+            DUUILambda<UCEDocument> build() {
+                return DUUILambda.<UCEDocument>builder("persist-document")
+                        .processor(artifact -> {
+                            target.add(artifact.payload());
+                            return artifact;
+                        })
+                        .build();
             }
         }
     }
 
-    private static final class FinalizeCorpus implements DUUILambda<UCECorpus> {
-        private final List<UCECorpus> target;
-
-        private FinalizeCorpus(List<UCECorpus> target) {
-            this.target = target;
-        }
-
+    private static final class FinalizeCorpus {
         static Builder builder() {
             return new Builder();
-        }
-
-        @Override
-        public DUUIArtifactType<UCECorpus> inputType() {
-            return UCE_CORPUS;
-        }
-
-        @Override
-        public DUUIArtifact<UCECorpus> process(DUUIArtifact<UCECorpus> artifact) throws Exception {
-            target.add(artifact.payload());
-            return artifact;
         }
 
         static final class Builder {
@@ -240,8 +173,13 @@ class DUUIScopedAssemblyTest {
                 return this;
             }
 
-            FinalizeCorpus build() {
-                return new FinalizeCorpus(target);
+            DUUILambda<UCECorpus> build() {
+                return DUUILambda.<UCECorpus>builder("finalize-corpus")
+                        .processor(artifact -> {
+                            target.add(artifact.payload());
+                            return artifact;
+                        })
+                        .build();
             }
         }
     }

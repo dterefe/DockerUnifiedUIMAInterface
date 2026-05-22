@@ -4,6 +4,8 @@ public enum DUUIEventLevel {
     TRACE,
     DEBUG,
     INFO,
+    WARNING,
     WARN,
-    ERROR
+    ERROR,
+    CRITICAL
 }

@@ -36,6 +36,7 @@ public final class DUUIEventSinks {
                 + (event.message() == null ? "" : " - " + event.message())
                 + " trace=" + event.traceId()
                 + " task=" + event.taskId()
-                + " artifact=" + event.artifactId();
+                + " artifact=" + event.artifactId()
+                + " phase=" + event.context().phaseId();
     }
 }

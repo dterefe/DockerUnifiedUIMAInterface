@@ -1,38 +1,35 @@
 package org.texttechnologylab.duui.runtime;
 
-import org.texttechnologylab.duui.artifact.DUUIArtifactType;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
-import org.texttechnologylab.duui.pipeline.DUUIGenerator;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
-import org.texttechnologylab.duui.pipeline.DUUIStage;
+import org.texttechnologylab.duui.pipeline.DUUISource;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 public final class DUUIPipelineScope implements AutoCloseable {
     private final DUUISystemScope system;
     private final String id;
-    private final List<DUUIGenerator<?>> generators = new ArrayList<>();
-    private final Map<DUUIArtifactType<?>, DUUICheckpoint.Builder<?>> flowCheckpoints = new LinkedHashMap<>();
+    private final List<DUUIPipeline.SourceBinding<?>> sources = new ArrayList<>();
     private final List<DUUICheckpoint<?>> checkpoints = new ArrayList<>();
     private DUUIFailurePolicy failurePolicy;
     private boolean closed;
+    private int checkpointCounter;
 
     DUUIPipelineScope(DUUISystemScope system, String id) {
         this.system = system;
         this.id = Objects.requireNonNull(id, "id");
     }
 
-    public <T> DUUICheckpointScope<T> checkpoint(String id, DUUIArtifactType<T> artifactType) {
-        return new DUUICheckpointScope<>(this, id, artifactType);
+    public <T> DUUICheckpointScope<T> checkpoint(String id) {
+        return new DUUICheckpointScope<>(this, new DUUICheckpoint<>(id));
     }
 
-    public <T> DUUIGeneratorScope<T> add(DUUIGenerator<T> generator) {
-        return new DUUIGeneratorScope<>(this, generator);
+    public <T> DUUIGeneratorScope<T> add(DUUISource<T> source) {
+        DUUICheckpoint<T> output = createCheckpoint("source-" + (++checkpointCounter));
+        return new DUUIGeneratorScope<>(this, source, output);
     }
 
     public <A, B> DUUIAdapterScope<A, B> adapter(DUUIFlowScope<A> parent, org.texttechnologylab.duui.pipeline.DUUIAdapter<A, B> adapter) {
@@ -43,12 +40,16 @@ public final class DUUIPipelineScope implements AutoCloseable {
         return new DUUIForkScope<>(parent, fork);
     }
 
-    public <T> DUUITargetScope<T> target(DUUIFlowScope<T> parent, org.texttechnologylab.duui.pipeline.DUUITarget<T> target) {
-        return new DUUITargetScope<>(parent, target);
+    public <I, O> DUUISplitScope<I, O> split(DUUIFlowScope<I> parent, org.texttechnologylab.duui.pipeline.DUUISplit<I, O> split) {
+        return new DUUISplitScope<>(parent, split);
     }
 
-    public <T> DUUICheckpointScope<T> checkpoint(String id, Class<T> payloadType) {
-        return checkpoint(id, DUUIArtifactType.javaType(payloadType));
+    public <I, O> DUUIJoinScope<I, O> join(DUUIFlowScope<I> parent, org.texttechnologylab.duui.pipeline.DUUIJoin<I, O> join) {
+        return new DUUIJoinScope<>(parent, join);
+    }
+
+    public <T> DUUITargetScope<T> target(DUUIFlowScope<T> parent, org.texttechnologylab.duui.pipeline.DUUITarget<T> target) {
+        return new DUUITargetScope<>(parent, target);
     }
 
     public DUUIPipelineScope failurePolicy(DUUIFailurePolicy failurePolicy) {
@@ -56,29 +57,21 @@ public final class DUUIPipelineScope implements AutoCloseable {
         return this;
     }
 
+    <T> DUUICheckpoint<T> createCheckpoint(String id) {
+        DUUICheckpoint<T> checkpoint = new DUUICheckpoint<>(id);
+        checkpoint(checkpoint);
+        return checkpoint;
+    }
+
     void checkpoint(DUUICheckpoint<?> checkpoint) {
-        checkpoints.add(checkpoint);
+        if (!checkpoints.contains(checkpoint)) {
+            checkpoints.add(checkpoint);
+        }
     }
 
-    <T> void registerGenerator(DUUIGenerator<T> generator) {
-        generators.add(generator);
-        ensureCheckpoint(generator.outputType());
-    }
-
-    <T> void ensureCheckpoint(DUUIArtifactType<T> artifactType) {
-        checkpointBuilder(artifactType);
-    }
-
-    <T> void addStage(DUUIArtifactType<T> artifactType, DUUIStage<T> stage) {
-        checkpointBuilder(artifactType).stage(stage);
-    }
-
-    @SuppressWarnings("unchecked")
-    private <T> DUUICheckpoint.Builder<T> checkpointBuilder(DUUIArtifactType<T> artifactType) {
-        return (DUUICheckpoint.Builder<T>) flowCheckpoints.computeIfAbsent(
-                artifactType,
-                type -> DUUICheckpoint.route(type.id(), artifactType)
-        );
+    <T> void registerSource(DUUISource<T> source, DUUICheckpoint<T> output) {
+        sources.add(new DUUIPipeline.SourceBinding<>(source, output));
+        checkpoint(output);
     }
 
     @Override
@@ -88,15 +81,17 @@ public final class DUUIPipelineScope implements AutoCloseable {
         }
         closed = true;
         DUUIPipeline.Builder pipeline = DUUIPipeline.builder(id).failurePolicy(failurePolicy);
-        for (DUUIGenerator<?> generator : generators) {
-            pipeline.generator(generator);
-        }
-        for (DUUICheckpoint.Builder<?> checkpoint : flowCheckpoints.values()) {
-            pipeline.checkpoint(checkpoint.build());
+        for (DUUIPipeline.SourceBinding<?> source : sources) {
+            sourceUnchecked(pipeline, source);
         }
         for (DUUICheckpoint<?> checkpoint : checkpoints) {
             pipeline.checkpoint(checkpoint);
         }
         system.pipeline(pipeline.build());
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void sourceUnchecked(DUUIPipeline.Builder pipeline, DUUIPipeline.SourceBinding source) {
+        pipeline.source(source.source(), source.output());
     }
 }

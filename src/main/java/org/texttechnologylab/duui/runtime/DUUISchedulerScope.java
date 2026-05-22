@@ -2,12 +2,12 @@ package org.texttechnologylab.duui.runtime;
 
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDirector;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIScheduler;
-import org.texttechnologylab.duui.orchestration.scheduling.DUUITypeDirector;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUITraitDirector;
 
 public final class DUUISchedulerScope implements AutoCloseable {
     private final DUUISystemScope system;
     private DUUIScheduler scheduler = new DUUIScheduler();
-    private DUUIDirector director = new DUUITypeDirector();
+    private DUUIDirector director = new DUUITraitDirector();
     private boolean closed;
 
     DUUISchedulerScope(DUUISystemScope system) {
@@ -25,7 +25,7 @@ public final class DUUISchedulerScope implements AutoCloseable {
     }
 
     public DUUISchedulerScope director(DUUIDirector director) {
-        this.director = director == null ? new DUUITypeDirector() : director;
+        this.director = director == null ? new DUUITraitDirector() : director;
         return this;
     }
 

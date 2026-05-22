@@ -138,7 +138,10 @@ public final class DUUIRemoteEventStream implements AutoCloseable {
                 string(remoteContext.get("component_id")),
                 string(remoteContext.get("node_id")),
                 string(remoteContext.get("annotator_id")),
-                string(remoteContext.get("worker_id"))
+                string(remoteContext.get("worker_id")),
+                string(remoteContext.get("phase_id")),
+                string(remoteContext.get("phase_status")),
+                string(remoteContext.get("phase_lifecycle"))
         );
         if ("metric".equalsIgnoreCase(type)) {
             return DUUIEvent.builder(DUUIEventType.METRIC)

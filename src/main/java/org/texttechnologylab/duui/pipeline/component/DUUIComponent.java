@@ -2,12 +2,15 @@ package org.texttechnologylab.duui.pipeline.component;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.ems.DUUIActor;
+import org.texttechnologylab.duui.ems.DUUITraits;
+import org.texttechnologylab.duui.ems.GID;
 import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUITask;
 import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
+import org.texttechnologylab.duui.pipeline.DUUIProcessor;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 
 import java.util.List;
@@ -15,7 +18,10 @@ import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
-public class DUUIComponent<T> extends DUUIActor implements AutoCloseable {
+public class DUUIComponent<T> implements DUUIActor, AutoCloseable {
+    private final GID gid;
+    private final DUUITraits traits;
+    private final String id;
     private final BlockingQueue<DUUINode<T>> nodes;
     private final int capacity;
     private final AutoCloseable closeAction;
@@ -25,7 +31,9 @@ public class DUUIComponent<T> extends DUUIActor implements AutoCloseable {
     }
 
     public DUUIComponent(String id, List<DUUINode<T>> nodes, AutoCloseable closeAction) {
-        super(id);
+        this.gid = GID.create();
+        this.traits = DUUITraits.empty();
+        this.id = Objects.requireNonNull(id, "id");
         Objects.requireNonNull(nodes, "nodes");
         if (nodes.isEmpty()) {
             throw new IllegalArgumentException("A DUUIComponent requires at least one node.");
@@ -33,6 +41,21 @@ public class DUUIComponent<T> extends DUUIActor implements AutoCloseable {
         this.nodes = new LinkedBlockingQueue<>(nodes);
         this.capacity = nodes.size();
         this.closeAction = closeAction;
+    }
+
+    @Override
+    public GID gid() {
+        return gid;
+    }
+
+    @Override
+    public DUUITraits traits() {
+        return traits;
+    }
+
+    @Override
+    public String id() {
+        return id;
     }
 
     public static DUUIComponent<org.apache.uima.jcas.JCas> v1(String id, List<DUUIV1Annotator> replicas) {
@@ -47,8 +70,11 @@ public class DUUIComponent<T> extends DUUIActor implements AutoCloseable {
         return new DUUIComponent<>(id, nodes);
     }
 
-    public static <T> DUUIComponent<T> processor(String id, DUUINodeProcessor<T> processor) {
-        return new DUUIComponent<>(id, List.of(new DUUINode<>(id + "-slot-0", processor)));
+    public static <T> DUUIComponent<T> processor(String id, DUUIProcessor<T> processor) {
+        DUUIAnnotator<T> annotator = processor instanceof DUUIAnnotator<?> value
+                ? (DUUIAnnotator<T>) value
+                : null;
+        return new DUUIComponent<>(id, List.of(new DUUINode<>(id + "-slot-0", processor, annotator)));
     }
 
     public DUUIArtifact<T> process(DUUIArtifact<T> artifact) throws Exception {

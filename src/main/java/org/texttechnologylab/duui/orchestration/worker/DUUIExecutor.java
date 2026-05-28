@@ -229,8 +229,19 @@ public final class DUUIExecutor implements AutoCloseable {
 
     private static <T> DUUIArtifact<T> processLinear(DUUIStage<T> stage, DUUIArtifact<T> artifact) throws Exception {
         DUUIArtifact<T> current = artifact;
+        DUUIExecutionContext executionContext = DUUIWorker.current().requireCurrentTask().context();
         for (DUUIComponent<T> component : stage.components()) {
-            current = component.process(current);
+            DUUIEventContext previousContext = executionContext.eventContext();
+            if (previousContext != null) {
+                executionContext.eventContext(previousContext.toBuilder()
+                        .componentId(component.id())
+                        .build());
+            }
+            try {
+                current = component.process(current);
+            } finally {
+                executionContext.eventContext(previousContext);
+            }
         }
         return current;
     }

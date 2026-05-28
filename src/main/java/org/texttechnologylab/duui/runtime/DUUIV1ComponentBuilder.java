@@ -42,6 +42,10 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
     private boolean telemetryEnabled;
     private int telemetryTtlMinutes = 5;
     private DUUIEventSink telemetrySink;
+    private List<String> telemetryResource = List.of("cpu", "memory");
+    private List<String> telemetryStats = List.of("duration", "throughput", "histogram");
+    private List<String> telemetryScopes = List.of("global", "component", "component_replica", "request");
+    private int telemetrySampleIntervalMs = 500;
     private boolean imageFetching;
     private boolean gpu;
     private boolean runningAfterDestroy;
@@ -169,6 +173,30 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
         return this;
     }
 
+    public DUUIV1ComponentBuilder telemetryResource(String... resource) {
+        this.telemetryResource = cleanTelemetryValues(resource);
+        this.telemetryEnabled = true;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder telemetryStats(String... stats) {
+        this.telemetryStats = cleanTelemetryValues(stats);
+        this.telemetryEnabled = true;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder telemetryScopes(String... scopes) {
+        this.telemetryScopes = cleanTelemetryValues(scopes);
+        this.telemetryEnabled = true;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder telemetrySampleIntervalMs(int sampleIntervalMs) {
+        this.telemetrySampleIntervalMs = Math.max(100, sampleIntervalMs);
+        this.telemetryEnabled = true;
+        return this;
+    }
+
     @Override
     public void contribute() {
         try {
@@ -275,9 +303,28 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
                 targetView,
                 parameters,
                 telemetryEnabled
-                        ? new DUUIV1TelemetryConfig(true, telemetryTtlMinutes, telemetrySink)
+                        ? new DUUIV1TelemetryConfig(
+                                true,
+                                telemetryTtlMinutes,
+                                telemetrySink,
+                                telemetryResource,
+                                telemetryStats,
+                                telemetryScopes,
+                                telemetrySampleIntervalMs
+                        )
                         : DUUIV1TelemetryConfig.disabled()
         );
+    }
+
+    private static List<String> cleanTelemetryValues(String... values) {
+        if (values == null) {
+            return List.of();
+        }
+        return Arrays.stream(values)
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private static JCas healthCas() throws Exception {

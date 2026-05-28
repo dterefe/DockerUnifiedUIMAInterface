@@ -4,10 +4,13 @@ import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.jcas.JCas;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
-import org.texttechnologylab.duui.clients.hosts.remote.DUUIRemoteEndpoint;
-import org.texttechnologylab.duui.clients.hosts.remote.DUUIRemoteEnvironment;
-import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
-import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
+import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
+import org.texttechnologylab.duui.pipeline.DUUIGenerator;
+import org.texttechnologylab.duui.runtime.DUUI;
+import org.texttechnologylab.duui.runtime.DUUIGeneratorScope;
+import org.texttechnologylab.duui.runtime.DUUIPipelineScope;
+import org.texttechnologylab.duui.runtime.DUUIStageScope;
+import org.texttechnologylab.duui.runtime.DUUISystemScope;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -17,6 +20,7 @@ import java.time.Duration;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class DUUIDuuiPyAnnotatorIntegrationTest {
     @Test
@@ -26,18 +30,35 @@ class DUUIDuuiPyAnnotatorIntegrationTest {
                 HttpRequest.newBuilder(base.resolve("/v1/documentation")).timeout(Duration.ofSeconds(2)).GET().build(),
                 HttpResponse.BodyHandlers.discarding());
 
-        DUUIRemoteEndpoint endpoint = new DUUIRemoteEnvironment().endpoint(base.toString());
-        DUUIV1Annotator annotator = new DUUIV1Annotator(
-                "duui-py-uppercase",
-                endpoint,
-                new DUUIV1Config(1, "_InitialView", "duui_py_result", Map.of()));
-
         JCas cas = JCasFactory.createJCas();
         cas.setDocumentText("duui py works");
 
-        annotator.process(DUUIArtifact.of(cas));
+        DUUIOrchestrationResult result;
+        try (DUUISystemScope system = DUUI.system("duui-py-uppercase-system")) {
+            try (DUUIPipelineScope pipeline = system.pipeline("duui-py-uppercase-pipeline")) {
+                try (DUUIGeneratorScope<JCas> documents = new SingleJCasSource(cas).open(pipeline)) {
+                    try (DUUIStageScope<JCas> remote = documents.linear("remote-uppercase")) {
+                        remote.v1("duui-py-uppercase")
+                                .remote()
+                                .endpoint(base.toString())
+                                .sourceView("_InitialView")
+                                .targetView("duui_py_result")
+                                .telemetry()
+                                .parameters(Map.of());
+                    }
+                }
+            }
+            result = system.run("duui-py-uppercase-pipeline");
+        }
 
-        assertEquals("duui-py-uppercase", annotator.documentation().annotator_name());
+        assertFalse(result.hasFailures());
         assertEquals("DUUI PY WORKS", cas.getView("duui_py_result").getDocumentText());
+    }
+
+    private record SingleJCasSource(JCas cas) implements DUUIGenerator<JCas> {
+        @Override
+        public void generate(Emitter<JCas> emitter) {
+            emitter.emit(DUUIArtifact.of(cas));
+        }
     }
 }

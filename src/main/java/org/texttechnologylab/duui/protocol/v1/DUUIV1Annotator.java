@@ -201,9 +201,52 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
 
             @Override
             public void customize(java.net.http.HttpRequest.Builder builder, JCas value) {
-                builder.header("x-request-id", UUID.randomUUID().toString());
+                DUUIEventContext context = DUUIEventService.current().currentContext();
+                String requestId = UUID.randomUUID().toString();
+                header(builder, "x-request-id", requestId);
+                header(builder, "X-DUUI-Request-Id", requestId);
+                header(builder, "X-DUUI-Orchestrator-Id", context.orchestratorId());
+                header(builder, "X-DUUI-Artifact-Id", context.artifactId());
+                header(builder, "X-DUUI-Component-Id", context.componentId());
+                header(builder, "X-DUUI-Replica-Id", firstPresent(context.nodeId(), context.annotatorId(), id));
+                header(builder, "X-DUUI-Annotator-Id", firstPresent(context.annotatorId(), id));
+                header(builder, "X-DUUI-Machine-Id", context.workerId());
+                header(builder, "X-DUUI-Pipeline-Run-Id", context.taskId());
+                header(builder, "traceparent", traceparent(context));
+                try {
+                    header(builder, "X-DUUI-Telemetry", MAPPER.writeValueAsString(Map.of(
+                            "resource", config.telemetry().resource(),
+                            "stats", config.telemetry().stats(),
+                            "scopes", config.telemetry().scopes(),
+                            "sample_interval_ms", config.telemetry().sampleIntervalMs()
+                    )));
+                } catch (Exception ignored) {
+                }
             }
         };
+    }
+
+    private static void header(java.net.http.HttpRequest.Builder builder, String name, String value) {
+        if (value != null && !value.isBlank()) {
+            builder.header(name, value);
+        }
+    }
+
+    private static String firstPresent(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static String traceparent(DUUIEventContext context) {
+        if (context == null || context.trace() == null) {
+            return null;
+        }
+        return "00-" + context.trace().traceId() + "-" + context.trace().spanId() + "-01";
     }
 
     private DUUIDeserializer<Documentation> documentationDeserializer() {

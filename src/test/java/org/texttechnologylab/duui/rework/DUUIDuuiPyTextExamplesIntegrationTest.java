@@ -13,10 +13,13 @@ import org.apache.uima.util.CasCreationUtils;
 import org.apache.uima.util.XMLInputSource;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
-import org.texttechnologylab.duui.clients.hosts.remote.DUUIRemoteEndpoint;
-import org.texttechnologylab.duui.clients.hosts.remote.DUUIRemoteEnvironment;
-import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
-import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
+import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
+import org.texttechnologylab.duui.pipeline.DUUIGenerator;
+import org.texttechnologylab.duui.runtime.DUUI;
+import org.texttechnologylab.duui.runtime.DUUIGeneratorScope;
+import org.texttechnologylab.duui.runtime.DUUIPipelineScope;
+import org.texttechnologylab.duui.runtime.DUUIStageScope;
+import org.texttechnologylab.duui.runtime.DUUISystemScope;
 
 import java.io.ByteArrayInputStream;
 import java.net.InetSocketAddress;
@@ -121,11 +124,11 @@ class DUUIDuuiPyTextExamplesIntegrationTest {
             JCas cas = casFor(endpoint, "Frankfurt am Main ist eine Stadt.");
             addAnnotation(cas, "de.tudarmstadt.ukp.dkpro.core.api.ner.type.Location", 0, 17);
 
-            DUUIV1Annotator annotator = annotator(
+            runThroughOrchestrator(
                     endpoint,
                     "geonames",
+                    cas,
                     Map.of("backend_url", "http://127.0.0.1:" + backend.getAddress().getPort()));
-            annotator.process(DUUIArtifact.of(cas));
 
             assertCovered(cas, "org.texttechnologylab.annotation.geonames.GeoNamesEntity", "Frankfurt am Main");
         } finally {
@@ -135,14 +138,30 @@ class DUUIDuuiPyTextExamplesIntegrationTest {
 
     private static JCas run(URI endpoint, String id, String text, Map<String, String> parameters) throws Exception {
         JCas cas = casFor(endpoint, text);
-        annotator(endpoint, id, parameters).process(DUUIArtifact.of(cas));
+        runThroughOrchestrator(endpoint, id, cas, parameters);
         return cas;
     }
 
-    private static DUUIV1Annotator annotator(URI endpoint, String id, Map<String, String> parameters) throws Exception {
+    private static void runThroughOrchestrator(URI endpoint, String id, JCas cas, Map<String, String> parameters) throws Exception {
         assertHealthy(endpoint);
-        DUUIRemoteEndpoint remote = new DUUIRemoteEnvironment().endpoint(endpoint.toString());
-        return new DUUIV1Annotator(id, remote, new DUUIV1Config(1, "_InitialView", "_InitialView", parameters));
+        try (DUUISystemScope system = DUUI.system("duui-py-text-" + id)) {
+            try (DUUIPipelineScope pipeline = system.pipeline(id + "-pipeline")) {
+                try (DUUIGeneratorScope<JCas> documents = new SingleJCasSource(cas).open(pipeline)) {
+                    try (DUUIStageScope<JCas> remote = documents.linear("remote-" + id)) {
+                        remote.v1(id)
+                                .remote()
+                                .endpoint(endpoint.toString())
+                                .sourceView("_InitialView")
+                                .targetView("_InitialView")
+                                .telemetry()
+                                .parameters(parameters);
+                    }
+                }
+            }
+            DUUIOrchestrationResult result = system.run(id + "-pipeline");
+            assertTrue(!result.hasFailures(), () -> describeFailures(result));
+            assertEquals(0, result.unroutableArtifacts().size());
+        }
     }
 
     private static URI endpoint(String property, String defaultValue) {
@@ -165,6 +184,24 @@ class DUUIDuuiPyTextExamplesIntegrationTest {
                         .build(),
                 HttpResponse.BodyHandlers.discarding());
         assertEquals(200, response.statusCode(), () -> endpoint + " is not healthy");
+    }
+
+    private static String describeFailures(DUUIOrchestrationResult result) {
+        StringBuilder builder = new StringBuilder();
+        result.results().stream()
+                .filter(execution -> execution.failure() != null)
+                .forEach(execution -> builder.append(execution.failure().message())
+                        .append(" cause=")
+                        .append(execution.failure().cause())
+                        .append('\n'));
+        return builder.toString();
+    }
+
+    private record SingleJCasSource(JCas cas) implements DUUIGenerator<JCas> {
+        @Override
+        public void generate(Emitter<JCas> emitter) {
+            emitter.emit(DUUIArtifact.of(cas));
+        }
     }
 
     private static TypeSystemDescription mergedRemoteTypeSystem(URI endpoint) throws Exception {

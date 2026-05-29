@@ -55,32 +55,26 @@ import static org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIDocker
  *
  * @author Giuseppe Abrami
  */
-public class DUUIPodmanDriver implements IDUUIDriverInterface {
+public class DUUIPodmanDriver extends DUUIV1Driver {
 
     private PodmanClient _interface = null;
-    private HttpClient _client;
 
     private Vertx _vertx = null;
-    private DUUILuaContext _luaContext = null;
-    private int _container_timeout;
-
-    private HashMap<String, DUUIDockerDriver.InstantiatedComponent> _active_components;
 
 
     public DUUIPodmanDriver() throws IOException, SAXException {
+        super();
 
         VertxOptions vertxOptions = new VertxOptions().setPreferNativeTransport(true);
         _vertx = Vertx.vertx(vertxOptions);
-        _client = HttpClient.newHttpClient();
 
         System.out.printf("[PodmanDriver] Is Native Transport Enabled: %s\n", _vertx.isNativeTransportEnabled());
 
         PodmanClient.Options options = new PodmanClient.Options().setSocketPath(podmanSocketPath());
 
         _interface = PodmanClient.create(_vertx, options);
-        _container_timeout = 10000;
-        _active_components = new HashMap<String, DUUIDockerDriver.InstantiatedComponent>();
-        _luaContext = null;
+        _containerTimeout = 10000;
+        _activeComponents = new HashMap<>();
 
     }
 
@@ -164,11 +158,6 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
     }
 
     @Override
-    public void setLuaContext(DUUILuaContext luaContext) {
-        this._luaContext = luaContext;
-    }
-
-    @Override
     public boolean canAccept(DUUIPipelineComponent component) throws InvalidXMLException, IOException, SAXException {
         return component.getDockerImageName() != null;
     }
@@ -238,13 +227,8 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
 
     }
 
-    @Override
-    public void printConcurrencyGraph(String uuid) {
-
-    }
-
     public List<String> getEndpointUrls(String uuid) {
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
+        DUUIDockerDriver.InstantiatedComponent comp = (DUUIDockerDriver.InstantiatedComponent) _activeComponents.get(uuid);
         if (comp == null) {
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
@@ -258,7 +242,7 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
     public String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification, AtomicBoolean shutdown) throws Exception {
 
         String uuid = UUID.randomUUID().toString();
-        while (_active_components.containsKey(uuid.toString())) {
+        while (_activeComponents.containsKey(uuid.toString())) {
             uuid = UUID.randomUUID().toString();
         }
 
@@ -301,7 +285,7 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
             if (awaitResult(_interface.images().exists(comp.getImageName()))) {
                 System.out.printf("[PodmanDriver] Assigned new pipeline component unique id %s\n", uuid);
 
-                _active_components.put(uuid, comp);
+                _activeComponents.put(uuid, comp);
 
                 for (int i = 0; i < comp.getScale(); i++) {
                     if (shutdown.get()) {
@@ -364,7 +348,7 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
                         IDUUICommunicationLayer layer = responsiveAfterTime(
                                 containerUrl,
                                 jc,
-                                _container_timeout,
+                                _containerTimeout,
                                 _client,
                                 (msg) -> System.out.printf("[PodmanDriver][%s][Podman Replication %d/%d] %s\n",
                                         uuidCopy, iCopy + 1, comp.getScale(), msg),
@@ -432,8 +416,9 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         throw new IllegalStateException("Could not reach Podman container on any host IP: " + candidates);
     }
 
+    @Override
     public DUUIPodmanDriver withTimeout(int container_timeout_ms) {
-        _container_timeout = container_timeout_ms;
+        _containerTimeout = container_timeout_ms;
         return this;
     }
 
@@ -449,33 +434,9 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
     }
 
     @Override
-    public TypeSystemDescription get_typesystem(String uuid) throws InterruptedException, IOException, SAXException, CompressorException, ResourceInitializationException {
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        return IDUUIInstantiatedPipelineComponent.getTypesystem(uuid, comp);
-    }
-
-    /**
-     * init reader component
-     * @param uuid
-     * @param filePath
-     * @return
-     */
-    @Override
-    public int initReaderComponent(String uuid, Path filePath) {
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
-        if (comp == null) {
-            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
-        }
-        return IDUUIInstantiatedPipelineReaderComponent.initComponent(comp, filePath);
-    }
-
-    @Override
     public void run(String uuid, JCas aCas, DUUIPipelineDocumentPerformance perf, DUUIComposer composer) throws CASException, PipelineComponentException, CompressorException, CommunicationLayerException, IOException {
         long mutexStart = System.nanoTime();
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.get(uuid);
+        DUUIDockerDriver.InstantiatedComponent comp = (DUUIDockerDriver.InstantiatedComponent) _activeComponents.get(uuid);
         if (comp == null) {
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
@@ -485,7 +446,7 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
 
     @Override
     public boolean destroy(String uuid) {
-        DUUIDockerDriver.InstantiatedComponent comp = _active_components.remove(uuid);
+        DUUIDockerDriver.InstantiatedComponent comp = (DUUIDockerDriver.InstantiatedComponent) _activeComponents.remove(uuid);
         if (comp == null) {
             throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
         }
@@ -504,7 +465,7 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
 
     @Override
     public void shutdown() {
-        for (String s : _active_components.keySet()) {
+        for (String s : _activeComponents.keySet()) {
             destroy(s);
         }
         try {
@@ -512,6 +473,16 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
+        super.shutdown();
+    }
+
+    /**
+     * V2 instantiation stub. Not yet implemented for Podman driver.
+     */
+    @Override
+    public Object instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+            AtomicBoolean shutdown) throws Exception {
+        throw new UnsupportedOperationException("DUUIV1Driver V2 instantiation not yet implemented for Podman");
     }
 
     public static class Component {

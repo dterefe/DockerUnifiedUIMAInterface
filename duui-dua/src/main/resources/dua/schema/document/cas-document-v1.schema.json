@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://texttechnologylab.org/dua/schema/document/cas-document-v1.schema.json",
+  "title": "DUA CAS Document Store Record v1",
+  "type": "object",
+  "required": ["schema", "fsRef", "typeCode", "viewId", "slots"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "dua.cas.document.v1"
+    },
+    "fsRef": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "typeCode": {
+      "type": "integer"
+    },
+    "viewId": {
+      "type": "integer"
+    },
+    "deleted": {
+      "type": "boolean",
+      "default": false
+    },
+    "slots": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/value"
+      }
+    },
+    "arrays": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/array"
+      }
+    },
+    "indexes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "value": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["BOOLEAN", "BYTE", "SHORT", "INTEGER", "LONG", "FLOAT", "DOUBLE", "STRING", "REF"]
+        },
+        "value": {
+          "type": ["boolean", "integer", "number", "string", "null"]
+        }
+      }
+    },
+    "array": {
+      "type": "object",
+      "required": ["kind", "length", "values"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["FS", "INTEGER", "FLOAT", "STRING", "BOOLEAN", "BYTE", "SHORT", "LONG", "DOUBLE"]
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "values": {
+          "type": "object",
+          "description": "Sparse map from decimal array index to value. Missing values are JCas defaults.",
+          "additionalProperties": {
+            "$ref": "#/$defs/value"
+          }
+        }
+      }
+    }
+  }
+}

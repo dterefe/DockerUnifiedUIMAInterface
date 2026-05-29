@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package dua.storage.v1;
+
+option java_package = "org.texttechnologylab.duui.dua.service.grpc.v1";
+option java_multiple_files = true;
+
+service DuaStorage {
+  rpc AllocateFs(AllocateFsRequest) returns (AllocateFsResponse);
+  rpc ReadSlot(ReadSlotRequest) returns (CasValue);
+  rpc WriteSlot(WriteSlotRequest) returns (WriteResult);
+  rpc InitializeArray(InitializeArrayRequest) returns (WriteResult);
+  rpc ReadArray(ReadArrayRequest) returns (ArrayInfo);
+  rpc ReadArrayValue(ReadArrayValueRequest) returns (CasValue);
+  rpc WriteArrayValue(WriteArrayValueRequest) returns (WriteResult);
+  rpc StreamPartition(StreamPartitionRequest) returns (stream PartitionChunk);
+  rpc AppendWal(stream WalRecord) returns (WriteResult);
+}
+
+message AllocateFsRequest {
+  int32 type_code = 1;
+  int32 view_id = 2;
+}
+
+message AllocateFsResponse {
+  uint64 fs_ref = 1;
+}
+
+message ReadSlotRequest {
+  uint64 fs_ref = 1;
+  string feature_name = 2;
+}
+
+message WriteSlotRequest {
+  uint64 fs_ref = 1;
+  string feature_name = 2;
+  CasValue value = 3;
+}
+
+message InitializeArrayRequest {
+  ArrayKind array_kind = 1;
+  uint64 fs_ref = 2;
+  uint32 length = 3;
+}
+
+message ReadArrayRequest {
+  ArrayKind array_kind = 1;
+  uint64 fs_ref = 2;
+}
+
+message ArrayInfo {
+  uint32 length = 1;
+}
+
+message ReadArrayValueRequest {
+  ArrayKind array_kind = 1;
+  uint64 fs_ref = 2;
+  uint32 index = 3;
+}
+
+message WriteArrayValueRequest {
+  ArrayKind array_kind = 1;
+  uint64 fs_ref = 2;
+  uint32 index = 3;
+  CasValue value = 4;
+}
+
+message WriteResult {
+  uint64 sequence = 1;
+  uint64 epoch = 2;
+}
+
+message StreamPartitionRequest {
+  string universe_id = 1;
+  string partition_id = 2;
+  string shard_id = 3;
+  uint64 offset = 4;
+}
+
+message PartitionChunk {
+  bytes data = 1;
+  uint64 offset = 2;
+  bytes sha256 = 3;
+}
+
+message WalRecord {
+  uint64 sequence = 1;
+  uint64 epoch = 2;
+  bytes key = 3;
+  bytes payload = 4;
+}
+
+enum ArrayKind {
+  ARRAY_KIND_UNSPECIFIED = 0;
+  ARRAY_KIND_FS = 1;
+  ARRAY_KIND_INTEGER = 2;
+  ARRAY_KIND_FLOAT = 3;
+  ARRAY_KIND_STRING = 4;
+  ARRAY_KIND_BOOLEAN = 5;
+  ARRAY_KIND_BYTE = 6;
+  ARRAY_KIND_SHORT = 7;
+  ARRAY_KIND_LONG = 8;
+  ARRAY_KIND_DOUBLE = 9;
+}
+
+message CasValue {
+  ValueKind kind = 1;
+  oneof value {
+    bool boolean_value = 2;
+    int64 i64_value = 3;
+    fixed32 f32_bits = 4;
+    fixed64 f64_bits = 5;
+    string string_value = 6;
+    uint64 ref_value = 7;
+  }
+}
+
+enum ValueKind {
+  VALUE_KIND_UNSPECIFIED = 0;
+  VALUE_KIND_BOOLEAN = 1;
+  VALUE_KIND_BYTE = 2;
+  VALUE_KIND_SHORT = 3;
+  VALUE_KIND_INTEGER = 4;
+  VALUE_KIND_LONG = 5;
+  VALUE_KIND_FLOAT = 6;
+  VALUE_KIND_DOUBLE = 7;
+  VALUE_KIND_STRING = 8;
+  VALUE_KIND_REF = 9;
+}

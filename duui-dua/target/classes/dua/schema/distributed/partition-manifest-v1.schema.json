@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://texttechnologylab.org/dua/schema/distributed/partition-manifest-v1.schema.json",
+  "title": "DUA Distributed Partition Manifest v1",
+  "type": "object",
+  "required": ["schema", "partitionId", "kind", "epoch", "shards"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "dua.distributed.partition.v1" },
+    "partitionId": { "type": "string" },
+    "kind": {
+      "enum": ["cas", "payload", "graph", "columnar", "typesystem", "wal", "index"]
+    },
+    "epoch": { "type": "integer", "minimum": 0 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "corpusId": { "type": "string" },
+        "documentId": { "type": "string" },
+        "viewName": { "type": "string" },
+        "typeName": { "type": "string" },
+        "featureName": { "type": "string" }
+      }
+    },
+    "keyspace": {
+      "type": "object",
+      "required": ["strategy"],
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "enum": ["fs-ref-range", "hash", "document-id", "corpus-view", "payload-id", "manual"]
+        },
+        "hash": {
+          "enum": ["xxh3-64", "murmur3-128", "sha256-prefix"]
+        }
+      }
+    },
+    "shards": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/shardRef" }
+    },
+    "indexes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/indexRef" }
+    }
+  },
+  "$defs": {
+    "shardRef": {
+      "type": "object",
+      "required": ["shardId", "manifest"],
+      "additionalProperties": false,
+      "properties": {
+        "shardId": { "type": "string" },
+        "rangeStart": { "type": ["string", "integer", "null"] },
+        "rangeEndExclusive": { "type": ["string", "integer", "null"] },
+        "manifest": { "$ref": "#/$defs/objectRef" }
+      }
+    },
+    "indexRef": {
+      "type": "object",
+      "required": ["name", "kind", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "enum": ["btree", "hash", "bitmap", "bloom", "fst", "column-stats"] },
+        "object": { "$ref": "#/$defs/objectRef" }
+      }
+    },
+    "objectRef": {
+      "type": "object",
+      "required": ["uri", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "byteLength": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

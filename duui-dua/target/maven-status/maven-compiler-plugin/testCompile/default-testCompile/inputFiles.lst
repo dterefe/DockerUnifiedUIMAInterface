@@ -1,0 +1,14 @@
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUAArchiveTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUABackedCasTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUACasStorageBackendTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUAConceptModelTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUADocumentTransferTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUAQueryBackendSchemaTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUATieredCasStorageTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUATransportServiceTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/DUAXmiBridgeTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/distributed/DUADistributionPlannerTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/eval/DUACasStorageEvaluatorTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/eval/DUAStreamingCasEvaluatorTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/eval/DUAUceBackendStressEvaluatorTest.java
+/workspace/duui-dua/src/test/java/org/texttechnologylab/duui/dua/service/DUAServiceModuleCatalogTest.java

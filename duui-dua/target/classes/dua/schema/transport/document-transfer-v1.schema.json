@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://texttechnologylab.org/dua/schema/transport/document-transfer-v1.schema.json",
+  "title": "DUA Document Transfer Package Manifest v1",
+  "type": "object",
+  "required": ["schema", "transferId", "createdEpochMs", "operation", "documents"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "dua.transport.document-transfer.v1" },
+    "transferId": { "type": "string", "minLength": 1 },
+    "sourceUniverseId": { "type": "string" },
+    "targetUniverseId": { "type": "string" },
+    "createdEpochMs": { "type": "integer", "minimum": 0 },
+    "operation": {
+      "enum": ["export-snapshot", "upsert-documents", "patch-corpus-membership", "delete-documents"]
+    },
+    "fsIdentityMode": {
+      "enum": ["xmi-local", "stable-global-gid", "explicit-remap"]
+    },
+    "mergePolicy": {
+      "enum": ["fail-on-conflict", "create-revision", "replace-document", "keep-existing"]
+    },
+    "typeSystems": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/objectRef" }
+    },
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/documentTransfer" }
+    }
+  },
+  "$defs": {
+    "documentTransfer": {
+      "type": "object",
+      "required": ["documentId", "operation", "memberships", "views"],
+      "additionalProperties": false,
+      "properties": {
+        "documentId": { "type": "string", "minLength": 1 },
+        "sourceDocumentId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "operation": { "enum": ["upsert", "delete", "attach", "detach"] },
+        "contentSha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "typeSystemId": { "type": "string" },
+        "sourceFsNamespace": { "type": "string" },
+        "targetFsNamespace": { "type": "string" },
+        "fsIdMap": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fsIdMapEntry" }
+        },
+        "memberships": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/corpusMembership" }
+        },
+        "views": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/viewTransfer" }
+        },
+        "payloads": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/objectRef" }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "integer", "boolean", "null"]
+          }
+        }
+      }
+    },
+    "fsIdMapEntry": {
+      "type": "object",
+      "required": ["sourceFsId", "targetFsId"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceFsId": { "type": "string", "minLength": 1 },
+        "targetFsId": { "type": "string", "minLength": 1 },
+        "typeName": { "type": "string" },
+        "viewName": { "type": "string" }
+      }
+    },
+    "corpusMembership": {
+      "type": "object",
+      "required": ["corpusId", "operation"],
+      "additionalProperties": false,
+      "properties": {
+        "corpusId": { "type": "string", "minLength": 1 },
+        "operation": { "enum": ["attach", "detach"] },
+        "membershipRevision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "viewTransfer": {
+      "type": "object",
+      "required": ["viewName", "encoding", "payload"],
+      "additionalProperties": false,
+      "properties": {
+        "viewName": { "type": "string", "minLength": 1 },
+        "sofaMimeType": { "type": "string" },
+        "encoding": {
+          "enum": ["xmi-1.1", "dua-kv-wal-v1", "dua-kv-snapshot-v1", "text", "binary-payload"]
+        },
+        "payload": { "$ref": "#/$defs/objectRef" }
+      }
+    },
+    "objectRef": {
+      "type": "object",
+      "required": ["path", "mediaType", "sha256", "byteLength"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "path": { "type": "string", "minLength": 1 },
+        "mediaType": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "byteLength": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+org/texttechnologylab/duui/dua/DUAXmiBridgeTest.class
+org/texttechnologylab/duui/dua/eval/DUAStreamingCasEvaluatorTest.class
+org/texttechnologylab/duui/dua/eval/DUACasStorageEvaluatorTest.class
+org/texttechnologylab/duui/dua/DUAQueryBackendSchemaTest.class
+org/texttechnologylab/duui/dua/eval/DUAUceBackendStressEvaluatorTest.class
+org/texttechnologylab/duui/dua/DUACasStorageBackendTest.class
+org/texttechnologylab/duui/dua/DUADocumentTransferTest.class
+org/texttechnologylab/duui/dua/service/DUAServiceModuleCatalogTest.class
+org/texttechnologylab/duui/dua/DUABackedCasTest.class
+org/texttechnologylab/duui/dua/DUATieredCasStorageTest.class
+org/texttechnologylab/duui/dua/DUAConceptModelTest.class
+org/texttechnologylab/duui/dua/DUAArchiveTest.class
+org/texttechnologylab/duui/dua/DUACasStorageBackendTest$Snapshot.class
+org/texttechnologylab/duui/dua/DUATransportServiceTest.class
+org/texttechnologylab/duui/dua/distributed/DUADistributionPlannerTest.class

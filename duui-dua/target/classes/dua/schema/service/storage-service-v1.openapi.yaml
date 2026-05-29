@@ -1,0 +1,170 @@
+openapi: 3.1.0
+info:
+  title: DUA Storage Service
+  version: 1.0.0
+  description: Identifier-first CAS storage service contract for DUA backends.
+paths:
+  /v1/fs/{fsRef}/slots/{featureName}:
+    get:
+      operationId: readSlot
+      parameters:
+        - name: fsRef
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: featureName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Slot value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CasValue" }
+        "404":
+          description: Slot unset
+    put:
+      operationId: writeSlot
+      parameters:
+        - name: fsRef
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: featureName
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CasValue" }
+      responses:
+        "204": { description: Written }
+  /v1/arrays/{arrayKind}/{fsRef}:
+    put:
+      operationId: initializeArray
+      parameters:
+        - name: arrayKind
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/ArrayKind" }
+        - name: fsRef
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [length]
+              properties:
+                length: { type: integer, minimum: 0 }
+      responses:
+        "204": { description: Initialized }
+    get:
+      operationId: readArray
+      parameters:
+        - name: arrayKind
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/ArrayKind" }
+        - name: fsRef
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Array metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [length]
+                properties:
+                  length: { type: integer, minimum: 0 }
+  /v1/arrays/{arrayKind}/{fsRef}/values/{idx}:
+    get:
+      operationId: readArrayValue
+      parameters:
+        - name: arrayKind
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/ArrayKind" }
+        - name: fsRef
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: idx
+          in: path
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Array value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CasValue" }
+        "404":
+          description: Default value
+    put:
+      operationId: writeArrayValue
+      parameters:
+        - name: arrayKind
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/ArrayKind" }
+        - name: fsRef
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: idx
+          in: path
+          required: true
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CasValue" }
+      responses:
+        "204": { description: Written }
+  /v1/fs:
+    post:
+      operationId: allocateFs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [typeCode, viewId]
+              properties:
+                typeCode: { type: integer }
+                viewId: { type: integer }
+      responses:
+        "200":
+          description: Allocated FS reference
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fsRef]
+                properties:
+                  fsRef: { type: integer, minimum: 1 }
+components:
+  schemas:
+    ArrayKind:
+      enum: [FS, INTEGER, FLOAT, STRING, BOOLEAN, BYTE, SHORT, LONG, DOUBLE]
+    ValueKind:
+      enum: [BOOLEAN, BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, STRING, REF]
+    CasValue:
+      type: object
+      required: [kind, value]
+      properties:
+        kind: { $ref: "#/components/schemas/ValueKind" }
+        value:
+          type: [boolean, integer, number, string, "null"]

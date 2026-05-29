@@ -1,0 +1,125 @@
+package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
+
+import org.apache.commons.compress.compressors.CompressorException;
+import org.apache.uima.cas.CASException;
+import org.apache.uima.jcas.JCas;
+import org.apache.uima.resource.ResourceInitializationException;
+import org.apache.uima.resource.metadata.TypeSystemDescription;
+import org.apache.uima.util.InvalidXMLException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.xml.sax.SAXException;
+
+import java.io.IOException;
+import java.net.http.HttpClient;
+import java.nio.file.Path;
+import java.security.InvalidParameterException;
+import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Abstract base class for all V1 container-based drivers.
+ * Provides shared fields and common implementations that eliminate
+ * duplication across DUUIDockerDriver, DUUIPodmanDriver, DUUISwarmDriver,
+ * DUUIKubernetesDriver, and DUUIRemoteDriver.
+ *
+ * <p>NOT intended for DUUIUIMADriver — UIMA has no container lifecycle.</p>
+ *
+ * @author Alexander Leonhardt
+ */
+public abstract class DUUIV1Driver implements IDUUIDriverInterface {
+
+    /** Shared HTTP client for container communication. */
+    protected HttpClient _client;
+
+    /** Lua context for component communication layer negotiation. */
+    protected DUUILuaContext _luaContext;
+
+    /** Container startup timeout in milliseconds (default 10000). */
+    protected int _containerTimeout = 10000;
+
+    /** Map of UUID → instantiated pipeline component. */
+    protected HashMap<String, IDUUIInstantiatedPipelineComponent> _activeComponents;
+
+    /** When true, serde phases use virtual threads; when false, platform threads. */
+    protected boolean _useVirtualThreads = false;
+
+    protected DUUIV1Driver() {
+        _client = HttpClient.newHttpClient();
+    }
+
+    @Override
+    public void setLuaContext(DUUILuaContext luaContext) {
+        this._luaContext = luaContext;
+    }
+
+    public DUUIV1Driver withTimeout(int ms) {
+        _containerTimeout = ms;
+        return this;
+    }
+
+    @Override
+    public TypeSystemDescription get_typesystem(String uuid) throws InterruptedException, IOException, SAXException,
+            CompressorException, ResourceInitializationException {
+        IDUUIInstantiatedPipelineComponent comp = _activeComponents.get(uuid);
+        if (comp == null) {
+            throw new InvalidParameterException(
+                    "Invalid UUID, this component has not been instantiated by this driver");
+        }
+        return IDUUIInstantiatedPipelineComponent.getTypesystem(uuid, comp);
+    }
+
+    @Override
+    public int initReaderComponent(String uuid, Path filePath) throws Exception {
+        IDUUIInstantiatedPipelineComponent comp = _activeComponents.get(uuid);
+        if (comp == null) {
+            throw new InvalidParameterException(
+                    "Invalid UUID, this component has not been instantiated by this driver");
+        }
+        return IDUUIInstantiatedPipelineReaderComponent.initComponent(comp, filePath);
+    }
+
+    @Override
+    public void printConcurrencyGraph(String uuid) {
+        IDUUIInstantiatedPipelineComponent comp = _activeComponents.get(uuid);
+        if (comp == null) {
+            throw new InvalidParameterException(
+                    "Invalid UUID, this component has not been instantiated by this driver");
+        }
+        DUUIPipelineComponent pipelineComponent = comp.getPipelineComponent();
+        String driverName = pipelineComponent.getDriverSimpleName() != null
+                ? pipelineComponent.getDriverSimpleName()
+                : getClass().getSimpleName();
+        System.out.printf("[%s][%s]: Component found\n", driverName, uuid);
+    }
+
+    @Override
+    public void shutdown() {
+    }
+
+    @Override
+    public abstract boolean canAccept(DUUIPipelineComponent component) throws InvalidXMLException, IOException, SAXException;
+
+    @Override
+    public abstract String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+            AtomicBoolean shutdown) throws Exception;
+
+    /**
+     * V2 instantiation stub.
+     */
+    public Object instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+            AtomicBoolean shutdown) throws Exception {
+        throw new UnsupportedOperationException("V2 instantiation not yet implemented for " + getClass().getSimpleName());
+    }
+
+    @Override
+    public abstract void run(String uuid, JCas aCas, DUUIPipelineDocumentPerformance perf, DUUIComposer composer)
+            throws CASException, PipelineComponentException, CompressorException, IOException, InterruptedException,
+            SAXException, CommunicationLayerException;
+
+    @Override
+    public abstract boolean destroy(String uuid);
+}

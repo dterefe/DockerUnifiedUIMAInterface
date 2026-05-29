@@ -62,7 +62,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DUUILegacyModernAnnotatorMatrixTest {
-    private static final String EXAMPLES = "../duui-py/examples";
+    private static final String EXAMPLES = "../../duui-py/examples";
     private static final HttpClient CLIENT = HttpClient.newHttpClient();
     private static final String TAXON_TYPE = "org.texttechnologylab.annotation.type.Taxon";
     private static final String LEGACY_GEONAMES_TYPE = "org.texttechnologylab.annotation.GeoNamesEntity";
@@ -794,8 +794,12 @@ class DUUILegacyModernAnnotatorMatrixTest {
         List<TypeSystemDescription> descriptions = new ArrayList<>();
         descriptions.add(TypeSystemDescriptionFactory.createTypeSystemDescription());
         for (String relative : relativePaths) {
+            var file = Path.of(EXAMPLES, relative).toFile();
+            if (!file.exists()) {
+                continue;
+            }
             descriptions.add(UIMAFramework.getXMLParser().parseTypeSystemDescription(
-                    new XMLInputSource(Path.of(EXAMPLES, relative).toFile())));
+                    new XMLInputSource(file)));
         }
         return CasCreationUtils.mergeTypeSystems(descriptions);
     }

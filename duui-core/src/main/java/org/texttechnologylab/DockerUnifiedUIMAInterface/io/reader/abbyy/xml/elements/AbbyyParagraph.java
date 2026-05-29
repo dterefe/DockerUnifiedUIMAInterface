@@ -1,7 +1,7 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.abbyy.xml.elements;
 
 import org.apache.uima.jcas.JCas;
-import org.assertj.core.util.Strings;
+import com.google.common.base.Strings;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader.abbyy.utils.Utils;
 import org.texttechnologylab.annotation.ocr.abbyy.Paragraph;
 import org.xml.sax.Attributes;

@@ -30,6 +30,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
@@ -168,6 +169,45 @@ public interface IDUUIInstantiatedPipelineComponent {
      * @throws CASException
      * @throws PipelineComponentException
      */
+
+    /**
+     * Isolated Lua-only alternative process path.
+     * Branched from {@link #process} based on {@link IDUUICommunicationLayer#supportsProcess()}.
+     * Uses the communication layer's native {@code process()} method instead of
+     * serialize → HTTP POST → deserialize.
+     */
+    private static void processLuaAlternative(
+            JCas jc,
+            IDUUIInstantiatedPipelineComponent comp,
+            DUUIPipelineDocumentPerformance perf,
+            IDUUICommunicationLayer layer,
+            Triplet<IDUUIUrlAccessible, Long, Long> queue,
+            DUUIPipelineComponent pipelineComponent,
+            JCas viewJc
+    ) throws CASException, CommunicationLayerException {
+        JCas sourceCas = viewJc.getView(comp.getSourceView());
+        JCas targetCas;
+        try {
+            targetCas = viewJc.getView(comp.getTargetView());
+        } catch (CASException e) {
+            targetCas = viewJc.createView(comp.getTargetView());
+        }
+
+        layer.process(
+                sourceCas,
+                new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
+                comp.getParameters(),
+                targetCas
+        );
+
+        ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
+        ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
+        ann.setCompression(DUUIPipelineComponent.compressionMethod);
+        ann.setTimestamp(System.nanoTime());
+        ann.setPipelineName(perf.getRunKey());
+        ann.addToIndexes();
+    }
+
     public static void process(JCas jc, IDUUIInstantiatedPipelineComponent comp, DUUIPipelineDocumentPerformance perf) throws CASException, PipelineComponentException {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
 
@@ -205,29 +245,9 @@ public interface IDUUIInstantiatedPipelineComponent {
                 }
             }
 
+            // Branch: Lua alternative process — isolated per spec
             if (layer.supportsProcess()) {
-                JCas sourceCas = viewJc.getView(comp.getSourceView());
-                JCas targetCas;
-                try {
-                    targetCas = viewJc.getView(comp.getTargetView());
-                } catch (CASException e) {
-                    targetCas = viewJc.createView(comp.getTargetView());
-                }
-
-                layer.process(
-                        sourceCas,
-                        new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
-                        comp.getParameters(),
-                        targetCas
-                );
-
-                ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
-                ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
-                ann.setCompression(DUUIPipelineComponent.compressionMethod);
-                ann.setTimestamp(System.nanoTime());
-                ann.setPipelineName(perf.getRunKey());
-                ann.addToIndexes();
-
+                processLuaAlternative(jc, comp, perf, layer, queue, pipelineComponent, viewJc);
                 return;
             }
 

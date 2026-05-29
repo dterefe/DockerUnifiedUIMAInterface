@@ -47,7 +47,7 @@
         <dependency><groupId>com.google.apis</groupId><artifactId>google-api-services-drive</artifactId><version>v3-rev110-1.23.0</version></dependency>
         <dependency><groupId>org.aarboard.nextcloud</groupId><artifactId>nextcloud-api</artifactId><version>13.0.1</version></dependency>
         <dependency><groupId>com.dropbox.core</groupId><artifactId>dropbox-core-sdk</artifactId><version>5.4.5</version></dependency>
-        <dependency><groupId>com.amazonaws</groupId><artifactId>aws-java-sdk-s3</artifactId></dependency>
+        <dependency><groupId>com.amazonaws</groupId><artifactId>aws-java-sdk-s3</artifactId><version>1.12.770</version></dependency>
         <dependency><groupId>io.minio</groupId><artifactId>minio</artifactId><version>8.6.0</version></dependency>
         <dependency><groupId>org.java-websocket</groupId><artifactId>Java-WebSocket</artifactId><version>1.5.3</version></dependency>
         <dependency><groupId>io.socket</groupId><artifactId>socket.io-client</artifactId><version>2.0.1</version></dependency>

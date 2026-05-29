@@ -7,3 +7,4 @@ target/*
 Gemfile.lock
 .vscode/*
 docs/design.md
+*.class

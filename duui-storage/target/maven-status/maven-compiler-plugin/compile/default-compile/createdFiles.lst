@@ -1,0 +1,10 @@
+org/texttechnologylab/duui/storage/DUUIMongoStorageClient.class
+org/texttechnologylab/duui/storage/DUUIMongoStorageClient$MongoExplorer.class
+org/texttechnologylab/duui/storage/DUUILocalStorageClient$LocalDirectory.class
+org/texttechnologylab/duui/storage/DUUIMongoStorageClient$MongoFile.class
+org/texttechnologylab/duui/storage/DUUIMongoStorageClient$MongoDirectory.class
+org/texttechnologylab/duui/storage/DUUILocalStorageClient$LocalReadStream.class
+org/texttechnologylab/duui/storage/DUUILocalStorageClient$LocalFile.class
+org/texttechnologylab/duui/storage/DUUILocalStorageClient.class
+org/texttechnologylab/duui/storage/DUUIMongoStorageClient$MongoReadStream.class
+org/texttechnologylab/duui/storage/DUUILocalStorageClient$LocalExplorer.class

@@ -11,6 +11,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationL
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
@@ -55,10 +56,18 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
     public void setLuaContext(DUUILuaContext luaContext) {
         this._luaContext = luaContext;
     }
-
     public DUUIV1Driver withTimeout(int ms) {
         _containerTimeout = ms;
         return this;
+    }
+
+    public DUUIV1Driver withVirtualThreads(boolean useVirtualThreads) {
+        this._useVirtualThreads = useVirtualThreads;
+        return this;
+    }
+
+    public boolean isUseVirtualThreads() {
+        return _useVirtualThreads;
     }
 
     @Override
@@ -106,14 +115,13 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
     @Override
     public abstract String instantiate(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
             AtomicBoolean shutdown) throws Exception;
-
-    /**
-     * V2 instantiation stub.
-     */
-    public Object instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
-            AtomicBoolean shutdown) throws Exception {
-        throw new UnsupportedOperationException("V2 instantiation not yet implemented for " + getClass().getSimpleName());
-    }
+/**
+ * V2 instantiation stub.
+ */
+public DUUIComponent<JCas> instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+        AtomicBoolean shutdown) throws Exception {
+    throw new UnsupportedOperationException("V2 instantiation not yet implemented for " + getClass().getSimpleName());
+}
 
     @Override
     public abstract void run(String uuid, JCas aCas, DUUIPipelineDocumentPerformance perf, DUUIComposer composer)

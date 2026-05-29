@@ -1,6 +1,8 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
+import com.github.dockerjava.api.command.CreateContainerCmd;
+import com.github.dockerjava.api.model.*;
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.UIMAException;
 import org.apache.uima.cas.CASException;
@@ -10,7 +12,6 @@ import org.apache.uima.resource.ResourceInitializationException;
 import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
@@ -20,12 +21,22 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineCompon
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
+import org.texttechnologylab.duui.clients.docker.DUUIDockerClient;
+import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
+import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.security.InvalidParameterException;
 import java.time.Duration;
@@ -40,20 +51,20 @@ import static java.lang.String.format;
  * @author Alexander Leonhardt
  */
 public class DUUISwarmDriver extends DUUIV1Driver {
-    private final DUUIDockerInterface _interface;
+    private final DUUIDockerClient _dockerClient;
     private IDUUIConnectionHandler _wsclient;
     private String _withSwarmVisualizer;
     private String _host = "localhost";
 
     public DUUISwarmDriver() throws IOException {
-        _interface = new DUUIDockerInterface();
+        _dockerClient = new DUUIDockerClient();
         _containerTimeout = 10000;
         _withSwarmVisualizer = null;
         _activeComponents = new HashMap<>();
     }
 
     public DUUISwarmDriver(int timeout) throws IOException, UIMAException {
-        _interface = new DUUIDockerInterface();
+        _dockerClient = new DUUIDockerClient();
         _containerTimeout = timeout;
         _client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeout)).build();
         _activeComponents = new HashMap<>();
@@ -75,16 +86,16 @@ public class DUUISwarmDriver extends DUUIV1Driver {
     public DUUISwarmDriver withSwarmVisualizer(Integer port) throws InterruptedException {
         if (_withSwarmVisualizer == null) {
             try {
-                _interface.pullImage("dockersamples/visualizer", null, null);
-            } catch (ImagePullException e) {
+                _dockerClient.registry().pull("dockersamples/visualizer");
+            } catch (Exception e) {
                 throw new IllegalStateException("Unable to pull swarm visualizer image.", e);
             }
             if (port == null) {
-                _withSwarmVisualizer = _interface.run("dockersamples/visualizer", false, true, 8080, true);
+                _withSwarmVisualizer = runContainer("dockersamples/visualizer", null, false, true, 8080, null, true);
             } else {
-                _withSwarmVisualizer = _interface.run("dockersamples/visualizer", false, true, 8080, port, true);
+                _withSwarmVisualizer = runContainer("dockersamples/visualizer", null, false, true, 8080, port, true);
             }
-            int port_mapping = _interface.extract_port_mapping(_withSwarmVisualizer, 8080);
+            int port_mapping = extractPortMappingFor(_withSwarmVisualizer, 8080);
             System.out.printf("[DUUISwarmDriver] Running visualizer on address http://" + getHostname() + ":%d\n", port_mapping);
             Thread.sleep(1500);
         }
@@ -95,7 +106,7 @@ public class DUUISwarmDriver extends DUUIV1Driver {
     public void shutdown() {
         if (_withSwarmVisualizer != null) {
             System.out.println("[DUUISwarmDriver] Shutting down swarm visualizer now!");
-            _interface.stop_container(_withSwarmVisualizer);
+            stopContainer(_withSwarmVisualizer);
             _withSwarmVisualizer = null;
         }
         super.shutdown();
@@ -124,16 +135,15 @@ public class DUUISwarmDriver extends DUUIV1Driver {
             uuid = UUID.randomUUID().toString();
         }
 
-        if (!_interface.isSwarmManagerNode()) {
+        if (!isSwarmManagerNode()) {
             throw new InvalidParameterException("This node is not a Docker Swarm Manager, thus cannot create and schedule new services!");
         }
         DUUISwarmDriver.InstantiatedComponent comp = new DUUISwarmDriver.InstantiatedComponent(component, uuid);
 
-        if (_interface.getLocalImage(comp.getImageName()) == null) {
-            // If image is not available try to pull it
+        if (!hasLocalImage(comp.getImageName())) {
             try {
-                _interface.pullImage(comp.getImageName(), null, null);
-            } catch (ImagePullException e) {
+                _dockerClient.registry().pull(comp.getImageName());
+            } catch (Exception e) {
                 throw new PipelineComponentException(format("Failed to pull docker image %s", comp.getImageName()), e);
             }
             if (shutdown.get()) {
@@ -146,19 +156,16 @@ public class DUUISwarmDriver extends DUUIV1Driver {
             if (comp.getUsername() != null && comp.getPassword() != null) {
                 System.out.println("[DockerSwarmDriver] Using provided password and username to authentificate against the remote registry");
             }
-            _interface.push_image(comp.getImageName(), comp.getLocalImageName(), comp.getUsername(), comp.getPassword());
+            pushImage(comp.getImageName(), comp.getLocalImageName(), comp.getUsername(), comp.getPassword());
         }
         System.out.printf("[DockerSwarmDriver] Assigned new pipeline component unique id %s\n", uuid);
 
-        String digest = _interface.getDigestFromImage(comp.getImageName());
+        String digest = getDigestFromImage(comp.getImageName());
         comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
         System.out.printf("[DockerSwarmDriver] Transformed image %s to pinnable image name %s\n", comp.getImageName(), digest);
 
-        // TODO: Fragen was das hier macht
-        String serviceid = _interface.run_service(digest, comp.getScale(), comp.getConstraints());
-
-        // TODO: Fragen was das hier macht
-        int port = _interface.extract_service_port_mapping(serviceid);
+        String serviceid = runService(digest, comp.getScale(), comp.getConstraints());
+        int port = extractServicePortMapping(serviceid);
 
         System.out.printf("[DockerSwarmDriver][%s] Started service, waiting for it to become responsive...\n", uuid);
 
@@ -171,12 +178,11 @@ public class DUUISwarmDriver extends DUUIV1Driver {
             if (shutdown.get()) {
                 return null;
             }
-            // TODO: Hier brauche ich irgendeine Analoge Funktion für den KubernetesDriver
             layer = DUUIDockerDriver.responsiveAfterTime("http://" + getHostname() + ":" + port, jc, _containerTimeout, _client, (msg) -> {
                 System.out.printf("[DockerSwarmDriver][%s][%d Replicas] %s\n", uuidCopy, comp.getScale(), msg);
             }, _luaContext, skipVerification);
         } catch (Exception e) {
-            _interface.rm_service(serviceid);
+            rmService(serviceid);
             throw e;
         }
 
@@ -212,10 +218,260 @@ public class DUUISwarmDriver extends DUUIV1Driver {
         }
         if (!comp.getRunningAfterExit()) {
             System.out.printf("[DockerSwarmDriver] Stopping service %s...\n", comp.getServiceId());
-            _interface.rm_service(comp.getServiceId());
+            rmService(comp.getServiceId());
         }
 
         return true;
+    }
+
+    /**
+     * V2 instantiation for Docker Swarm driver.
+     */
+    @Override
+    public DUUIComponent<JCas> instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+            AtomicBoolean shutdown) throws Exception {
+
+        String imageName = component.getDockerImageName();
+        if (imageName == null) {
+            throw new InvalidParameterException(
+                    "The image name was not set! This is mandatory for the DUUISwarmDriver Class.");
+        }
+
+        if (!isSwarmManagerNode()) {
+            throw new InvalidParameterException(
+                    "This node is not a Docker Swarm Manager, thus cannot create and schedule new services!");
+        }
+
+        // --- 1. Pull/verify image ---
+        if (!hasLocalImage(imageName)) {
+            try {
+                _dockerClient.registry(
+                        component.getDockerAuthUsername(),
+                        component.getDockerAuthPassword()).pull(imageName);
+            } catch (Exception e) {
+                throw new PipelineComponentException(
+                        format("Failed to pull docker image %s", imageName), e);
+            }
+            if (shutdown.get()) {
+                return null;
+            }
+            System.out.printf("[SwarmDriver][V2] Pulled image %s%n", imageName);
+        }
+
+        // Pin image to a digest-based name
+        String digest = getDigestFromImage(imageName);
+        component.__internalPinDockerImage(imageName, digest);
+        System.out.printf("[SwarmDriver][V2] Transformed image %s to pinnable name %s%n",
+                imageName, component.getDockerImageName());
+
+        int scale = component.getScale(1);
+        int workers = component.getWorkers(1);
+        String componentId = component.getName() != null ? component.getName() : "swarm-component";
+        boolean runAfterExit = component.getDockerRunAfterExit(false);
+
+        // --- 2. Create Swarm service ---
+        String serviceId = runService(digest, scale, component.getConstraints());
+        int port = extractServicePortMapping(serviceId);
+
+        if (port == 0) {
+            throw new UnknownError("Could not read the service port!");
+        }
+
+        String serviceURL = "http://" + _host + ":" + port;
+
+        System.out.printf("[SwarmDriver][V2][%d Replicas] Service %s created, waiting for responsiveness at %s...%n",
+                scale, serviceId, serviceURL);
+
+        // --- 3. Wait for service responsiveness ---
+        if (!skipVerification) {
+            waitForContainerResponsive(serviceURL, _containerTimeout);
+        }
+
+        // --- 4. Build annotators ---
+        List<DUUIV1Annotator> annotators = new ArrayList<>(scale);
+        for (int replicaIdx = 0; replicaIdx < scale; replicaIdx++) {
+            String replicaId = componentId + "-replica-" + replicaIdx;
+            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(serviceURL), _client);
+            DUUIV1Config config = new DUUIV1Config(workers,
+                    component.getSourceView(), component.getTargetView(), component.getParameters());
+
+            DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
+            annotators.add(annotator);
+
+            System.out.printf("[SwarmDriver][V2][Replica %d/%d] Annotator %s ready (URL %s)%n",
+                    replicaIdx + 1, scale, replicaId, serviceURL);
+        }
+
+        // --- 5. Build DUUIComponent ---
+        List<DUUINode<JCas>> nodes = new ArrayList<>(scale * workers);
+        int slot = 0;
+        for (DUUIV1Annotator annotator : annotators) {
+            int concurrency = annotator.config().concurrency();
+            for (int j = 0; j < concurrency; j++) {
+                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+            }
+        }
+
+        AutoCloseable closeAction = () -> {
+            if (!runAfterExit) {
+                System.out.printf("[SwarmDriver][V2] Removing service %s...%n", serviceId);
+                rmService(serviceId);
+            }
+        };
+
+        System.out.printf("[SwarmDriver][V2] Component %s instantiated with %d nodes across %d replica(s)%n",
+                componentId, nodes.size(), scale);
+
+        return new DUUIComponent<>(componentId, nodes, closeAction);
+    }
+
+    // === DUUIDockerClient delegation helpers ===
+
+    private boolean isSwarmManagerNode() {
+        return _dockerClient.docker().infoCmd().exec().getSwarm().getControlAvailable();
+    }
+
+    private boolean hasLocalImage(String imageName) {
+        try {
+            return _dockerClient.image(imageName).exists();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String getDigestFromImage(String imageName) {
+        if (!imageName.contains(":")) imageName = imageName + ":latest";
+        try {
+            var digests = _dockerClient.image(imageName).digests();
+            return digests.isEmpty() ? null : digests.get(0);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String runContainer(String imageId, List<String> env, boolean gpu, boolean autoRemove,
+            int containerPort, Integer hostPort, boolean mapDaemon) throws InterruptedException {
+        return _dockerClient.image(imageId).run(cmd -> {
+            HostConfig cfg = new HostConfig().withPublishAllPorts(true);
+            if (autoRemove) cfg = cfg.withAutoRemove(true);
+            if (gpu) {
+                cfg = cfg.withDeviceRequests(List.of(
+                    new DeviceRequest().withCapabilities(List.of(List.of("gpu")))));
+            }
+            if (hostPort != null && hostPort > 0) {
+                cfg.withPortBindings(new PortBinding(
+                    new Ports.Binding(null, String.valueOf(hostPort)),
+                    new ExposedPort(containerPort)));
+            }
+            if (mapDaemon) {
+                cfg = cfg.withBinds(Bind.parse("/var/run/docker.sock:/var/run/docker.sock"));
+            }
+            cmd.withHostConfig(cfg);
+            cmd.withExposedPorts(ExposedPort.tcp(containerPort));
+            if (env != null && !env.isEmpty()) cmd.withEnv(env);
+        }).id();
+    }
+
+    private int extractPortMappingFor(String containerId, int port) {
+        try {
+            var bindings = _dockerClient.container(containerId).bindings(ExposedPort.tcp(port));
+            if (bindings.isPresent() && bindings.get().length > 0) {
+                return Integer.parseInt(bindings.get()[0].getHostPortSpec());
+            }
+        } catch (Exception ignored) { }
+        return 0;
+    }
+
+    private void stopContainer(String containerId) {
+        try {
+            var c = _dockerClient.container(containerId);
+            c.stop(10);
+            c.remove(false, false);
+        } catch (Exception ignored) { }
+    }
+
+    private void pushImage(String remoteName, String localName, String username, String password) throws InterruptedException {
+        if (!hasLocalImage(localName)) {
+            throw new InvalidParameterException(format("Could not find local image %s", localName));
+        }
+        var docker = _dockerClient.docker();
+        docker.tagImageCmd(localName, remoteName, "latest").exec();
+        var pushCmd = docker.pushImageCmd(remoteName);
+        if (username != null && password != null) {
+            AuthConfig cfg = new AuthConfig().withPassword(password).withUsername(username);
+            pushCmd.withAuthConfig(cfg);
+        }
+        pushCmd.start().awaitCompletion();
+    }
+
+    private String runService(String imageName, int scale, List<String> constraints) throws InterruptedException {
+        var docker = _dockerClient.docker();
+        ServiceSpec spec = new ServiceSpec();
+        ServiceModeConfig cfg = new ServiceModeConfig();
+        ServiceReplicatedModeOptions opts = new ServiceReplicatedModeOptions();
+        cfg.withReplicated(opts.withReplicas(scale));
+        spec.withMode(cfg);
+
+        TaskSpec task = new TaskSpec();
+        ContainerSpec cont = new ContainerSpec().withImage(imageName);
+        task.withContainerSpec(cont);
+        if (constraints != null && !constraints.isEmpty()) {
+            task.withPlacement(new ServicePlacement().withConstraints(constraints));
+        }
+        spec.withTaskTemplate(task);
+
+        EndpointSpec end = new EndpointSpec();
+        List<PortConfig> portcfg = new LinkedList<>();
+        portcfg.add(new PortConfig().withTargetPort(9714).withPublishMode(PortConfig.PublishMode.ingress));
+        end.withPorts(portcfg);
+        spec.withEndpointSpec(end);
+
+        return docker.createServiceCmd(spec).exec().getId();
+    }
+
+    private int extractServicePortMapping(String serviceId) throws InterruptedException {
+        Thread.sleep(1000);
+        var service = _dockerClient.docker().inspectServiceCmd(serviceId).exec();
+        Endpoint end = service.getEndpoint();
+        for (PortConfig p : end.getPorts()) {
+            return p.getPublishedPort();
+        }
+        return -1;
+    }
+
+    private void rmService(String serviceId) {
+        _dockerClient.docker().removeServiceCmd(serviceId).withServiceId(serviceId).exec();
+    }
+
+    private void waitForContainerResponsive(String containerURL, int timeoutMs) throws PipelineComponentException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        int attempt = 0;
+        while (System.currentTimeMillis() < deadline) {
+            attempt++;
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(containerURL + "/v1/documentation"))
+                        .version(HttpClient.Version.HTTP_1_1)
+                        .timeout(Duration.ofSeconds(5))
+                        .GET()
+                        .build();
+                HttpResponse<Void> resp = _client.send(req, HttpResponse.BodyHandlers.discarding());
+                if (resp.statusCode() == 200) {
+                    System.out.printf("[SwarmDriver][V2] Service %s responsive after %d attempt(s)%n",
+                            containerURL, attempt);
+                    return;
+                }
+            } catch (Exception ignored) { }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new PipelineComponentException(
+                        format("Interrupted while waiting for service %s to become responsive", containerURL), e);
+            }
+        }
+        throw new PipelineComponentException(
+                format("Service %s did not become responsive within %d ms", containerURL, timeoutMs));
     }
 
     private static class ComponentInstance implements IDUUIUrlAccessible {

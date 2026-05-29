@@ -3,11 +3,13 @@ package org.texttechnologylab.duui.clients.http;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUILogger;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -57,6 +59,7 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
         private long batches;
         private long chunks;
         private long bytes;
+        private ByteArrayOutputStream errorBuffer;
 
         private Subscriber(DUUIRelay<T> relay, BodyDecoder<T> decoder, DUUIEventService eventService, int statusCode) {
             this.relay = relay;
@@ -78,6 +81,15 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
             if (this.output == null) {
                 logger.critical("HTTP response body subscriber cannot stream because relay output is null status_code=" + statusCode);
             }
+
+            // If status code indicates an error, buffer the response body instead of decoding
+            if (statusCode >= 400) {
+                this.errorBuffer = new ByteArrayOutputStream(4096);
+                logger.error("HTTP response error status_code=" + statusCode + " mode=stream; will capture error body");
+                subscription.request(1);
+                return;
+            }
+
             logger.debug("HTTP response body subscribed; starting greedy decoder task status_code=" + statusCode + " mode=stream");
             decoderTask = CompletableFuture.runAsync(() -> {
                 long started = System.currentTimeMillis();
@@ -106,7 +118,11 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
                 for (ByteBuffer item : items) {
                     byte[] chunk = new byte[item.remaining()];
                     item.get(chunk);
-                    output.write(chunk);
+                    if (errorBuffer != null) {
+                        errorBuffer.write(chunk);
+                    } else {
+                        output.write(chunk);
+                    }
                     chunks++;
                     bytes += chunk.length;
                     batchBytes += chunk.length;
@@ -131,6 +147,22 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
         public void onComplete() {
             eventService.metric("http", "duui.http.response_bytes", bytes, "bytes", 0L,
                     java.util.Map.of("mode", "stream"));
+
+            if (errorBuffer != null) {
+                // Dump the error response body
+                byte[] errorBytes = errorBuffer.toByteArray();
+                String bodyPreview = new String(errorBytes, 0, Math.min(errorBytes.length, 2048), StandardCharsets.UTF_8);
+                System.err.println("[DUUIBodyHandler] HTTP ERROR STATUS=" + statusCode
+                    + " body_bytes=" + errorBytes.length
+                    + " body_preview=" + bodyPreview.replace("\n", "\\n").replace("\r", "\\r"));
+                logger.error("HTTP response error body status_code=" + statusCode
+                    + " body_bytes=" + errorBytes.length
+                    + " body_preview=" + (bodyPreview.length() > 500 ? bodyPreview.substring(0, 500) + "..." : bodyPreview));
+                relay.cancel(new IOException("HTTP error status_code=" + statusCode
+                    + " body=" + bodyPreview.substring(0, Math.min(bodyPreview.length(), 200))));
+                return;
+            }
+
             if (bytes == 0L) {
                 logger.warning("HTTP response body completed with zero bytes status_code=" + statusCode + " mode=stream");
             } else if (decoderTask != null && decoderTask.isDone()) {

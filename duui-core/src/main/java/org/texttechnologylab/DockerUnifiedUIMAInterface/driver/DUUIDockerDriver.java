@@ -1,6 +1,10 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 
 
+import com.github.dockerjava.api.command.CreateContainerCmd;
+import com.github.dockerjava.api.model.ExposedPort;
+import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Ports;
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.UIMAException;
 import org.apache.uima.cas.CASException;
@@ -11,7 +15,6 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.TypeSystemUtil;
 import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIFallbackCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
@@ -23,6 +26,13 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunication
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
+import org.texttechnologylab.duui.clients.docker.DUUIDockerClient;
+import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
+import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
@@ -30,6 +40,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
@@ -47,6 +59,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import static java.lang.String.format;
 import static org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer.getLocalhost;
@@ -66,14 +79,14 @@ interface ResponsiveMessageCallback {
  * @author Alexander Leonhardt
  */
 public class DUUIDockerDriver extends DUUIV1Driver {
-    private DUUIDockerInterface _interface;
+    private DUUIDockerClient _dockerClient;
     private IDUUIConnectionHandler _wsclient;
 
     private final static Logger LOGGER = Logger.getLogger(DUUIComposer.class.getName());
 
     public DUUIDockerDriver() throws IOException, UIMAException, SAXException {
         super();
-        _interface = new DUUIDockerInterface();
+        _dockerClient = new DUUIDockerClient();
 
         JCas _basic = JCasFactory.createJCas();
         _basic.setDocumentLanguage("en");
@@ -96,7 +109,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
      */
     public DUUIDockerDriver(int timeout) throws IOException, UIMAException, SAXException {
         super();
-        _interface = new DUUIDockerInterface();
+        _dockerClient = new DUUIDockerClient();
         _client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(timeout)).build();
 
         _containerTimeout = timeout;
@@ -377,7 +390,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                 System.out.printf("[DUUIDockerDriver] Attempting image %s download from secure remote registry\n", comp.getImageName());
             }
             try {
-                _interface.pullImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
+                pullDockerImage(comp.getImageName(), comp.getUsername(), comp.getPassword(), shutdown);
             } catch (ImagePullException imagePullException) {
                 System.err.printf("[DUUIDockerDriver] Failed to pull image %s: %s%n", comp.getImageName(), imagePullException.getMessage());
                 throw new PipelineComponentException(
@@ -391,13 +404,12 @@ public class DUUIDockerDriver extends DUUIV1Driver {
 
             System.out.printf("[DUUIDockerDriver] Pulled image with id %s\n", comp.getImageName());
         } else {
-//            _interface.pullImage(comp.getImageName());
-            if (!_interface.hasLocalImage(comp.getImageName())) {
+            if (!hasLocalDockerImage(comp.getImageName())) {
                 throw new InvalidParameterException(format("Could not find local docker image \"%s\". Did you misspell it or forget with .withImageFetching() to fetch it from remote registry?", comp.getImageName()));
             }
         }
         System.out.printf("[DUUIDockerDriver] Assigned new pipeline component unique id %s\n", uuid);
-        String digest = _interface.getDigestFromImage(comp.getImageName());
+        String digest = getDockerImageDigest(comp.getImageName());
         comp.getPipelineComponent().__internalPinDockerImage(comp.getImageName(), digest);
         System.out.printf("[DUUIDockerDriver] Transformed image %s to pinnable image name %s\n", comp.getImageName(), comp.getPipelineComponent().getDockerImageName());
 
@@ -408,15 +420,15 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                 return null;
             }
 
-            String containerid = _interface.run(comp.getPipelineComponent().getDockerImageName(), comp.getEnv(), comp.usesGPU(), true, 9714, false);
-            int port = _interface.extract_port_mapping(containerid);  // Dieser port hier ist im allgemeinen nicht (bzw nie) der Port 9714 aus dem Input.
+            String containerid = runDockerContainer(comp.getPipelineComponent().getDockerImageName(), comp.getEnv(), comp.usesGPU(), true, 9714, false);
+            int port = extractDockerPortMapping(containerid);  // Dieser port hier ist im allgemeinen nicht (bzw nie) der Port 9714 aus dem Input.
 
             try {
                 if (port == 0) {
                     throw new UnknownError("Could not read the container port!");
                 }
 
-                String containerURL = _interface.getHostUrl(containerid, 9714);
+                String containerURL = getDockerHostUrl(containerid, 9714);
 
                 final int iCopy = i;
                 final String uuidCopy = uuid;
@@ -515,8 +527,8 @@ public class DUUIDockerDriver extends DUUIV1Driver {
      */
     @Override
     public void shutdown() {
-        if (_interface != null) {
-            _interface.shutdown();
+        if (_dockerClient != null) {
+            _dockerClient.shutdown();
         }
         super.shutdown();
     }
@@ -536,7 +548,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
             int counter = 1;
             for (ComponentInstance inst : comp.getInstances()) {
                 System.out.printf("[DUUIDockerDriver][Replication %d/%d] Stopping docker container %s...\n", counter, comp.getInstances().size(), inst.getContainerId());
-                _interface.stop_container(inst.getContainerId());
+                stopDockerContainer(inst.getContainerId());
                 counter += 1;
             }
         }
@@ -545,12 +557,301 @@ public class DUUIDockerDriver extends DUUIV1Driver {
     }
 
     /**
-     * V2 instantiation stub. Not yet implemented for Docker driver.
+     * V2 instantiation for Docker driver.
+     * <p>
+     * Mirrors the container lifecycle from {@link #instantiate(DUUIPipelineComponent, JCas, boolean, AtomicBoolean)}
+     * but packages the result as a {@link DUUIComponent}<JCas> instead of storing a UUID.
+     * Each container replica becomes a {@link DUUIV1Annotator}, and nodes are distributed
+     * round-robin across replicas based on {@code scale × concurrency}.
+     *
+     * @param component        the pipeline component describing the Docker image and configuration
+     * @param jc               a JCas for type system baseline (used only if verification is not skipped)
+     * @param skipVerification if {@code true}, skip the pre-verification round-trip
+     * @param shutdown         cooperative shutdown flag; checked between container starts
+     * @return a fully initialized {@link DUUIComponent}<JCas> ready for processing
+     * @throws Exception if image pull fails, container startup fails, or annotator initialization fails
      */
     @Override
-    public Object instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+    public DUUIComponent<JCas> instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
             AtomicBoolean shutdown) throws Exception {
-        throw new UnsupportedOperationException("DUUIV1Driver V2 instantiation not yet implemented for Docker");
+
+        String imageName = component.getDockerImageName();
+        if (imageName == null) {
+            throw new InvalidParameterException(
+                    "The image name was not set! This is mandatory for the DUUIDockerDriver Class.");
+        }
+
+        // --- 1. Pull/verify image (mirrors instantiate()) ---
+        if (component.getDockerImageFetching(false)) {
+            if (component.getDockerAuthUsername() != null) {
+                System.out.printf("[DUUIDockerDriver][V2] Attempting image %s download from secure remote registry%n",
+                        imageName);
+            }
+            try {
+                pullDockerImage(imageName, component.getDockerAuthUsername(),
+                        component.getDockerAuthPassword(), shutdown);
+            } catch (ImagePullException e) {
+                System.err.printf("[DUUIDockerDriver][V2] Failed to pull image %s: %s%n", imageName, e.getMessage());
+                throw new PipelineComponentException(
+                        format("Failed to pull docker image %s", imageName), e);
+            }
+            if (shutdown.get()) {
+                return null;
+            }
+            System.out.printf("[DUUIDockerDriver][V2] Pulled image %s%n", imageName);
+        } else {
+            if (!hasLocalDockerImage(imageName)) {
+                throw new InvalidParameterException(
+                        format("Could not find local docker image \"%s\". Did you misspell it or forget"
+                                + " .withImageFetching() to fetch it from remote registry?", imageName));
+            }
+        }
+
+        // Pin image to a digest-based name so subsequent runs use the exact same image
+        String digest = getDockerImageDigest(imageName);
+        component.__internalPinDockerImage(imageName, digest);
+        System.out.printf("[DUUIDockerDriver][V2] Transformed image %s to pinnable name %s%n",
+                imageName, component.getDockerImageName());
+
+        int scale = component.getScale(1);
+        int workers = component.getWorkers(1);
+        String componentId = component.getName() != null ? component.getName() : "docker-component";
+        boolean runAfterExit = component.getDockerRunAfterExit(false);
+
+        List<String> containerIds = new ArrayList<>(scale);
+        List<DUUIV1Annotator> annotators = new ArrayList<>(scale);
+
+        // --- 2. Create containers and annotators ---
+        for (int replicaIdx = 0; replicaIdx < scale; replicaIdx++) {
+            if (shutdown.get()) {
+                // Clean up containers already started before bailing out
+                for (String cid : containerIds) {
+                    stopDockerContainer(cid);
+                }
+                return null;
+            }
+
+            String containerId = runDockerContainer(component.getDockerImageName(), component.getEnv(),
+                    component.getDockerGPU(false), true, 9714, false);
+            containerIds.add(containerId);
+
+            String containerURL = getDockerHostUrl(containerId, 9714);
+            String replicaId = componentId + "-replica-" + replicaIdx;
+
+            System.out.printf("[DUUIDockerDriver][V2][Docker Replication %d/%d] Container %s started, waiting for"
+                    + " responsiveness at %s...%n", replicaIdx + 1, scale, containerId, containerURL);
+
+            // Wait for container responsiveness with retries (unless skipVerification)
+            if (!skipVerification) {
+                waitForContainerResponsive(containerURL, _containerTimeout);
+            }
+
+            // Build endpoint and config for this replica
+            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(containerURL), _client);
+            DUUIV1Config config = new DUUIV1Config(workers,
+                    component.getSourceView(), component.getTargetView(), component.getParameters());
+
+            // DUUIV1Annotator constructor fetches documentation, typesystem, and
+            // communication layer — this also acts as a final readiness check
+            DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
+            annotators.add(annotator);
+
+            System.out.printf("[DUUIDockerDriver][V2][Docker Replication %d/%d] Annotator %s ready (URL %s)%n",
+                    replicaIdx + 1, scale, replicaId, containerURL);
+        }
+
+        // --- 3. Build DUUIComponent with nodes distributed round-robin ---
+        List<DUUINode<JCas>> nodes = new ArrayList<>(scale * workers);
+        int slot = 0;
+        for (DUUIV1Annotator annotator : annotators) {
+            int concurrency = annotator.config().concurrency();
+            for (int j = 0; j < concurrency; j++) {
+                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+            }
+        }
+
+        // closeAction stops and removes all containers unless runAfterExit is set
+        AutoCloseable closeAction = () -> {
+            if (!runAfterExit) {
+                int counter = 1;
+                for (String cid : containerIds) {
+                    System.out.printf("[DUUIDockerDriver][V2][Replication %d/%d] Stopping docker container %s...%n",
+                            counter, containerIds.size(), cid);
+                    stopDockerContainer(cid);
+                    counter++;
+                }
+            }
+        };
+
+        System.out.printf("[DUUIDockerDriver][V2] Component %s instantiated with %d nodes across %d replica(s)%n",
+                componentId, nodes.size(), scale);
+
+        return new DUUIComponent<>(componentId, nodes, closeAction);
+    }
+
+    /**
+     * Waits for a container to become responsive by polling its {@code /v1/documentation} endpoint.
+     * Retries up to 30 times with a 1-second delay between attempts.
+     *
+     * @param containerURL the base URL of the container (e.g., {@code http://localhost:32768})
+     * @param timeoutMs    maximum total wait time in milliseconds
+     * @throws PipelineComponentException if the container does not respond within the timeout
+     */
+    private void waitForContainerResponsive(String containerURL, int timeoutMs) throws PipelineComponentException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        int attempt = 0;
+        while (System.currentTimeMillis() < deadline) {
+            attempt++;
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(containerURL + "/v1/documentation"))
+                        .version(HttpClient.Version.HTTP_1_1)
+                        .timeout(Duration.ofSeconds(5))
+                        .GET()
+                        .build();
+                HttpResponse<Void> resp = _client.send(req, HttpResponse.BodyHandlers.discarding());
+                if (resp.statusCode() == 200) {
+                    System.out.printf("[DUUIDockerDriver][V2] Container %s responsive after %d attempt(s)%n",
+                            containerURL, attempt);
+                    return;
+                }
+            } catch (Exception ignored) {
+                // Container not ready yet — retry after a short sleep
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new PipelineComponentException(
+                        format("Interrupted while waiting for container %s to become responsive", containerURL), e);
+            }
+        }
+        throw new PipelineComponentException(
+                format("Container %s did not become responsive within %d ms", containerURL, timeoutMs));
+    }
+
+    // === DUUIDockerClient delegation helpers ===
+
+    private void pullDockerImage(String tag, String username, String password, AtomicBoolean shutdown)
+            throws ImagePullException, InterruptedException {
+        try {
+            if (shutdown != null && shutdown.get()) return;
+            if (username != null && password != null) {
+                _dockerClient.registry(username, password).pull(tag);
+            } else {
+                _dockerClient.registry().pull(tag);
+            }
+        } catch (InterruptedException e) {
+            if (shutdown != null) shutdown.set(true);
+            throw e;
+        } catch (Exception e) {
+            throw new ImagePullException(tag,
+                    format("Could not fetch image %s: %s", tag, e.getMessage()), e);
+        }
+    }
+
+    private boolean hasLocalDockerImage(String imageName) {
+        try {
+            return _dockerClient.image(imageName).exists();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String getDockerImageDigest(String imageName) {
+        if (!imageName.contains(":")) {
+            imageName = imageName + ":latest";
+        }
+        try {
+            var digests = _dockerClient.image(imageName).digests();
+            return digests.isEmpty() ? null : digests.get(0);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String runDockerContainer(String imageId, List<String> env, boolean gpu,
+            boolean autoRemove, int containerPort, boolean mapDaemon) throws InterruptedException {
+        return _dockerClient.image(imageId).run(cmd -> {
+            HostConfig cfg = new HostConfig().withPublishAllPorts(true);
+            if (autoRemove) cfg = cfg.withAutoRemove(true);
+            if (gpu) {
+                cfg = cfg.withDeviceRequests(List.of(
+                    new com.github.dockerjava.api.model.DeviceRequest()
+                        .withCapabilities(List.of(List.of("gpu")))));
+            }
+            if (mapDaemon) {
+                cfg = cfg.withBinds(com.github.dockerjava.api.model.Bind.parse(
+                    "/var/run/docker.sock:/var/run/docker.sock"));
+            }
+            cmd.withHostConfig(cfg);
+            cmd.withExposedPorts(ExposedPort.tcp(containerPort));
+            if (env != null && !env.isEmpty()) cmd.withEnv(env);
+        }).id();
+    }
+
+    private int extractDockerPortMapping(String containerId) {
+        try {
+            var bindings = _dockerClient.container(containerId).bindings(ExposedPort.tcp(9714));
+            if (bindings.isPresent() && bindings.get().length > 0) {
+                return Integer.parseInt(bindings.get()[0].getHostPortSpec());
+            }
+        } catch (Exception e) {
+            // Fall through
+        }
+        return 0;
+    }
+
+    private String getDockerHostUrl(String containerId, int containerPort) {
+        var container = _dockerClient.container(containerId);
+        var bindings = container.bindings(ExposedPort.tcp(containerPort));
+        if (bindings.isEmpty() || bindings.get().length == 0) {
+            throw new IllegalStateException(
+                "[DUUIDockerDriver] No host binding found for container port " + containerPort);
+        }
+        String hostPort = bindings.get()[0].getHostPortSpec();
+        List<String> candidates = new ArrayList<>(List.of("localhost", "host.docker.internal"));
+        String gw = getDockerHostIp();
+        if (gw != null && !gw.isBlank() && !candidates.contains(gw)) candidates.add(gw);
+        for (String host : candidates) {
+            if (canConnect(host, Integer.parseInt(hostPort), 700)) {
+                return "http://" + host + ":" + hostPort;
+            }
+        }
+        throw new IllegalStateException("Could not reach container on any host IP: " + candidates);
+    }
+
+    private void stopDockerContainer(String containerId) {
+        try {
+            var c = _dockerClient.container(containerId);
+            c.stop(10);
+            c.remove(false, false);
+        } catch (Exception e) {
+            // Container may already be stopped
+        }
+    }
+
+    static String getDockerHostIp() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", "ip route | awk '/default/ { print $3 }'");
+            Process p = pb.start();
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(p.getInputStream()))) {
+                String line = reader.readLine();
+                if (line != null && !line.isEmpty()) return line.trim();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    static boolean canConnect(String host, int port, int timeoutMs) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static class ComponentInstance implements IDUUIUrlAccessible {

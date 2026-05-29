@@ -15,7 +15,10 @@ public final class DUUIBytes {
 
     public static byte[] readNBytes(InputStream input, int length) throws IOException {
         byte[] bytes = input.readNBytes(length);
-        return bytes.length == length ? bytes : null;
+        if (bytes.length != length) {
+            return null;
+        }
+        return bytes;
     }
 
     public static int length(byte[] bytes) {
@@ -32,6 +35,12 @@ public final class DUUIBytes {
 
     public static void write(OutputStream output, byte[] bytes) throws IOException {
         output.write(bytes);
+    }
+
+    public static void write(OutputStream output, String value) throws IOException {
+        if (value != null) {
+            output.write(value.getBytes(StandardCharsets.UTF_8));
+        }
     }
 
     public static byte[] utf8(String value) {

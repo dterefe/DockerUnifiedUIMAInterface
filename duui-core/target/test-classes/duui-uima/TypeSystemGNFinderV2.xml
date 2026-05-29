@@ -1,0 +1,22 @@
+<typeSystemDescription xmlns="http://uima.apache.org/resourceSpecifier">
+    <name>GNFinderV2TypeSystem</name>
+    <version>1.0</version>
+    <types>
+        <typeDescription>
+            <name>org.texttechnologylab.annotation.biofid.Taxon</name>
+            <supertypeName>de.tudarmstadt.ukp.dkpro.core.api.ner.type.NamedEntity</supertypeName>
+        </typeDescription>
+        <typeDescription>
+            <name>org.texttechnologylab.annotation.biofid.gnfinder.Taxon</name>
+            <supertypeName>org.texttechnologylab.annotation.biofid.Taxon</supertypeName>
+        </typeDescription>
+        <typeDescription>
+            <name>org.texttechnologylab.annotation.biofid.gnfinder.MetaData</name>
+            <supertypeName>uima.tcas.Annotation</supertypeName>
+        </typeDescription>
+        <typeDescription>
+            <name>org.texttechnologylab.annotation.biofid.gnfinder.VerifiedTaxon</name>
+            <supertypeName>org.texttechnologylab.annotation.biofid.gnfinder.Taxon</supertypeName>
+        </typeDescription>
+    </types>
+</typeSystemDescription>

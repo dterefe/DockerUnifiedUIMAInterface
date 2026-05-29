@@ -4,6 +4,9 @@ import org.luaj.vm2.*;
 import org.luaj.vm2.compiler.LuaC;
 import org.luaj.vm2.lib.*;
 import org.luaj.vm2.lib.jse.*;
+import org.msgpack.core.MessagePack;
+import org.apache.uima.fit.util.JCasUtil;
+import org.texttechnologylab.duui.communication.DUUIBytes;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -74,6 +77,10 @@ public class DUUILuaContext {
             LoadState.install(globals);
             LuaC.install(globals);
 
+            globals.set("MessagePack", CoerceJavaToLua.coerce(MessagePack.class));
+            globals.set("JCasUtil", CoerceJavaToLua.coerce(JCasUtil.class));
+            globals.set("DUUIBytes", CoerceJavaToLua.coerce(DUUIBytes.class));
+
             for (Map.Entry<String, String> val : _luaScripts.entrySet()) {
                 LuaValue valsec = globals.load(val.getValue(), "global_script" + val.getKey(), globals);
                 globals.set(val.getKey(), valsec.call());
@@ -112,6 +119,11 @@ public class DUUILuaContext {
             }
             LoadState.install(user_globals);
             LuaC.install(user_globals);
+
+            user_globals.set("MessagePack", CoerceJavaToLua.coerce(MessagePack.class));
+            user_globals.set("JCasUtil", CoerceJavaToLua.coerce(JCasUtil.class));
+            user_globals.set("DUUIBytes", CoerceJavaToLua.coerce(DUUIBytes.class));
+
             LuaValue sethook = user_globals.get("debug").get("sethook");
 
             user_globals.set("debug", LuaValue.NIL);

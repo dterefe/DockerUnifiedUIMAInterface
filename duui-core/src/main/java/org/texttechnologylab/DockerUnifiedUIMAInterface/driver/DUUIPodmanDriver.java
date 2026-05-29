@@ -13,7 +13,6 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.InvalidXMLException;
 import org.json.JSONObject;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImageException;
@@ -21,6 +20,12 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineCompon
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
+import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
+import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
 import podman.client.PodmanClient;
 import podman.client.containers.ContainerCreateOptions;
@@ -32,10 +37,14 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.InvocationTargetException;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.security.InvalidParameterException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -298,6 +307,11 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
                     pOptions.remove(true);
                     pOptions.publishImagePorts(true);
 
+                    // Explicit port mapping for port 9714 — works even for images without EXPOSE
+                    pOptions.portMappings(List.of(
+                        new ContainerCreateOptions.PortMapping(9714, "", 0, "tcp", 0)
+                    ));
+
                     if (comp.usesGPU()) {
                         List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
                         linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 0, "/dev/nvidia0", "c", 0));
@@ -327,7 +341,17 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
                         iObject = awaitResult(_interface.containers().inspect(containerId, new ContainerInspectOptions().setSize(false)));
                         JSONObject nObject = new JSONObject(iObject);
                         System.out.println(nObject);
-                        port = nObject.getJSONObject("map").getJSONObject("HostConfig").getJSONObject("PortBindings").getJSONArray("9714/tcp").getJSONObject(0).getInt("HostPort");
+                        try {
+                            port = nObject.getJSONObject("map").getJSONObject("HostConfig").getJSONObject("PortBindings").getJSONArray("9714/tcp").getJSONObject(0).getInt("HostPort");
+                        } catch (org.json.JSONException e) {
+                            // Image has no EXPOSE — fall back to NetworkSettings or default port
+                            try {
+                                port = nObject.getJSONObject("map").getJSONObject("NetworkSettings").getJSONObject("Ports").getJSONArray("9714/tcp").getJSONObject(0).getInt("HostPort");
+                            } catch (org.json.JSONException e2) {
+                                System.err.println("[PodmanDriver] No port binding found for 9714/tcp, defaulting to internal port");
+                                port = 9714;
+                            }
+                        }
 
 
                     } catch (Throwable e) {
@@ -402,13 +426,13 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
         candidates.add("localhost");
         candidates.add("host.docker.internal");
 
-        String gw = DUUIDockerInterface.getDockerHostIp();
+        String gw = DUUIDockerDriver.getDockerHostIp();
         if (gw != null && !gw.isBlank() && !candidates.contains(gw)) {
             candidates.add(gw);
         }
 
         for (String host : candidates) {
-            if (DUUIDockerInterface.canConnectDebug(host, port, 700)) {
+            if (DUUIDockerDriver.canConnect(host, port, 700)) {
                 return "http://" + host + ":" + port;
             }
         }
@@ -477,12 +501,282 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
     }
 
     /**
-     * V2 instantiation stub. Not yet implemented for Podman driver.
+     * V2 instantiation for Podman driver.
+     * <p>
+     * Mirrors the container lifecycle from {@link #instantiate(DUUIPipelineComponent, JCas, boolean, AtomicBoolean)}
+     * but packages the result as a {@link DUUIComponent}<JCas> instead of storing a UUID.
+     * Each container replica becomes a {@link DUUIV1Annotator}, and nodes are distributed
+     * round-robin across replicas based on {@code scale × concurrency}.
+     *
+     * @param component        the pipeline component describing the container image and configuration
+     * @param jc               a JCas for type system baseline (used only if verification is not skipped)
+     * @param skipVerification if {@code true}, skip the pre-verification round-trip
+     * @param shutdown         cooperative shutdown flag; checked between container starts
+     * @return a fully initialized {@link DUUIComponent}<JCas> ready for processing
+     * @throws Exception if image pull fails, container startup fails, or annotator initialization fails
      */
     @Override
-    public Object instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+    public DUUIComponent<JCas> instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
             AtomicBoolean shutdown) throws Exception {
-        throw new UnsupportedOperationException("DUUIV1Driver V2 instantiation not yet implemented for Podman");
+
+        String imageName = component.getDockerImageName();
+        if (imageName == null) {
+            throw new InvalidParameterException(
+                    "The image name was not set! This is mandatory for the DUUIPodmanDriver Class.");
+        }
+
+        // --- 1. Pull/verify image (mirrors instantiate()) ---
+        if (component.getDockerImageFetching(false)) {
+            if (component.getDockerAuthUsername() != null) {
+                System.out.printf("[PodmanDriver][V2] Attempting image %s download from secure remote registry%n",
+                        imageName);
+            }
+            try {
+                pull(imageName);
+            } catch (ImageException e) {
+                System.err.printf("[PodmanDriver][V2] Failed to pull image %s: %s%n", imageName, e.getMessage());
+                throw new PipelineComponentException(
+                        format("Failed to pull podman image %s", imageName), e);
+            }
+            if (shutdown.get()) {
+                return null;
+            }
+            System.out.printf("[PodmanDriver][V2] Pulled image %s%n", imageName);
+        } else {
+            try {
+                if (!awaitResult(_interface.images().exists(imageName))) {
+                    throw new InvalidParameterException(
+                            format("Could not find local podman image \"%s\". Did you misspell it or forget"
+                                    + " .withImageFetching() to fetch it from remote registry?", imageName));
+                }
+            } catch (Exception e) {
+                throw e;
+            } catch (Throwable e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        // Pin image to a digest-based name so subsequent runs use the exact same image
+        String digest = getDigestFromImage(imageName);
+        component.__internalPinDockerImage(imageName, digest);
+        System.out.printf("[PodmanDriver][V2] Transformed image %s to pinnable name %s%n",
+                imageName, component.getDockerImageName());
+
+        int scale = component.getScale(1);
+        int workers = component.getWorkers(1);
+        String componentId = component.getName() != null ? component.getName() : "podman-component";
+        boolean runAfterExit = component.getDockerRunAfterExit(false);
+
+        List<String> containerIds = new ArrayList<>(scale);
+        List<DUUIV1Annotator> annotators = new ArrayList<>(scale);
+
+        // --- 2. Create containers and annotators ---
+        for (int replicaIdx = 0; replicaIdx < scale; replicaIdx++) {
+            if (shutdown.get()) {
+                // Clean up containers already started before bailing out
+                for (String cid : containerIds) {
+                    stop_container(cid);
+                }
+                return null;
+            }
+
+            ContainerCreateOptions pOptions = new ContainerCreateOptions();
+            pOptions.image(component.getDockerImageName());
+            pOptions.remove(true);
+            pOptions.publishImagePorts(true);
+
+            // Explicit port mapping for port 9714 — works even for images without EXPOSE
+            pOptions.portMappings(List.of(
+                    new ContainerCreateOptions.PortMapping(9714, "", 0, "tcp", 0)));
+
+            if (component.getDockerGPU(false)) {
+                List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
+                linuxDevices.add(
+                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 0, "/dev/nvidia0", "c", 0));
+                linuxDevices.add(
+                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 1, "/dev/nvidia1", "c", 0));
+                linuxDevices.add(
+                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
+                linuxDevices.add(
+                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 254, "/dev/nvidia-modeset", "c", 0));
+                linuxDevices.add(
+                        new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 0, "/dev/nvidia-uvm", "c", 0));
+                linuxDevices.add(
+                        new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 1, "/dev/nvidia-uvm-tools", "c", 0));
+                pOptions.hostDeviceList(linuxDevices);
+                pOptions.json().put("mounts", nvidiaDriverLibraryMounts());
+            }
+
+            JsonObject pObject = null;
+            JsonObject iObject = null;
+            String containerId = "";
+            int port = -1;
+            try {
+                pObject = awaitResult(_interface.containers().create(pOptions));
+                containerId = pObject.getString("Id");
+                containerIds.add(containerId);
+
+                _interface.containers().start(containerId);
+
+                System.out.println(pObject);
+
+                iObject = awaitResult(_interface.containers().inspect(containerId,
+                        new ContainerInspectOptions().setSize(false)));
+                JSONObject nObject = new JSONObject(iObject);
+                System.out.println(nObject);
+                try {
+                    port = nObject.getJSONObject("map").getJSONObject("HostConfig")
+                            .getJSONObject("PortBindings").getJSONArray("9714/tcp").getJSONObject(0)
+                            .getInt("HostPort");
+                } catch (org.json.JSONException e) {
+                    // Image has no EXPOSE — fall back to NetworkSettings or default port
+                    try {
+                        port = nObject.getJSONObject("map").getJSONObject("NetworkSettings")
+                                .getJSONObject("Ports").getJSONArray("9714/tcp").getJSONObject(0)
+                                .getInt("HostPort");
+                    } catch (org.json.JSONException e2) {
+                        System.err.println(
+                                "[PodmanDriver][V2] No port binding found for 9714/tcp, defaulting to internal port");
+                        port = 9714;
+                    }
+                }
+            } catch (Throwable e) {
+                e.printStackTrace();
+                stop_container(containerId, true);
+                throw new RuntimeException(e);
+            }
+
+            if (port == 0) {
+                throw new UnknownError("Could not read the container port!");
+            }
+
+            String containerURL = resolveHostUrl(port);
+            String replicaId = componentId + "-replica-" + replicaIdx;
+
+            System.out.printf("[PodmanDriver][V2][Podman Replication %d/%d] Container %s started, waiting for"
+                    + " responsiveness at %s...%n", replicaIdx + 1, scale, containerId, containerURL);
+
+            // Wait for container responsiveness with retries (unless skipVerification)
+            if (!skipVerification) {
+                waitForContainerResponsive(containerURL, _containerTimeout);
+            }
+
+            // Build endpoint and config for this replica
+            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(containerURL), _client);
+            DUUIV1Config config = new DUUIV1Config(workers,
+                    component.getSourceView(), component.getTargetView(), component.getParameters());
+
+            // DUUIV1Annotator constructor fetches documentation, typesystem, and
+            // communication layer — this also acts as a final readiness check
+            DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
+            annotators.add(annotator);
+
+            System.out.printf("[PodmanDriver][V2][Podman Replication %d/%d] Annotator %s ready (URL %s)%n",
+                    replicaIdx + 1, scale, replicaId, containerURL);
+        }
+
+        // --- 3. Build DUUIComponent with nodes distributed round-robin ---
+        List<DUUINode<JCas>> nodes = new ArrayList<>(scale * workers);
+        int slot = 0;
+        for (DUUIV1Annotator annotator : annotators) {
+            int concurrency = annotator.config().concurrency();
+            for (int j = 0; j < concurrency; j++) {
+                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+            }
+        }
+
+        // closeAction stops and removes all containers unless runAfterExit is set
+        AutoCloseable closeAction = () -> {
+            if (!runAfterExit) {
+                int counter = 1;
+                for (String cid : containerIds) {
+                    System.out.printf("[PodmanDriver][V2][Replication %d/%d] Stopping podman container %s...%n",
+                            counter, containerIds.size(), cid);
+                    stop_container(cid, true);
+                    counter++;
+                }
+            }
+        };
+
+        System.out.printf("[PodmanDriver][V2] Component %s instantiated with %d nodes across %d replica(s)%n",
+                componentId, nodes.size(), scale);
+
+        return new DUUIComponent<>(componentId, nodes, closeAction);
+    }
+
+    /**
+     * Resolves a digest-based pin name for the given image using the Podman CLI.
+     * Falls back to {@code null} (no pinning) if the digest cannot be obtained.
+     *
+     * @param imageName the image reference (e.g., {@code docker.io/library/ubuntu:latest})
+     * @return the repo digest string (e.g., {@code docker.io/library/ubuntu@sha256:...}),
+     *         or {@code null} if not available
+     */
+    private String getDigestFromImage(String imageName) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("podman", "image", "inspect",
+                    "--format", "{{range .RepoDigests}}{{.}}{{end}}", imageName);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line = reader.readLine();
+                process.waitFor();
+                if (line != null && !line.isBlank()) {
+                    // Take the first digest if multiple are returned
+                    return line.trim().split("\\s+")[0];
+                }
+            }
+        } catch (Exception e) {
+            System.err.printf("[PodmanDriver][V2] Could not obtain digest for image %s: %s%n",
+                    imageName, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Waits for a container to become responsive by polling its {@code /v1/documentation} endpoint.
+     * Retries up to 30 times with a 1-second delay between attempts.
+     *
+     * @param containerURL the base URL of the container (e.g., {@code http://localhost:32768})
+     * @param timeoutMs    maximum total wait time in milliseconds
+     * @throws PipelineComponentException if the container does not respond within the timeout
+     */
+    private void waitForContainerResponsive(String containerURL, int timeoutMs)
+            throws PipelineComponentException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        int attempt = 0;
+        while (System.currentTimeMillis() < deadline) {
+            attempt++;
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(containerURL + "/v1/documentation"))
+                        .version(HttpClient.Version.HTTP_1_1)
+                        .timeout(Duration.ofSeconds(5))
+                        .GET()
+                        .build();
+                HttpResponse<Void> resp = _client.send(req, HttpResponse.BodyHandlers.discarding());
+                if (resp.statusCode() == 200) {
+                    System.out.printf("[PodmanDriver][V2] Container %s responsive after %d attempt(s)%n",
+                            containerURL, attempt);
+                    return;
+                }
+            } catch (Exception ignored) {
+                // Container not ready yet — retry after a short sleep
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new PipelineComponentException(
+                        format("Interrupted while waiting for container %s to become responsive",
+                                containerURL),
+                        e);
+            }
+        }
+        throw new PipelineComponentException(
+                format("Container %s did not become responsive within %d ms", containerURL,
+                        timeoutMs));
     }
 
     public static class Component {

@@ -5,19 +5,14 @@ import org.apache.uima.fit.factory.JCasFactory;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPipelineComponent;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPodmanDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIKubernetesDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRemoteDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIV1Driver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.LuaConsts;
-import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
 import org.texttechnologylab.duui.event.DUUIEventSink;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
-import org.texttechnologylab.duui.pipeline.component.DUUINode;
-import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
-import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1TelemetryConfig;
 
-import java.net.URI;
-import java.net.http.HttpClient;
 import java.util.Arrays;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,6 +45,7 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
     private List<String> labels = List.of();
     private boolean streamingTransport;
     private String contentType = "application/octet-stream";
+    private boolean virtualThreads;
 
     DUUIV1ComponentBuilder(DUUIStageScope<?> stage, String id) {
         this.stage = stage;
@@ -188,127 +184,93 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
         return this;
     }
 
+    public DUUIV1ComponentBuilder virtualThreads() {
+        this.virtualThreads = true;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder virtualThreads(boolean virtualThreads) {
+        this.virtualThreads = virtualThreads;
+        return this;
+    }
+
     public DUUIV1ComponentBuilder contentType(String contentType) {
         this.contentType = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
         return this;
     }
 
+    /**
+     * Unified instantiation path — everything goes through {@code driver.instantiateV2()}.
+     * <p>
+     * Determines the environment (remote/podman/kubernetes), creates the appropriate
+     * {@link DUUIV1Driver}, builds a {@link DUUIPipelineComponent}, and calls
+     * {@link DUUIV1Driver#instantiateV2(DUUIPipelineComponent, JCas, boolean, AtomicBoolean)}.
+     * The returned {@link DUUIComponent}{@code <JCas>} is added directly to the stage.
+     * No alternative paths exist.
+     */
     @Override
     public void contribute() {
         try {
+            DUUIV1Driver driver;
+            DUUIPipelineComponent component;
+
             switch (environment) {
-                case REMOTE -> contributeRemote();
-                case PODMAN -> contributePodman();
-                case KUBERNETES -> contributeKubernetes();
+                case REMOTE -> {
+                    if (endpoint == null || endpoint.isBlank()) {
+                        throw new IllegalStateException("DUUI v1 remote component requires an endpoint: " + id);
+                    }
+                    driver = new DUUIRemoteDriver();
+                    component = new DUUIPipelineComponent();
+                    component.withUrl(endpoint);
+                }
+                case PODMAN -> {
+                    if (image == null || image.isBlank()) {
+                        throw new IllegalStateException("DUUI v1 Podman component requires an image: " + id);
+                    }
+                    driver = new DUUIPodmanDriver();
+                    component = new DUUIPodmanDriver.Component(image)
+                            .withImageFetching(imageFetching)
+                            .withGPU(gpu)
+                            .withRunningAfterDestroy(runningAfterDestroy)
+                            .build();
+                }
+                case KUBERNETES -> {
+                    if (image == null || image.isBlank()) {
+                        throw new IllegalStateException("DUUI v1 Kubernetes component requires an image: " + id);
+                    }
+                    driver = new DUUIKubernetesDriver();
+                    DUUIKubernetesDriver.Component builder = new DUUIKubernetesDriver.Component(image);
+                    if (!labels.isEmpty()) {
+                        builder.withLabels(labels);
+                    }
+                    component = builder.build();
+                }
+                default -> throw new IllegalStateException("Unknown environment: " + environment);
             }
+
+            // Apply common configuration
+            component.withName(id);
+            component.withScale(scale);
+            component.withWorkers(concurrency);
+            component.withSourceView(sourceView);
+            component.withTargetView(targetView);
+            parameters.forEach(component::withParameter);
+            component.withTimeout(timeoutSeconds);
+
+            // --- Unified instantiation path: driver.instantiateV2 ---
+            driver.setLuaContext(LuaConsts.getJSON());
+            driver.withVirtualThreads(virtualThreads);
+            DUUIComponent<JCas> duuiComponent = driver.instantiateV2(
+                    component, healthCas(), true, new AtomicBoolean(false));
+
+            if (duuiComponent == null) {
+                throw new IllegalStateException("instantiateV2 returned null for component: " + id);
+            }
+
+            stage.jcasComponent(duuiComponent);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build DUUI v1 component: " + id, e);
         }
-    }
-
-    private void contributeRemote() throws Exception {
-        if (endpoint == null || endpoint.isBlank()) {
-            throw new IllegalStateException("DUUI v1 remote component requires an endpoint: " + id);
-        }
-        List<String> endpoints = new ArrayList<>();
-        for (int i = 0; i < scale; i++) {
-            endpoints.add(endpoint);
-        }
-        stage.jcasComponent(DUUIComponent.v1(id, annotators(endpoints, null)));
-    }
-
-    private void contributePodman() throws Exception {
-        if (image == null || image.isBlank()) {
-            throw new IllegalStateException("DUUI v1 Podman component requires an image: " + id);
-        }
-        DUUIPodmanDriver driver = new DUUIPodmanDriver();
-        driver.setLuaContext(LuaConsts.getJSON());
-        DUUIPipelineComponent component = new DUUIPodmanDriver.Component(image)
-                .withScale(scale)
-                .withWorkers(1)
-                .withImageFetching(imageFetching)
-                .withGPU(gpu)
-                .withRunningAfterDestroy(runningAfterDestroy)
-                .withSourceView(sourceView)
-                .withTargetView(targetView)
-                .build()
-                .withTimeout(timeoutSeconds);
-        parameters.forEach(component::withParameter);
-        String uuid = driver.instantiate(component, healthCas(), true, new AtomicBoolean(false));
-        List<String> endpoints = driver.getEndpointUrls(uuid);
-        if (endpoints.isEmpty()) {
-            driver.destroy(uuid);
-            throw new IllegalStateException("Podman component did not expose any DUUI v1 endpoint: " + id);
-        }
-        stage.jcasComponent(new DUUIComponent<>(id, nodes(annotators(endpoints, id + "-podman")), () -> driver.destroy(uuid)));
-    }
-
-    private void contributeKubernetes() throws Exception {
-        if (image == null || image.isBlank()) {
-            throw new IllegalStateException("DUUI v1 Kubernetes component requires an image: " + id);
-        }
-        DUUIKubernetesDriver driver = new DUUIKubernetesDriver();
-        driver.setLuaContext(LuaConsts.getJSON());
-        DUUIKubernetesDriver.Component builder = new DUUIKubernetesDriver.Component(image)
-                .withScale(scale)
-                .withSourceView(sourceView)
-                .withTargetView(targetView);
-        if (!labels.isEmpty()) {
-            builder.withLabels(labels);
-        }
-        DUUIPipelineComponent component = builder.build().withTimeout(timeoutSeconds);
-        parameters.forEach(component::withParameter);
-        String uuid = driver.instantiate(component, healthCas(), true, new AtomicBoolean(false));
-        List<String> endpoints = driver.getEndpointUrls(uuid);
-        if (endpoints.isEmpty()) {
-            driver.destroy(uuid);
-            throw new IllegalStateException("Kubernetes component did not expose any DUUI v1 endpoint: " + id);
-        }
-        stage.jcasComponent(new DUUIComponent<>(id, nodes(annotators(endpoints, id + "-kubernetes")), () -> driver.destroy(uuid)));
-    }
-
-    private List<DUUIV1Annotator> annotators(List<String> endpoints, String replicaPrefix) throws Exception {
-        List<DUUIV1Annotator> annotators = new ArrayList<>();
-        DUUIV1Config config = config();
-        int replica = 0;
-        for (String endpoint : endpoints) {
-            annotators.add(new DUUIV1Annotator(
-                    (replicaPrefix == null ? id : replicaPrefix) + "-replica-" + replica++,
-                    new DUUIHttpEndpoint(URI.create(endpoint), HttpClient.newHttpClient()),
-                    config
-            ));
-        }
-        return annotators;
-    }
-
-    private List<DUUINode<JCas>> nodes(List<DUUIV1Annotator> annotators) {
-        List<DUUINode<JCas>> nodes = new ArrayList<>();
-        int slot = 0;
-        for (DUUIV1Annotator annotator : annotators) {
-            for (int i = 0; i < annotator.config().concurrency(); i++) {
-                nodes.add(DUUINode.v1(id + "-slot-" + slot++, annotator));
-            }
-        }
-        return nodes;
-    }
-
-    private DUUIV1Config config() {
-        return new DUUIV1Config(
-                concurrency,
-                sourceView,
-                targetView,
-                parameters,
-                telemetryEnabled
-                        ? new DUUIV1TelemetryConfig(
-                                true,
-                                telemetryTtlMinutes,
-                                telemetrySink,
-                                telemetrySampleIntervalMs
-                        )
-                        : DUUIV1TelemetryConfig.disabled(),
-                streamingTransport,
-                contentType
-        );
     }
 
     private static JCas healthCas() throws Exception {

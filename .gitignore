@@ -1,10 +1,45 @@
+# Maven
 target/*
-.idea/*
-*.png
-*.pgf
-*.db
-*.iml
-Gemfile.lock
-.vscode/*
-docs/design.md
 *.class
+*.jar
+*.war
+*.ear
+
+# IDE
+.idea/*
+*.iml
+.vscode/*
+.settings/
+.project
+.classpath
+.metadata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & DB
+*.log
+*.db
+*.pgf
+
+# Images
+*.png
+
+# Ruby/Jekyll
+Gemfile.lock
+_site/
+
+# Docs
+docs/design.md
+docs/javadoc/
+
+# Environment
+.env
+.env.local
+
+# Temp
+*.tmp
+*.bak
+*.swp
+*~

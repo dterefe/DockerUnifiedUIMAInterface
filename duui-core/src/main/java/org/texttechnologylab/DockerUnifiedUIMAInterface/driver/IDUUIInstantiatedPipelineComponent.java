@@ -34,6 +34,11 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationL
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
+import org.texttechnologylab.duui.clients.http.DUUIChannel;
+import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
+import org.texttechnologylab.duui.clients.http.DUUIHttpMethod;
+import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.event.DUUIEventService;
 
 import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 
@@ -251,32 +256,48 @@ public interface IDUUIInstantiatedPipelineComponent {
                 return;
             }
 
-            ByteArrayOutputStream out = new ByteArrayOutputStream(1024*1024);
+            // Build DUUIChannel for async V1 processing
+            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(
+                    URI.create(queue.getValue0().generateURL()), _client);
+            DUUIChannel<JCas> channel = new DUUIChannel<>(
+                    endpoint,
+                    DUUIHttpMethod.POST,
+                    DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
+                    (jcVal, out) -> {
+                        ByteArrayOutputStream bos = out instanceof ByteArrayOutputStream
+                                ? (ByteArrayOutputStream) out : new ByteArrayOutputStream();
+                        layer.serialize(jcVal, bos, comp.getParameters(), comp.getSourceView());
+                        if (bos != out) bos.writeTo(out);
+                    },
+                    (jcVal, in) -> {
+                        ByteArrayInputStream bis = in instanceof ByteArrayInputStream
+                                ? (ByteArrayInputStream) in
+                                : new ByteArrayInputStream(in.readAllBytes());
+                        layer.deserialize(jcVal, bis, comp.getTargetView());
+                        return jcVal;
+                    }
+            );
 
-            // Invoke Lua serialize()
-            layer.serialize(viewJc,out,comp.getParameters(), comp.getSourceView());
-
-            byte[] ok = out.toByteArray();
-            long sizeArray = ok.length;
+            long sizeArray = 0;
             long serializeEnd = System.nanoTime();
-
             long annotatorStart = serializeEnd;
+
             int tries = 0;
-            HttpResponse<byte[]> resp = null;
             boolean bRunning = true;
+            long annotatorEnd = 0;
+            long deserializeStart = 0;
+            long deserializeEnd = 0;
+            String errorMsg = null;
+
             while (bRunning) {
                 try {
                     tries++;
-                    HttpRequest request = HttpRequest.newBuilder()
-                            .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
-                            .timeout(Duration.ofSeconds(comp.getPipelineComponent().getTimeout()))
-                            .POST(HttpRequest.BodyPublishers.ofByteArray(ok))
-                            .version(HttpClient.Version.HTTP_1_1)
-                            .build();
-                    resp = _client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
+                    channel.request(viewJc);
+                    annotatorEnd = System.nanoTime();
+                    deserializeStart = annotatorEnd;
+                    deserializeEnd = System.nanoTime();
                     break;
-                }
-                catch(Exception e) {
+                } catch (Exception e) {
                     System.out.printf(
                             "%s Cannot reach endpoint, trying again %d/%d...\n",
                             logPrefix,
@@ -304,61 +325,37 @@ public interface IDUUIInstantiatedPipelineComponent {
                         );
                         throw new RuntimeException(ex);
                     }
-                    if(tries>REQUEST_TRIES){
-                        bRunning=false;
+                    if (tries > REQUEST_TRIES) {
+                        bRunning = false;
+                        errorMsg = e.getMessage();
                     }
                 }
             }
-            if(resp==null) {
-                System.err.printf(
-                        "%s Could not reach endpoint %s%s after %d tries, aborting.\n",
-                        logPrefix,
-                        queue.getValue0().generateURL(),
-                        DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
-                        REQUEST_TRIES
-                );
-                throw new IOException("Could not reach endpoint after " + REQUEST_TRIES + " tries!");
-            }
-
-
-            if (resp.statusCode() == 200) {
-                ByteArrayInputStream st = new ByteArrayInputStream(resp.body());
-                long annotatorEnd = System.nanoTime();
-                long deserializeStart = annotatorEnd;
-
-                    layer.deserialize(viewJc, st, comp.getTargetView());
-
-                long deserializeEnd = System.nanoTime();
-
+            if (bRunning == false || tries > REQUEST_TRIES) {
+                if (errorMsg == null) errorMsg = "Could not reach endpoint after " + REQUEST_TRIES + " tries";
+                if (perf.shouldTrackErrorDocs()) {
+                    perf.addData(serializeEnd - serializeStart, 0, annotatorEnd - annotatorStart,
+                            queue.getValue2() - queue.getValue1(), System.nanoTime() - queue.getValue1(),
+                            String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()),
+                            0, jc, errorMsg);
+                }
+                if (!pipelineComponent.getIgnoringHTTP200Error()) {
+                    throw new IOException(errorMsg);
+                } else {
+                    System.err.println(String.format("%s %s", logPrefix, errorMsg));
+                }
+            } else {
                 ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
                 ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
                 ann.setCompression(DUUIPipelineComponent.compressionMethod);
                 ann.setTimestamp(System.nanoTime());
                 ann.setPipelineName(perf.getRunKey());
                 ann.addToIndexes();
-                perf.addData(serializeEnd-serializeStart,deserializeEnd-deserializeStart,annotatorEnd-annotatorStart,queue.getValue2()-queue.getValue1(),deserializeEnd-queue.getValue1(), String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()), sizeArray, jc, null);
-
-            } else {
-                ByteArrayInputStream st = new ByteArrayInputStream(resp.body());
-                String responseBody = new String(st.readAllBytes(), StandardCharsets.UTF_8);
-                st.close();
-
-                // track "performance" of error documents if not explicitly disabled
-                if (perf.shouldTrackErrorDocs()) {
-                    long annotatorEnd = System.nanoTime();
-                    long deserializeStart = annotatorEnd;
-                    long deserializeEnd = System.nanoTime();
-
-                    String error = "Expected response 200, got " + resp.statusCode() + ": " + responseBody;
-
-                    perf.addData(serializeEnd - serializeStart, deserializeEnd - deserializeStart, annotatorEnd - annotatorStart, queue.getValue2() - queue.getValue1(), deserializeEnd - queue.getValue1(), String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()), sizeArray, jc, error);
-                }
-
-                if (!pipelineComponent.getIgnoringHTTP200Error()) {
-                    throw new InvalidObjectException(String.format("Expected response 200, got %d: %s", resp.statusCode(), responseBody));
-                } else {
-                    System.err.println(String.format("%s Expected response 200, got %d: %s", logPrefix, resp.statusCode(), responseBody));
-                }
+                perf.addData(serializeEnd - serializeStart, deserializeEnd - deserializeStart,
+                        annotatorEnd - annotatorStart, queue.getValue2() - queue.getValue1(),
+                        deserializeEnd - queue.getValue1(),
+                        String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()),
+                        sizeArray, jc, null);
             }
         } catch (CASException e) {
             throw e;

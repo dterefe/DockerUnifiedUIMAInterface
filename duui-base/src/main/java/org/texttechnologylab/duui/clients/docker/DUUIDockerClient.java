@@ -55,7 +55,7 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
         this.docker = Objects.requireNonNull(docker, "docker");
     }
 
-    DockerClient docker() {
+    public DockerClient docker() {
         return docker;
     }
 
@@ -125,11 +125,11 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return reference;
         }
 
-        InspectImageResponse inspect() {
+        public InspectImageResponse inspect() {
             return docker.inspectImageCmd(reference).exec();
         }
 
-        Optional<InspectImageResponse> inspectIfExists() {
+        public Optional<InspectImageResponse> inspectIfExists() {
             try {
                 return Optional.of(inspect());
             } catch (NotFoundException ignored) {
@@ -185,7 +185,7 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return create(command -> { });
         }
 
-        Container create(Consumer<CreateContainerCmd> configure) {
+        public Container create(Consumer<CreateContainerCmd> configure) {
             CreateContainerCmd command = docker.createContainerCmd(reference);
             if (configure != null) {
                 configure.accept(command);
@@ -198,7 +198,7 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return run(command -> { });
         }
 
-        Container run(Consumer<CreateContainerCmd> configure) {
+        public Container run(Consumer<CreateContainerCmd> configure) {
             return create(configure).start();
         }
 
@@ -359,11 +359,11 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return id;
         }
 
-        InspectContainerResponse inspect() {
+        public InspectContainerResponse inspect() {
             return docker.inspectContainerCmd(id).exec();
         }
 
-        Optional<InspectContainerResponse> inspectIfExists() {
+        public Optional<InspectContainerResponse> inspectIfExists() {
             try {
                 return Optional.of(inspect());
             } catch (NotFoundException ignored) {
@@ -397,7 +397,7 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return inspect().getState() == null ? null : inspect().getState().getExitCode();
         }
 
-        Ports ports() {
+        public Ports ports() {
             return inspect().getNetworkSettings() == null ? null : inspect().getNetworkSettings().getPorts();
         }
 
@@ -408,7 +408,7 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return networks == null ? Map.of() : Map.copyOf(networks);
         }
 
-        Optional<Ports.Binding[]> bindings(ExposedPort port) {
+        public Optional<Ports.Binding[]> bindings(ExposedPort port) {
             Ports ports = ports();
             if (ports == null || ports.getBindings() == null) {
                 return Optional.empty();

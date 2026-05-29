@@ -15,24 +15,35 @@ import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.InvalidXMLException;
 import org.javatuples.Triplet;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIDockerInterface;
+import org.texttechnologylab.duui.clients.docker.DUUIDockerClient;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.DUUIWebsocketAlt;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.connection.IDUUIConnectionHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.ImagePullException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
+import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.security.InvalidParameterException;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -49,7 +60,7 @@ public class DUUIKubernetesDriver extends DUUIV1Driver {
 
     private final KubernetesClient _kube_client;
 
-    private final DUUIDockerInterface _interface;
+    private final DUUIDockerClient _dockerClient;
 
     private IDUUIConnectionHandler _wsclient;
 
@@ -68,7 +79,7 @@ public class DUUIKubernetesDriver extends DUUIV1Driver {
         super();
         _kube_client = new KubernetesClientBuilder().build();
 
-        _interface = new DUUIDockerInterface();
+        _dockerClient = new DUUIDockerClient();
 
         _containerTimeout = 1000;
 
@@ -380,11 +391,208 @@ public class DUUIKubernetesDriver extends DUUIV1Driver {
     }
 
 
+    /**
+     * V2 instantiation for Kubernetes driver.
+     * <p>
+     * Creates a Kubernetes deployment and service, then wraps each replica as a
+     * {@link DUUIV1Annotator}. All annotators point to the same LoadBalancer
+     * service URL; the K8s control plane distributes traffic across pods.
+     *
+     * @param component        the pipeline component describing the container image and configuration
+     * @param jc               a JCas for type system baseline (used only if verification is not skipped)
+     * @param skipVerification if {@code true}, skip the pre-verification round-trip
+     * @param shutdown         cooperative shutdown flag; checked between container starts
+     * @return a fully initialized {@link DUUIComponent}{@code <JCas>} ready for processing
+     * @throws Exception if image pull fails, deployment fails, or annotator initialization fails
+     */
     @Override
-    public void shutdown() {
-        super.shutdown();
+    public DUUIComponent<JCas> instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+            AtomicBoolean shutdown) throws Exception {
+
+        String imageName = component.getDockerImageName();
+        if (imageName == null) {
+            throw new InvalidParameterException(
+                    "The image name was not set! This is mandatory for the DUUIKubernetesDriver Class.");
+        }
+
+        // --- 1. Pull/verify image ---
+        if (component.getDockerImageFetching(false)) {
+            if (component.getDockerAuthUsername() != null) {
+                System.out.printf("[KubernetesDriver][V2] Attempting image %s download from secure remote registry%n",
+                        imageName);
+            }
+            try {
+                pullDockerImage(imageName, component.getDockerAuthUsername(),
+                        component.getDockerAuthPassword());
+            } catch (RuntimeException e) {
+                System.err.printf("[KubernetesDriver][V2] Failed to pull image %s: %s%n", imageName, e.getMessage());
+                throw new PipelineComponentException(
+                        format("Failed to pull docker image %s", imageName), e);
+            }
+            if (shutdown.get()) {
+                return null;
+            }
+            System.out.printf("[KubernetesDriver][V2] Pulled image %s%n", imageName);
+        }
+
+        // Pin image to a digest-based name so subsequent runs use the exact same image
+        String digest = getDockerImageDigest(imageName);
+        component.__internalPinDockerImage(imageName, digest);
+        System.out.printf("[KubernetesDriver][V2] Transformed image %s to pinnable name %s%n",
+                imageName, component.getDockerImageName());
+
+        int scale = component.getScale(1);
+        int workers = component.getWorkers(1);
+        String componentId = component.getName() != null ? component.getName() : "kubernetes-component";
+        boolean runAfterExit = component.getDockerRunAfterExit(false);
+
+        String uuid = UUID.randomUUID().toString();
+
+        // --- 2. Create Kubernetes deployment and service ---
+        List<String> labels = component.getConstraints();
+        try {
+            createDeployment("a" + uuid, digest, scale, labels);
+        } catch (Exception e) {
+            throw new PipelineComponentException(
+                    format("Failed to create Kubernetes deployment for %s", imageName), e);
+        }
+        Service service;
+        try {
+            service = createService("a" + uuid);
+        } catch (Exception e) {
+            deleteDeployment("a" + uuid);
+            throw new PipelineComponentException(
+                    format("Failed to create Kubernetes service for %s", imageName), e);
+        }
+
+        if (shutdown.get()) {
+            deleteService("a" + uuid);
+            deleteDeployment("a" + uuid);
+            return null;
+        }
+
+        int port = service.getSpec().getPorts().get(0).getNodePort();
+        String serviceURL = "http://localhost:" + port;
+
+        System.out.printf("[KubernetesDriver][V2][%s][%d Replicas] Service for image %s is online (URL %s), waiting"
+                + " for responsiveness...%n", uuid, scale, imageName, serviceURL);
+
+        // --- 3. Wait for service responsiveness ---
+        if (!skipVerification) {
+            waitForContainerResponsive(serviceURL, _containerTimeout);
+        }
+
+        // --- 4. Build annotators ---
+        List<DUUIV1Annotator> annotators = new ArrayList<>(scale);
+        for (int replicaIdx = 0; replicaIdx < scale; replicaIdx++) {
+            String replicaId = componentId + "-replica-" + replicaIdx;
+            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(serviceURL), _client);
+            DUUIV1Config config = new DUUIV1Config(workers,
+                    component.getSourceView(), component.getTargetView(), component.getParameters());
+
+            DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
+            annotators.add(annotator);
+
+            System.out.printf("[KubernetesDriver][V2][Replica %d/%d] Annotator %s ready (URL %s)%n",
+                    replicaIdx + 1, scale, replicaId, serviceURL);
+        }
+
+        // --- 5. Build DUUIComponent with nodes distributed round-robin ---
+        List<DUUINode<JCas>> nodes = new ArrayList<>(scale * workers);
+        int slot = 0;
+        for (DUUIV1Annotator annotator : annotators) {
+            int concurrency = annotator.config().concurrency();
+            for (int j = 0; j < concurrency; j++) {
+                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+            }
+        }
+
+        // closeAction deletes the deployment and service unless runAfterExit is set
+        AutoCloseable closeAction = () -> {
+            if (!runAfterExit) {
+                System.out.printf("[KubernetesDriver][V2] Deleting deployment and service for component %s...%n",
+                        componentId);
+                deleteDeployment("a" + uuid);
+                deleteService("a" + uuid);
+            }
+        };
+
+        System.out.printf("[KubernetesDriver][V2] Component %s instantiated with %d nodes across %d replica(s)%n",
+                componentId, nodes.size(), scale);
+
+        return new DUUIComponent<>(componentId, nodes, closeAction);
     }
 
+    /**
+     * Waits for a container/service to become responsive by polling its {@code /v1/documentation} endpoint.
+     * Retries up to 30 times with a 1-second delay between attempts.
+     *
+     * @param containerURL the base URL of the service (e.g., {@code http://localhost:32768})
+     * @param timeoutMs    maximum total wait time in milliseconds
+     * @throws PipelineComponentException if the service does not respond within the timeout
+     */
+    private void waitForContainerResponsive(String containerURL, int timeoutMs) throws PipelineComponentException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        int attempt = 0;
+        while (System.currentTimeMillis() < deadline) {
+            attempt++;
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(containerURL + "/v1/documentation"))
+                        .version(HttpClient.Version.HTTP_1_1)
+                        .timeout(Duration.ofSeconds(5))
+                        .GET()
+                        .build();
+                HttpResponse<Void> resp = _client.send(req, HttpResponse.BodyHandlers.discarding());
+                if (resp.statusCode() == 200) {
+                    System.out.printf("[KubernetesDriver][V2] Service %s responsive after %d attempt(s)%n",
+                            containerURL, attempt);
+                    return;
+                }
+            } catch (Exception ignored) {
+                // Service not ready yet — retry after a short sleep
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new PipelineComponentException(
+                        format("Interrupted while waiting for service %s to become responsive", containerURL), e);
+            }
+        }
+        throw new PipelineComponentException(
+                format("Service %s did not become responsive within %d ms", containerURL, timeoutMs));
+    }
+// === DUUIDockerClient delegation helpers ===
+
+private void pullDockerImage(String tag, String username, String password) {
+    try {
+        if (username != null && password != null) {
+            _dockerClient.registry(username, password).pull(tag);
+        } else {
+            _dockerClient.registry().pull(tag);
+        }
+    } catch (Exception e) {
+        throw new RuntimeException("Failed to pull docker image " + tag, e);
+    }
+}
+
+private String getDockerImageDigest(String imageName) {
+    if (!imageName.contains(":")) imageName = imageName + ":latest";
+    try {
+        var digests = _dockerClient.image(imageName).digests();
+        return digests.isEmpty() ? null : digests.get(0);
+    } catch (Exception e) {
+        return null;
+    }
+}
+
+@Override
+public void shutdown() {
+    super.shutdown();
+}
+
+/**
     /**
      * Class to represent a kubernetes pod: An Instance to process an entire document.
      *

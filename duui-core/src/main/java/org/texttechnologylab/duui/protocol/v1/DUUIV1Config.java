@@ -16,7 +16,7 @@ public record DUUIV1Config(
     }
 
     public DUUIV1Config(int concurrency, String sourceView, String targetView, Map<String, String> parameters, DUUIV1TelemetryConfig telemetry) {
-        this(concurrency, sourceView, targetView, parameters, telemetry, false, "application/octet-stream");
+        this(concurrency, sourceView, targetView, parameters, telemetry, true, "application/octet-stream");
     }
 
     public DUUIV1Config {

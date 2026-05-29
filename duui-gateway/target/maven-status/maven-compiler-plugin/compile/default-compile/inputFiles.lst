@@ -1,0 +1,15 @@
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/DUUIGateway.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/DUUIGatewayApp.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/DUUIGatewayServer.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/GatewayCorpusService.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/GatewayGovernor.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/GatewayOrchestratorService.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/GatewayServiceManager.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/model/GatewayAnnotatorRegistration.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/model/GatewayComponentDefinition.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/model/GatewayExperimentDefinition.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/model/GatewayPipelineDefinition.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/model/GatewayRunSnapshot.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/model/GatewayServiceDefinition.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/store/GatewayStorage.java
+/workspace/duui-gateway/src/main/java/org/texttechnologylab/duui/gateway/validation/V1AnnotatorValidator.java

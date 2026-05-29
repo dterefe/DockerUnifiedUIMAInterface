@@ -17,10 +17,17 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineCompon
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.segmentation.DUUISegmentationStrategy;
+import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
+import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
@@ -370,5 +377,72 @@ public class DUUIRemoteDriver extends DUUIV1Driver {
     public boolean destroy(String uuid) {
         _activeComponents.remove(uuid);
         return true;
+    }
+
+    /**
+     * V2 instantiation for Remote driver.
+     * <p>
+     * No container lifecycle — uses the URLs from the component directly.
+     * Each URL becomes a {@link DUUIV1Annotator} with the configured concurrency.
+     *
+     * @param component        the pipeline component describing the remote endpoints and configuration
+     * @param jc               a JCas for type system baseline (used only if verification is not skipped)
+     * @param skipVerification if {@code true}, skip the pre-verification round-trip
+     * @param shutdown         cooperative shutdown flag; checked between endpoint connections
+     * @return a fully initialized {@link DUUIComponent}{@code <JCas>} ready for processing
+     * @throws Exception if endpoint connection fails or annotator initialization fails
+     */
+    @Override
+    public DUUIComponent<JCas> instantiateV2(DUUIPipelineComponent component, JCas jc, boolean skipVerification,
+            AtomicBoolean shutdown) throws Exception {
+
+        List<String> urls = component.getUrl();
+        if (urls == null || urls.isEmpty()) {
+            throw new InvalidParameterException(
+                    "Missing parameter URL in the pipeline component descriptor");
+        }
+
+        int workers = component.getWorkers(1);
+        String componentId = component.getName() != null ? component.getName() : "remote-component";
+
+        // --- 1. Build annotators from endpoint URLs ---
+        List<DUUIV1Annotator> annotators = new ArrayList<>(urls.size());
+        int replicaIdx = 0;
+        for (String url : urls) {
+            if (shutdown.get()) {
+                return null;
+            }
+
+            String replicaId = componentId + "-replica-" + replicaIdx++;
+            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(url), _client);
+            DUUIV1Config config = new DUUIV1Config(workers,
+                    component.getSourceView(), component.getTargetView(), component.getParameters());
+
+            // DUUIV1Annotator constructor fetches documentation, typesystem, and
+            // communication layer — this also acts as a readiness check
+            DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
+            annotators.add(annotator);
+
+            System.out.printf("[RemoteDriver][V2][Endpoint %d/%d] Annotator %s ready (URL %s)%n",
+                    replicaIdx, urls.size(), replicaId, url);
+        }
+
+        // --- 2. Build DUUIComponent with nodes distributed round-robin ---
+        List<DUUINode<JCas>> nodes = new ArrayList<>(urls.size() * workers);
+        int slot = 0;
+        for (DUUIV1Annotator annotator : annotators) {
+            int concurrency = annotator.config().concurrency();
+            for (int j = 0; j < concurrency; j++) {
+                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+            }
+        }
+
+        // No container lifecycle — closeAction is a no-op
+        AutoCloseable closeAction = () -> {};
+
+        System.out.printf("[RemoteDriver][V2] Component %s instantiated with %d nodes across %d endpoint(s)%n",
+                componentId, nodes.size(), urls.size());
+
+        return new DUUIComponent<>(componentId, nodes, closeAction);
     }
 }

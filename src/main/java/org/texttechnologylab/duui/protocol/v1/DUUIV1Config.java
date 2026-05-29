@@ -7,10 +7,16 @@ public record DUUIV1Config(
     String sourceView,
     String targetView,
     Map<String, String> parameters,
-    DUUIV1TelemetryConfig telemetry
+    DUUIV1TelemetryConfig telemetry,
+    boolean streamingTransport,
+    String contentType
 ) {
     public DUUIV1Config(int concurrency, String sourceView, String targetView, Map<String, String> parameters) {
         this(concurrency, sourceView, targetView, parameters, DUUIV1TelemetryConfig.disabled());
+    }
+
+    public DUUIV1Config(int concurrency, String sourceView, String targetView, Map<String, String> parameters, DUUIV1TelemetryConfig telemetry) {
+        this(concurrency, sourceView, targetView, parameters, telemetry, false, "application/octet-stream");
     }
 
     public DUUIV1Config {
@@ -21,5 +27,6 @@ public record DUUIV1Config(
         targetView = targetView == null ? "_InitialView" : targetView;
         parameters = parameters == null ? Map.of() : Map.copyOf(parameters);
         telemetry = telemetry == null ? DUUIV1TelemetryConfig.disabled() : telemetry;
+        contentType = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
     }
 }

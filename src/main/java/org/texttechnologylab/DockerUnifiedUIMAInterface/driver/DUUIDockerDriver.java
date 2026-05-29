@@ -484,6 +484,17 @@ public class DUUIDockerDriver implements IDUUIDriverInterface {
         System.out.printf("[DUUIDockerDriver][%s]: Maximum concurrency %d\n", uuid, component.getInstances().size());
     }
 
+    public List<String> getEndpointUrls(String uuid) {
+        InstantiatedComponent component = _active_components.get(uuid);
+        if (component == null) {
+            throw new InvalidParameterException("Invalid UUID, this component has not been instantiated by the local Driver");
+        }
+        return component.getInstances().stream()
+                .map(ComponentInstance::generateURL)
+                .distinct()
+                .toList();
+    }
+
     /**
      * Return the TypeSystem used by the given Component
      *

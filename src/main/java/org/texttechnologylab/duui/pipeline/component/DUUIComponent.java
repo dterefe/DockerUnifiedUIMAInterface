@@ -78,9 +78,14 @@ public class DUUIComponent<T> implements DUUIActor, AutoCloseable {
     }
 
     public DUUIArtifact<T> process(DUUIArtifact<T> artifact) throws Exception {
+        long queueStart = System.currentTimeMillis();
+        DUUIEventService.current().log("duui.component", org.texttechnologylab.duui.event.DUUIEventLevel.DEBUG,
+                "Waiting for component node " + id() + " artifact=" + artifact.id() + " available=" + availableNodes() + "/" + capacity());
         DUUINode<T> node = borrowNode();
+        long queueWaitMs = System.currentTimeMillis() - queueStart;
         DUUIExecutionContext executionContext = currentExecutionContext();
         DUUIEventContext previous = executionContext == null ? null : executionContext.eventContext();
+        long processStart = System.currentTimeMillis();
         try {
             if (executionContext != null) {
                 executionContext.eventContext((previous == null ? DUUIEventContext.root(null, null) : previous).toBuilder()
@@ -90,11 +95,25 @@ public class DUUIComponent<T> implements DUUIActor, AutoCloseable {
                         .annotatorId(node.annotator() == null ? null : node.annotator().id())
                         .build());
             }
-            DUUIEventService.current().logger("duui.component").info("Borrowed node " + node.id() + " for component " + id());
+            DUUIEventService.current().logger("duui.component").debug("Borrowed node " + node.id() + " for component " + id() + " after " + queueWaitMs + " ms");
+            DUUIEventService.current().metric("component", "duui.component.queue_wait_ms", queueWaitMs, "milliseconds", queueWaitMs,
+                    java.util.Map.of("component", id(), "node", node.id()));
+            DUUIEventService.current().metric("component", "duui.component.available_nodes", availableNodes(), "count", 0L,
+                    java.util.Map.of("component", id()));
             DUUIEventScope scope = DUUIEventService.current().scope("analysis");
             try {
-                return node.process(artifact);
+                DUUIEventService.current().logger("duui.component").info("Component processing started component=" + id() + " node=" + node.id() + " artifact=" + artifact.id());
+                DUUIArtifact<T> processed = node.process(artifact);
+                long durationMs = System.currentTimeMillis() - processStart;
+                DUUIEventService.current().metric("component", "duui.component.duration_ms", durationMs, "milliseconds", durationMs,
+                        java.util.Map.of("component", id(), "node", node.id()));
+                DUUIEventService.current().logger("duui.component").info("Component processing completed component=" + id() + " node=" + node.id() + " artifact=" + artifact.id() + " duration_ms=" + durationMs);
+                return processed;
             } catch (Exception error) {
+                long durationMs = System.currentTimeMillis() - processStart;
+                DUUIEventService.current().metric("component", "duui.component.failed_duration_ms", durationMs, "milliseconds", durationMs,
+                        java.util.Map.of("component", id(), "node", node.id()));
+                DUUIEventService.current().logger("duui.component").error("Component processing failed component=" + id() + " node=" + node.id() + " artifact=" + artifact.id(), error);
                 scope.fail(error);
                 throw error;
             } finally {
@@ -105,6 +124,7 @@ public class DUUIComponent<T> implements DUUIActor, AutoCloseable {
                 executionContext.eventContext(previous);
             }
             returnNode(node);
+            DUUIEventService.current().logger("duui.component").debug("Returned node " + node.id() + " for component " + id() + " available=" + availableNodes() + "/" + capacity());
         }
     }
 

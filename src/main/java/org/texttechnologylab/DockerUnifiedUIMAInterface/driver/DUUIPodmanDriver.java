@@ -3,6 +3,7 @@ package org.texttechnologylab.DockerUnifiedUIMAInterface.driver;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
+import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import org.apache.commons.compress.compressors.CompressorException;
 import org.apache.uima.cas.CASException;
@@ -27,6 +28,7 @@ import podman.client.containers.ContainerDeleteOptions;
 import podman.client.containers.ContainerInspectOptions;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.reflect.InvocationTargetException;
@@ -36,7 +38,9 @@ import java.nio.file.Path;
 import java.security.InvalidParameterException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -74,7 +78,7 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         PodmanClient.Options options = new PodmanClient.Options().setSocketPath(podmanSocketPath());
 
         _interface = PodmanClient.create(_vertx, options);
-        _container_timeout = 10;
+        _container_timeout = 10000;
         _active_components = new HashMap<String, DUUIDockerDriver.InstantiatedComponent>();
         _luaContext = null;
 
@@ -121,6 +125,42 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         } else {
             return result.get();
         }
+    }
+
+    private static JsonObject readOnlyBindMount(String path) {
+        return new JsonObject()
+                .put("type", "bind")
+                .put("source", path)
+                .put("destination", path)
+                .put("options", new JsonArray(List.of("ro")));
+    }
+
+    private static JsonArray nvidiaDriverLibraryMounts() {
+        JsonArray mounts = new JsonArray();
+        Set<String> mountedPaths = new LinkedHashSet<>();
+        List<String> candidates = List.of(
+                "/usr/lib/x86_64-linux-gnu/libcuda.so",
+                "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+                "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so",
+                "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
+        );
+        for (String path : candidates) {
+            if (new File(path).exists() && mountedPaths.add(path)) {
+                mounts.add(readOnlyBindMount(path));
+            }
+        }
+        File libDir = new File("/usr/lib/x86_64-linux-gnu");
+        File[] versionedLibraries = libDir.listFiles((dir, name) ->
+                name.startsWith("libcuda.so.") || name.startsWith("libnvidia-ml.so."));
+        if (versionedLibraries != null) {
+            for (File library : versionedLibraries) {
+                String path = library.getAbsolutePath();
+                if (mountedPaths.add(path)) {
+                    mounts.add(readOnlyBindMount(path));
+                }
+            }
+        }
+        return mounts;
     }
 
     @Override
@@ -277,11 +317,13 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
                     if (comp.usesGPU()) {
                         List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
                         linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 0, "/dev/nvidia0", "c", 0));
-                        //                linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
-                        //                linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 236, 0, "/dev/nvidia-uvm", "c", 0));
-
-                        //                pOptions.devices(linuxDevices);
+                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 1, "/dev/nvidia1", "c", 0));
+                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
+                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 254, "/dev/nvidia-modeset", "c", 0));
+                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 0, "/dev/nvidia-uvm", "c", 0));
+                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 1, "/dev/nvidia-uvm-tools", "c", 0));
                         pOptions.hostDeviceList(linuxDevices);
+                        pOptions.json().put("mounts", nvidiaDriverLibraryMounts());
                     }
 
 
@@ -348,9 +390,9 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
                             );
                         }
                     } catch (Exception e) {
-
                         e.printStackTrace();
-                        //throw e;
+                        stop_container(containerId, true);
+                        throw e;
                     }
 
 
@@ -388,6 +430,11 @@ public class DUUIPodmanDriver implements IDUUIDriverInterface {
         }
 
         throw new IllegalStateException("Could not reach Podman container on any host IP: " + candidates);
+    }
+
+    public DUUIPodmanDriver withTimeout(int container_timeout_ms) {
+        _container_timeout = container_timeout_ms;
+        return this;
     }
 
     private void stop_container(String containerId) {

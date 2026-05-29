@@ -13,6 +13,7 @@ import org.apache.uima.util.CasCreationUtils;
 import org.apache.uima.util.XMLInputSource;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
+import org.texttechnologylab.duui.artifact.DUUIArtifactEmitter;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.pipeline.DUUIGenerator;
 import org.texttechnologylab.duui.runtime.DUUI;
@@ -199,7 +200,7 @@ class DUUIDuuiPyTextExamplesIntegrationTest {
 
     private record SingleJCasSource(JCas cas) implements DUUIGenerator<JCas> {
         @Override
-        public void generate(Emitter<JCas> emitter) {
+        public void generate(DUUIArtifactEmitter<JCas> emitter) {
             emitter.emit(DUUIArtifact.of(cas));
         }
     }

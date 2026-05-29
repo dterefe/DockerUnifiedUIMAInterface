@@ -80,16 +80,12 @@ public final class DUUILuaCommunicationLayer implements DUUICommunicationLayer {
                 params.set(e.getKey(), e.getValue());
             }
         }
-        globals.get("serialize").invoke(
-            LuaValue.varargsOf(
-                new LuaValue[] {
-                    CoerceJavaToLua.coerce(view),
-                    CoerceJavaToLua.coerce(output),
-                    CoerceJavaToLua.coerce(params),
-                    CoerceJavaToLua.coerce(sourceView)
-                }
-            )
-        );
+        globals.get("serialize").invoke(new LuaValue[] {
+                CoerceJavaToLua.coerce(view),
+                CoerceJavaToLua.coerce(new LuaOutputStream(output)),
+                params,
+                CoerceJavaToLua.coerce(sourceView)
+        });
     }
 
     @Override
@@ -100,14 +96,10 @@ public final class DUUILuaCommunicationLayer implements DUUICommunicationLayer {
         } catch (Exception e) {
             view = targetCas.createView(targetView);
         }
-        globals.get("deserialize").invoke(
-            LuaValue.varargsOf(
-                new LuaValue[] {
-                    CoerceJavaToLua.coerce(view),
-                    CoerceJavaToLua.coerce(input)
-                }
-            )
-        );
+        globals.get("deserialize").invoke(new LuaValue[] {
+                CoerceJavaToLua.coerce(view),
+                CoerceJavaToLua.coerce(input)
+        });
     }
 
     @Override
@@ -117,5 +109,43 @@ public final class DUUILuaCommunicationLayer implements DUUICommunicationLayer {
 
     public String script() {
         return script;
+    }
+
+    public static final class LuaOutputStream extends OutputStream {
+        private final OutputStream delegate;
+
+        private LuaOutputStream(OutputStream delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void write(int value) throws IOException {
+            delegate.write(value);
+        }
+
+        @Override
+        public void write(byte[] value, int offset, int length) throws IOException {
+            delegate.write(value, offset, length);
+        }
+
+        public void write(String value) throws IOException {
+            if (value != null) {
+                delegate.write(value.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
+        public void write(byte[] value) throws IOException {
+            delegate.write(value);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 }

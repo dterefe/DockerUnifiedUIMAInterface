@@ -498,6 +498,15 @@ public class DUUIPipelineComponent {
         return this;
     }
 
+    public DUUIPipelineComponent withInitializeTargetView(boolean createViewFromInitialView) {
+        if(_finalizedEncoded!=null) {
+            throw new RuntimeException("DUUIPipelineComponent has already been finalized, it is immutable now!");
+        }
+
+        _options.put(initialViewFromInitialViewName, String.valueOf(createViewFromInitialView));
+        return this;
+    }
+
     public Boolean getCreateViewFromInitialView() {
         String value = _options.get(initialViewFromInitialViewName);
         if(value == null) return null;

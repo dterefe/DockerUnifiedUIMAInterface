@@ -9,6 +9,8 @@ import org.texttechnologylab.duui.exception.DUUIFailureAction;
 import org.texttechnologylab.duui.exception.DUUIFailureCategory;
 import org.texttechnologylab.duui.exception.DUUIFailureSeverity;
 import org.texttechnologylab.duui.exception.DUUIRecoverability;
+import org.texttechnologylab.duui.event.DUUIEventService;
+import org.texttechnologylab.duui.governance.DUUIGovernor;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDirector;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIScheduler;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUITraitDirector;
@@ -43,6 +45,7 @@ public final class DUUIOrchestrator {
     private final DUUIDirector director;
     private final DUUIExecutor executor;
     private final DUUIOrchestratorConfig config;
+    private final DUUIGovernor governor;
 
     public DUUIOrchestrator(DUUIPipeline pipeline) {
         this(UUID.randomUUID().toString(), pipeline, new DUUIScheduler(), new DUUITraitDirector(), null, DUUIOrchestratorConfig.DEFAULT);
@@ -72,6 +75,7 @@ public final class DUUIOrchestrator {
         this.director = director == null ? new DUUITraitDirector() : director;
         this.executor = executor == null ? new DUUIExecutor(this.orchestratorId) : executor;
         this.config = config == null ? DUUIOrchestratorConfig.DEFAULT : config;
+        this.governor = this.config.governor();
         DUUIWorkerRegistry.registerCurrentThread(this.executor.orchestratorId(), DUUIWorkerKind.ORIGIN, true);
     }
 
@@ -84,6 +88,9 @@ public final class DUUIOrchestrator {
     }
 
     public DUUIOrchestrationResult run(DUUIExecutionContext rootContext) {
+        long started = System.currentTimeMillis();
+        DUUIEventService.current().logger("duui.orchestrator").info("Pipeline run started pipeline=" + pipeline.id() + " mode=sources");
+        governor.onRunStarted(orchestratorId(), pipeline, Map.of("mode", "sources", "startedAt", started));
         DUUIExecutionContext effectiveRootContext = rootContext == null ? new DUUIExecutionContext() : rootContext;
         DUUIOrchestrationResult result = new DUUIOrchestrationResult();
         Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues = initializeQueues();
@@ -91,7 +98,10 @@ public final class DUUIOrchestrator {
         for (DUUIPipeline.SourceBinding<?> binding : pipeline.sources()) {
             generateUnchecked(binding, queues, contexts, effectiveRootContext);
         }
-        return runQueues(queues, contexts, result, effectiveRootContext);
+        DUUIOrchestrationResult completed = runQueues(queues, contexts, result, effectiveRootContext);
+        logRunCompleted(started, completed);
+        governor.onRunCompleted(orchestratorId(), pipeline, completed, Map.of("durationMs", System.currentTimeMillis() - started));
+        return completed;
     }
 
     public DUUIOrchestrationResult run(Collection<DUUIArtifact<?>> artifacts) {
@@ -99,6 +109,10 @@ public final class DUUIOrchestrator {
     }
 
     public DUUIOrchestrationResult run(Collection<DUUIArtifact<?>> artifacts, DUUIExecutionContext rootContext) {
+        long started = System.currentTimeMillis();
+        int artifactCount = artifacts == null ? 0 : artifacts.size();
+        DUUIEventService.current().logger("duui.orchestrator").info("Pipeline run started pipeline=" + pipeline.id() + " artifacts=" + artifactCount);
+        governor.onRunStarted(orchestratorId(), pipeline, Map.of("mode", "artifacts", "artifactCount", artifactCount, "startedAt", started));
         DUUIOrchestrationResult result = new DUUIOrchestrationResult();
         DUUIExecutionContext initialContext = rootContext == null ? new DUUIExecutionContext() : rootContext;
         Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues = initializeQueues();
@@ -109,7 +123,10 @@ public final class DUUIOrchestrator {
                 if (!enqueueInitial(queues, artifact, result)) return result;
             }
         }
-        return runQueues(queues, contexts, result, initialContext);
+        DUUIOrchestrationResult completed = runQueues(queues, contexts, result, initialContext);
+        logRunCompleted(started, completed);
+        governor.onRunCompleted(orchestratorId(), pipeline, completed, Map.of("durationMs", System.currentTimeMillis() - started));
+        return completed;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -127,8 +144,10 @@ public final class DUUIOrchestrator {
                     List.of(),
                     () -> {
                         binding.source().generate(artifact -> {
+                            DUUIEventService.current().logger("duui.orchestrator").debug("Source emitted artifact artifact=" + artifact.id() + " checkpoint=" + binding.output().id());
                             queues.computeIfAbsent(binding.output(), ignored -> binding.output().queue()).add(artifact);
                             contexts.put(artifact.id(), rootContext.copyValues());
+                            governor.onArtifactQueued(orchestratorId(), pipeline, artifact, binding.output(), Map.of("source", "pipeline-source"));
                         });
                         return null;
                     }
@@ -157,7 +176,9 @@ public final class DUUIOrchestrator {
                     executionContext = initialContext.copyValues();
                 }
                 DUUITask<DUUIExecutionResult<?>> task = taskUnchecked(selection.checkpoint(), artifact, executionContext);
+                DUUIEventService.current().logger("duui.orchestrator").debug("Scheduling artifact artifact=" + artifact.id() + " checkpoint=" + selection.checkpoint().id() + " task=" + task.id() + " in_flight=" + inFlight.size());
                 scheduler.dispatch(task, executor, executor.dispatchPolicyFor(selection.checkpoint(), artifact));
+                governor.onTaskScheduled(orchestratorId(), pipeline, artifact, selection.checkpoint(), task, Map.of("inFlight", inFlight.size()));
                 inFlight.add(new ScheduledArtifact(selection.checkpoint(), artifact, executionContext, task));
                 dispatched = true;
             }
@@ -212,22 +233,30 @@ public final class DUUIOrchestrator {
         DUUIExecutionResult<?> result = scheduled.task().await();
         DUUIExecutionContext executionContext = scheduled.context();
         orchestrationResult.addResult(result);
+        DUUIEventService.current().logger("duui.orchestrator").debug("Completed scheduled artifact artifact=" + scheduled.artifact().id() + " checkpoint=" + scheduled.checkpoint().id() + " task=" + scheduled.task().id() + " status=" + result.status());
+        governor.onTaskCompleted(orchestratorId(), pipeline, scheduled.artifact(), scheduled.checkpoint(), result, Map.of("task", scheduled.task().id()));
+        DUUIEventService.current().metric("orchestrator", "duui.orchestrator.completed_results", orchestrationResult.results().size(), "count", 0L,
+                Map.of("pipeline", pipeline.id(), "status", result.status().name()));
         List<DUUIArtifact<?>> emittedArtifacts = executionContext.drainEmittedArtifacts();
         DUUIStage<?> stage = scheduled.checkpoint().stage();
 
         if (result.status() == DUUIExecutionStatus.FAILED) {
+            DUUIEventService.current().logger("duui.orchestrator").error("Artifact failed artifact=" + result.artifact().id() + " checkpoint=" + scheduled.checkpoint().id());
+            governor.onTaskFailed(orchestratorId(), pipeline, scheduled.artifact(), scheduled.checkpoint(), null, Map.of("status", result.status().name()));
             return !config.failFast();
         }
 
         boolean advanced = false;
         if (stage != null && stage.type() == DUUIStageType.PROCESSOR && stage.output() != null) {
             enqueue(queues, cast(stage.output()), result.artifact(), contexts, executionContext);
+            DUUIEventService.current().logger("duui.orchestrator").debug("Advanced artifact artifact=" + result.artifact().id() + " from_stage=" + stage.id() + " to_checkpoint=" + stage.output().id());
             advanced = true;
         } else if (stage != null && stage.type() == DUUIStageType.JOIN) {
             return completeJoinStage(scheduled, result, contexts, queues, orchestrationResult, parents, childToParent, executionContext);
         } else if (stage != null && (stage.type() == DUUIStageType.ADAPTER || stage.type() == DUUIStageType.FORK || stage.type() == DUUIStageType.SPLIT)) {
             for (DUUIArtifact<?> emitted : emittedArtifacts) {
                 enqueue(queues, cast(stage.output()), emitted, contexts, executionContext);
+                DUUIEventService.current().logger("duui.orchestrator").debug("Queued emitted artifact artifact=" + emitted.id() + " from_stage=" + stage.id() + " to_checkpoint=" + stage.output().id());
             }
             advanced = stage.output() != null && !emittedArtifacts.isEmpty();
             if ((stage.type() == DUUIStageType.FORK || stage.type() == DUUIStageType.SPLIT) && stage.continuation() != null) {
@@ -256,6 +285,7 @@ public final class DUUIOrchestrator {
             if (parent != null && parent.completeOne()) {
                 parents.remove(parentId);
                 enqueue(queues, parent.continuation(), parent.artifact(), contexts, parent.context());
+                DUUIEventService.current().logger("duui.orchestrator").debug("Parent join completed parent=" + parent.artifact().id() + " continuation=" + parent.continuation().id());
             }
         }
         return true;
@@ -307,10 +337,13 @@ public final class DUUIOrchestrator {
         }
         long start = System.currentTimeMillis();
         try {
+            DUUIEventService.current().logger("duui.orchestrator").info("Join started stage=" + stage.id() + " artifacts=" + artifacts.size());
             DUUIArtifact joined = ((DUUIJoin) stage.operation()).join((List) artifacts);
             enqueue(queues, cast(stage.output()), joined, contexts, executionContext);
+            DUUIEventService.current().logger("duui.orchestrator").info("Join completed stage=" + stage.id() + " output_artifact=" + joined.id());
             return true;
         } catch (Exception e) {
+            DUUIEventService.current().logger("duui.orchestrator").error("Join failed stage=" + stage.id(), e);
             orchestrationResult.addResult(DUUIExecutionResult.failure(failureArtifact, new DUUIFailure(
                     DUUIFailureCategory.PROGRAMMING_BUG,
                     DUUIFailureSeverity.ERROR,
@@ -351,10 +384,20 @@ public final class DUUIOrchestrator {
         var checkpoint = director.checkpointFor(pipeline, artifact);
         if (checkpoint.isEmpty()) {
             result.addUnroutableArtifact(artifact);
+            DUUIEventService.current().logger("duui.orchestrator").warning("Artifact unroutable artifact=" + artifact.id());
             return !config.stopOnUnroutableArtifact();
         }
         queues.computeIfAbsent(checkpoint.get(), ignored -> new java.util.concurrent.ConcurrentLinkedQueue<>()).add(artifact);
+        DUUIEventService.current().logger("duui.orchestrator").debug("Initial artifact queued artifact=" + artifact.id() + " checkpoint=" + checkpoint.get().id());
+        governor.onArtifactQueued(orchestratorId(), pipeline, artifact, checkpoint.get(), Map.of("source", "initial"));
         return true;
+    }
+
+    private void logRunCompleted(long started, DUUIOrchestrationResult result) {
+        long durationMs = System.currentTimeMillis() - started;
+        DUUIEventService.current().metric("orchestrator", "duui.orchestrator.run_duration_ms", durationMs, "milliseconds", durationMs,
+                Map.of("pipeline", pipeline.id(), "status", result.hasFailures() ? "failed" : "completed"));
+        DUUIEventService.current().logger("duui.orchestrator").info("Pipeline run completed pipeline=" + pipeline.id() + " duration_ms=" + durationMs + " results=" + result.results().size() + " failed=" + result.hasFailures());
     }
 
     private Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> initializeQueues() {

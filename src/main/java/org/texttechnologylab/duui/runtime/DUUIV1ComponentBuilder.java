@@ -42,15 +42,14 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
     private boolean telemetryEnabled;
     private int telemetryTtlMinutes = 5;
     private DUUIEventSink telemetrySink;
-    private List<String> telemetryResource = List.of("cpu", "memory");
-    private List<String> telemetryStats = List.of("duration", "throughput", "histogram");
-    private List<String> telemetryScopes = List.of("global", "component", "component_replica", "request");
     private int telemetrySampleIntervalMs = 500;
     private boolean imageFetching;
     private boolean gpu;
     private boolean runningAfterDestroy;
     private long timeoutSeconds = 3600;
     private List<String> labels = List.of();
+    private boolean streamingTransport;
+    private String contentType = "application/octet-stream";
 
     DUUIV1ComponentBuilder(DUUIStageScope<?> stage, String id) {
         this.stage = stage;
@@ -173,27 +172,24 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
         return this;
     }
 
-    public DUUIV1ComponentBuilder telemetryResource(String... resource) {
-        this.telemetryResource = cleanTelemetryValues(resource);
-        this.telemetryEnabled = true;
-        return this;
-    }
-
-    public DUUIV1ComponentBuilder telemetryStats(String... stats) {
-        this.telemetryStats = cleanTelemetryValues(stats);
-        this.telemetryEnabled = true;
-        return this;
-    }
-
-    public DUUIV1ComponentBuilder telemetryScopes(String... scopes) {
-        this.telemetryScopes = cleanTelemetryValues(scopes);
-        this.telemetryEnabled = true;
-        return this;
-    }
-
     public DUUIV1ComponentBuilder telemetrySampleIntervalMs(int sampleIntervalMs) {
         this.telemetrySampleIntervalMs = Math.max(100, sampleIntervalMs);
         this.telemetryEnabled = true;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder streamingTransport() {
+        this.streamingTransport = true;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder streamingTransport(boolean streamingTransport) {
+        this.streamingTransport = streamingTransport;
+        return this;
+    }
+
+    public DUUIV1ComponentBuilder contentType(String contentType) {
+        this.contentType = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
         return this;
     }
 
@@ -307,24 +303,12 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
                                 true,
                                 telemetryTtlMinutes,
                                 telemetrySink,
-                                telemetryResource,
-                                telemetryStats,
-                                telemetryScopes,
                                 telemetrySampleIntervalMs
                         )
-                        : DUUIV1TelemetryConfig.disabled()
+                        : DUUIV1TelemetryConfig.disabled(),
+                streamingTransport,
+                contentType
         );
-    }
-
-    private static List<String> cleanTelemetryValues(String... values) {
-        if (values == null) {
-            return List.of();
-        }
-        return Arrays.stream(values)
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .distinct()
-                .toList();
     }
 
     private static JCas healthCas() throws Exception {

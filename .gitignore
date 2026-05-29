@@ -6,3 +6,4 @@ target/*
 *.iml
 Gemfile.lock
 .vscode/*
+docs/design.md

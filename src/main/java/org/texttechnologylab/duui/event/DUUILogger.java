@@ -9,9 +9,10 @@ public final class DUUILogger {
         this.service = service;
     }
 
+    public void trace(String message) { log(DUUIEventLevel.TRACE, message); }
     public void debug(String message) { log(DUUIEventLevel.DEBUG, message); }
     public void info(String message) { log(DUUIEventLevel.INFO, message); }
-    public void warn(String message) { log(DUUIEventLevel.WARNING, message); }
+    public void warn(String message) { log(DUUIEventLevel.WARN, message); }
     public void warning(String message) { log(DUUIEventLevel.WARNING, message); }
     public void critical(String message) { log(DUUIEventLevel.CRITICAL, message); }
 

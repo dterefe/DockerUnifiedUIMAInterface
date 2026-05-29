@@ -4,6 +4,7 @@ import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.jcas.JCas;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
+import org.texttechnologylab.duui.artifact.DUUIArtifactEmitter;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.pipeline.DUUIGenerator;
 import org.texttechnologylab.duui.runtime.DUUI;
@@ -57,7 +58,7 @@ class DUUIDuuiPyAnnotatorIntegrationTest {
 
     private record SingleJCasSource(JCas cas) implements DUUIGenerator<JCas> {
         @Override
-        public void generate(Emitter<JCas> emitter) {
+        public void generate(DUUIArtifactEmitter<JCas> emitter) {
             emitter.emit(DUUIArtifact.of(cas));
         }
     }

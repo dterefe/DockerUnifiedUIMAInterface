@@ -1,5 +1,6 @@
 package org.texttechnologylab.duui.protocol.v1;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.texttechnologylab.duui.clients.http.DUUIChannel;
 import org.texttechnologylab.duui.clients.http.DUUIDeserializer;
@@ -57,20 +58,29 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     private final DUUIRemoteEventStream eventStream;
 
     public DUUIV1Annotator(String id, IDUUIEndpoint endpoint, DUUIV1Config config) throws Exception {
+        long initStart = System.currentTimeMillis();
         this.gid = GID.create();
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
         this.endpointHandle = Objects.requireNonNull(endpoint, "endpoint");
         this.config = Objects.requireNonNull(config, "config");
+        DUUIEventService.current().logger("duui.v1").info("Initializing v1 annotator id=" + id + " endpoint=" + endpoint.uri());
         this.documentationSignal = documentationSignal(endpoint);
         this.typesystemSignal = typesystemSignal(endpoint);
         this.communicationLayerSignal = communicationLayerSignal(endpoint);
         this.documentation = documentationSignal.request();
+        DUUIEventService.current().logger("duui.v1").debug("Loaded v1 documentation id=" + id + " name=" + documentation.annotator_name() + " version=" + documentation.version());
         this.typesystem = typesystemSignal.request();
+        DUUIEventService.current().logger("duui.v1").debug("Loaded v1 typesystem id=" + id);
         this.communicationLayer = communicationLayerSignal.request();
+        DUUIEventService.current().logger("duui.v1").debug("Loaded v1 communication layer id=" + id);
         this.eventStream = DUUIRemoteEventStream.connect(endpoint, config.telemetry(), id);
         this.processChannel = processChannel(endpoint, communicationLayer, config);
         this.processor = cas -> processChannel.request(cas);
+        long initDuration = System.currentTimeMillis() - initStart;
+        DUUIEventService.current().metric("v1", "duui.v1.initialization_ms", initDuration, "milliseconds", initDuration,
+                Map.of("annotator", id, "endpoint", endpoint.uri().toString()));
+        DUUIEventService.current().logger("duui.v1").info("Initialized v1 annotator id=" + id + " duration_ms=" + initDuration);
     }
 
     public DUUIV1Annotator(
@@ -144,12 +154,23 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     @Override
     public DUUIArtifact<JCas> process(DUUIArtifact<JCas> artifact) throws Exception {
         DUUIEventService service = DUUIEventService.current();
-        service.logger("duui.v1").info("Sending artifact " + artifact.id() + " to v1 annotator " + id());
+        int textLength = documentTextLength(artifact.payload());
+        long started = System.currentTimeMillis();
+        service.logger("duui.v1").info("V1 annotator request started annotator=" + id() + " endpoint=" + endpointHandle.uri() + " artifact=" + artifact.id() + " text_chars=" + textLength + " source_view=" + config.sourceView() + " target_view=" + config.targetView());
+        service.logger("duui.v1").debug("V1 annotator parameters annotator=" + id() + " params=" + config.parameters());
         DUUIEventScope scope = service.scope("v1.process");
         try {
             processor.process(artifact.payload());
+            long durationMs = System.currentTimeMillis() - started;
+            service.metric("v1", "duui.v1.process_ms", durationMs, "milliseconds", durationMs,
+                    Map.of("annotator", id(), "endpoint", endpointHandle.uri().toString()));
+            service.logger("duui.v1").info("V1 annotator request completed annotator=" + id() + " artifact=" + artifact.id() + " duration_ms=" + durationMs);
             return artifact;
         } catch (Exception error) {
+            long durationMs = System.currentTimeMillis() - started;
+            service.metric("v1", "duui.v1.failed_process_ms", durationMs, "milliseconds", durationMs,
+                    Map.of("annotator", id(), "endpoint", endpointHandle.uri().toString()));
+            service.logger("duui.v1").error("V1 annotator request failed annotator=" + id() + " artifact=" + artifact.id() + " duration_ms=" + durationMs, error);
             scope.fail(error);
             throw error;
         } finally {
@@ -176,7 +197,8 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     ) {
         DUUISerializer<JCas> serializer = processSerializer(communicationLayer, config);
         DUUIChannel.ResponseApplier<JCas> applier = processDeserializer(communicationLayer, config);
-        return new DUUIChannel<>(endpoint, DUUIHttpMethod.POST, "/v1/process", serializer, applier, telemetryCustomizer(config));
+        return new DUUIChannel<>(endpoint, DUUIHttpMethod.POST, "/v1/process", serializer, applier,
+                telemetryCustomizer(config), config.streamingTransport(), config.contentType());
     }
 
     private DUUIChannel.RequestCustomizer<JCas> telemetryCustomizer(DUUIV1Config config) {
@@ -215,9 +237,6 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
                 header(builder, "traceparent", traceparent(context));
                 try {
                     header(builder, "X-DUUI-Telemetry", MAPPER.writeValueAsString(Map.of(
-                            "resource", config.telemetry().resource(),
-                            "stats", config.telemetry().stats(),
-                            "scopes", config.telemetry().scopes(),
                             "sample_interval_ms", config.telemetry().sampleIntervalMs()
                     )));
                 } catch (Exception ignored) {
@@ -249,6 +268,13 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         return "00-" + context.trace().traceId() + "-" + context.trace().spanId() + "-01";
     }
 
+    private static int documentTextLength(JCas cas) {
+        if (cas == null || cas.getDocumentText() == null) {
+            return 0;
+        }
+        return cas.getDocumentText().length();
+    }
+
     private DUUIDeserializer<Documentation> documentationDeserializer() {
         return input -> MAPPER.readValue(input, Documentation.class);
     }
@@ -272,6 +298,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         };
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record Documentation(
         String annotator_name,
         String version,

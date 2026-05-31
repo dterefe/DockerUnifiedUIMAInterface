@@ -43,7 +43,7 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
     private boolean runningAfterDestroy;
     private long timeoutSeconds = 3600;
     private List<String> labels = List.of();
-    private boolean streamingTransport;
+    private boolean streamingTransport = true;
     private String contentType = "application/octet-stream";
     private boolean virtualThreads;
 
@@ -260,6 +260,8 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
             // --- Unified instantiation path: driver.instantiateV2 ---
             driver.setLuaContext(LuaConsts.getJSON());
             driver.withVirtualThreads(virtualThreads);
+            driver.withV1Transport(streamingTransport, contentType);
+            driver.withV1Telemetry(telemetryConfig());
             DUUIComponent<JCas> duuiComponent = driver.instantiateV2(
                     component, healthCas(), true, new AtomicBoolean(false));
 
@@ -278,5 +280,16 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
         cas.setDocumentLanguage("en");
         cas.setDocumentText("DUUI health check.");
         return cas;
+    }
+
+    private DUUIV1TelemetryConfig telemetryConfig() {
+        if (!telemetryEnabled) {
+            return DUUIV1TelemetryConfig.disabled();
+        }
+        return new DUUIV1TelemetryConfig(
+                true,
+                telemetryTtlMinutes,
+                telemetrySink,
+                telemetrySampleIntervalMs);
     }
 }

@@ -415,7 +415,7 @@ public class DUUIRemoteDriver extends DUUIV1Driver {
 
             String replicaId = componentId + "-replica-" + replicaIdx++;
             IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(url), _client);
-            DUUIV1Config config = new DUUIV1Config(workers,
+            DUUIV1Config config = v1Config(workers,
                     component.getSourceView(), component.getTargetView(), component.getParameters());
 
             // DUUIV1Annotator constructor fetches documentation, typesystem, and

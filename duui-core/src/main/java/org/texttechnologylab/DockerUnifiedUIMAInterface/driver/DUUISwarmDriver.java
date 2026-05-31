@@ -292,7 +292,7 @@ public class DUUISwarmDriver extends DUUIV1Driver {
         for (int replicaIdx = 0; replicaIdx < scale; replicaIdx++) {
             String replicaId = componentId + "-replica-" + replicaIdx;
             IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(serviceURL), _client);
-            DUUIV1Config config = new DUUIV1Config(workers,
+            DUUIV1Config config = v1Config(workers,
                     component.getSourceView(), component.getTargetView(), component.getParameters());
 
             DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);

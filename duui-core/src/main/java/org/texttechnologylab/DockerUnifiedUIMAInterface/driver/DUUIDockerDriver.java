@@ -648,7 +648,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
 
             // Build endpoint and config for this replica
             IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(containerURL), _client);
-            DUUIV1Config config = new DUUIV1Config(workers,
+            DUUIV1Config config = v1Config(workers,
                     component.getSourceView(), component.getTargetView(), component.getParameters());
 
             // DUUIV1Annotator constructor fetches documentation, typesystem, and

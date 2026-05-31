@@ -68,7 +68,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         this.documentationSignal = documentationSignal(endpoint);
         this.typesystemSignal = typesystemSignal(endpoint);
         this.communicationLayerSignal = communicationLayerSignal(endpoint);
-        this.documentation = documentationSignal.request();
+        this.documentation = requestDocumentationOptional(endpoint);
         DUUIEventService.current().logger("duui.v1").debug("Loaded v1 documentation id=" + id + " name=" + documentation.annotator_name() + " version=" + documentation.version());
         this.typesystem = typesystemSignal.request();
         DUUIEventService.current().logger("duui.v1").debug("Loaded v1 typesystem id=" + id);
@@ -188,6 +188,24 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
 
     private DUUISignal<DUUICommunicationLayer> communicationLayerSignal(IDUUIEndpoint endpoint) {
         return new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/communication_layer", communicationLayerDeserializer());
+    }
+
+    private Documentation requestDocumentationOptional(IDUUIEndpoint endpoint) {
+        try {
+            return documentationSignal.request();
+        } catch (Exception error) {
+            DUUIEventService.current().logger("duui.v1").warn(
+                    "Optional v1 documentation endpoint unavailable id=" + id
+                            + " endpoint=" + endpoint.uri()
+                            + " error=" + error.getMessage());
+            return new Documentation(
+                    id,
+                    "unknown",
+                    "Optional /v1/documentation endpoint unavailable.",
+                    "unknown",
+                    Map.of("endpoint", endpoint.uri().toString()),
+                    Map.of());
+        }
     }
 
     private DUUIChannel<JCas> processChannel(

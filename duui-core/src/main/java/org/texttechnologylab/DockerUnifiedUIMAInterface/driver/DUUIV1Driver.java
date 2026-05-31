@@ -12,6 +12,8 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineCompon
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1TelemetryConfig;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
@@ -19,6 +21,7 @@ import java.net.http.HttpClient;
 import java.nio.file.Path;
 import java.security.InvalidParameterException;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -48,6 +51,11 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
     /** When true, serde phases use virtual threads; when false, platform threads. */
     protected boolean _useVirtualThreads = false;
 
+    /** V1 HTTP protocol settings used by V2 driver instantiation. */
+    protected boolean _v1StreamingTransport = true;
+    protected String _v1ContentType = "application/octet-stream";
+    protected DUUIV1TelemetryConfig _v1Telemetry = DUUIV1TelemetryConfig.disabled();
+
     protected DUUIV1Driver() {
         _client = HttpClient.newHttpClient();
     }
@@ -68,6 +76,35 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
 
     public boolean isUseVirtualThreads() {
         return _useVirtualThreads;
+    }
+
+    public DUUIV1Driver withV1Transport(boolean streamingTransport, String contentType) {
+        this._v1StreamingTransport = streamingTransport;
+        this._v1ContentType = contentType == null || contentType.isBlank()
+                ? "application/octet-stream"
+                : contentType;
+        return this;
+    }
+
+    public DUUIV1Driver withV1Telemetry(DUUIV1TelemetryConfig telemetry) {
+        this._v1Telemetry = telemetry == null ? DUUIV1TelemetryConfig.disabled() : telemetry;
+        return this;
+    }
+
+    protected DUUIV1Config v1Config(
+            int concurrency,
+            String sourceView,
+            String targetView,
+            Map<String, String> parameters
+    ) {
+        return new DUUIV1Config(
+                concurrency,
+                sourceView,
+                targetView,
+                parameters,
+                _v1Telemetry,
+                _v1StreamingTransport,
+                _v1ContentType);
     }
 
     @Override

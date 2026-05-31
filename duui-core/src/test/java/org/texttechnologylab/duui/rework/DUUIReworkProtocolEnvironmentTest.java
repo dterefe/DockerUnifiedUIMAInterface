@@ -20,6 +20,7 @@ import org.texttechnologylab.duui.clients.http.DUUIHttpMethod;
 import org.texttechnologylab.duui.communication.DUUICommunicationLayer;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
+import org.texttechnologylab.duui.protocol.v1.DUUIV1TelemetryConfig;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,6 +34,8 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DUUIReworkProtocolEnvironmentTest {
@@ -80,6 +83,48 @@ class DUUIReworkProtocolEnvironmentTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void v1AnnotatorTreatsDocumentationEndpointAsOptional() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        String typeSystem = typeSystemXml();
+        server.createContext("/v1/documentation", exchange -> respond(exchange, 200, "not-json"));
+        server.createContext("/v1/typesystem", exchange -> respond(exchange, 200, typeSystem));
+        server.createContext("/v1/communication_layer", exchange -> respond(exchange, 200, luaCommunicationLayer()));
+        server.start();
+        try {
+            DUUIRemoteEnvironment environment = new DUUIRemoteEnvironment();
+            DUUIRemoteEndpoint endpoint = environment.endpoint("http://127.0.0.1:" + server.getAddress().getPort());
+
+            DUUIV1Annotator annotator = new DUUIV1Annotator(
+                    "optional-docs",
+                    endpoint,
+                    new DUUIV1Config(1, "_InitialView", "_InitialView", Map.of()));
+
+            assertEquals("optional-docs", annotator.documentation().annotator_name());
+            assertEquals("unknown", annotator.documentation().version());
+            assertNotNull(annotator.typesystem());
+            assertNotNull(annotator.communicationLayer());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void v1DriverUsesConfiguredTransportAndTelemetryForV2Config() {
+        TestV1Driver driver = new TestV1Driver();
+        driver.withV1Transport(false, "application/x-duui-test");
+        driver.withV1Telemetry(new DUUIV1TelemetryConfig(true, 10, null, 250));
+
+        DUUIV1Config config = driver.config(4);
+
+        assertEquals(4, config.concurrency());
+        assertFalse(config.streamingTransport());
+        assertEquals("application/x-duui-test", config.contentType());
+        assertTrue(config.telemetry().enabled());
+        assertEquals(10, config.telemetry().ttlMinutes());
+        assertEquals(250, config.telemetry().sampleIntervalMs());
     }
 
     @Test
@@ -168,6 +213,40 @@ class DUUIReworkProtocolEnvironmentTest {
         @Override
         public Stream<FakeContainer> containers() {
             return Stream.of(container("container-1"));
+        }
+    }
+
+    private static final class TestV1Driver
+            extends org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIV1Driver {
+        private DUUIV1Config config(int concurrency) {
+            return v1Config(concurrency, "_InitialView", "_InitialView", Map.of("k", "v"));
+        }
+
+        @Override
+        public boolean canAccept(org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPipelineComponent component) {
+            return false;
+        }
+
+        @Override
+        public String instantiate(
+                org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPipelineComponent component,
+                JCas jc,
+                boolean skipVerification,
+                java.util.concurrent.atomic.AtomicBoolean shutdown) {
+            return null;
+        }
+
+        @Override
+        public void run(
+                String uuid,
+                JCas aCas,
+                org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance perf,
+                org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer composer) {
+        }
+
+        @Override
+        public boolean destroy(String uuid) {
+            return false;
         }
     }
 

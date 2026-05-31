@@ -583,7 +583,7 @@ public final class DUUIGateway {
                                 "corpus-source", Map.of(
                                         "id", "corpus-source",
                                         "name", "Corpus or Workbench Input",
-                                        "driver", "DUUIReader",
+                                        "driver", "DUUIDocumentReader",
                                         "environment", "input",
                                         "annotatorId", "document-store",
                                         "sourceView", "_InitialView",
@@ -592,7 +592,7 @@ public final class DUUIGateway {
                                 "evaluation-sink", Map.of(
                                         "id", "evaluation-sink",
                                         "name", "Evaluation and CAS Storage",
-                                        "driver", "DUUIWriter",
+                                        "driver", "DUUIDocumentWriter",
                                         "environment", "storage",
                                         "annotatorId", "duui-storage",
                                         "sourceView", "_InitialView",

@@ -98,46 +98,29 @@ public final class GatewayCorpusService {
     public Map<String, Object> playgroundModel() {
         return map(
                 "components", List.of(
-                        map("id", "text-reader", "label", "Reader", "kind", "canvas", "modality", "text", "requires", List.of(
-                                map("parameter", "view", "type", "DUAView", "constraint", "Sofa media modality is text")
+                        map("id", "document-reader", "label", "Document reader", "kind", "source", "modality", "text", "requires", List.of(
+                                map("parameter", "client", "type", "DUUIDocumentClient", "constraint", "lists and reads selected document bytes"),
+                                map("parameter", "reader", "type", "DUUIDocumentReader", "constraint", "deserializes bytes into a UIMA input")
                         )),
-                        map("id", "highlight-layer", "label", "Highlight layer", "kind", "annotation-layer", "modality", "text", "requires", List.of(
-                                map("parameter", "annotationType", "type", "DUAType", "constraint", "type provides mappable integer begin/end features"),
-                                map("parameter", "begin", "type", "DUAFeature", "constraint", "functionalProperty includes range-start"),
-                                map("parameter", "end", "type", "DUAFeature", "constraint", "functionalProperty includes range-end")
+                        map("id", "document-writer", "label", "Document writer", "kind", "sink", "modality", "cas", "requires", List.of(
+                                map("parameter", "writer", "type", "DUUIDocumentWriter", "constraint", "serializes processed UIMA output")
                         )),
-                        map("id", "dependency-arcs", "label", "Reference arcs", "kind", "annotation-layer", "modality", "text", "requires", List.of(
-                                map("parameter", "annotationType", "type", "DUAType", "constraint", "source annotations are addressable in text"),
-                                map("parameter", "target", "type", "DUAFeature", "constraint", "functionalProperty includes reference-target")
-                        )),
-                        map("id", "annotation-network", "label", "Association network", "kind", "canvas", "modality", "annotation", "requires", List.of(
-                                map("parameter", "nodeType", "type", "DUAType", "constraint", "annotations project to DUA domain units"),
-                                map("parameter", "association", "type", "DUAAssociation", "constraint", "Reference, Sequence, Membership, or Equivalence semantics")
-                        )),
-                        map("id", "annotation-chart", "label", "Annotation chart", "kind", "canvas", "modality", "annotation", "requires", List.of(
-                                map("parameter", "dimension", "type", "DUAFeature", "constraint", "label, ordinal, or categorical feature"),
-                                map("parameter", "value", "type", "DUAFeature", "constraint", "numeric measure or count aggregation")
+                        map("id", "document-client", "label", "Document client", "kind", "io", "modality", "bytes", "requires", List.of(
+                                map("parameter", "client", "type", "DUUIDocumentClient", "constraint", "reads, writes, and lists byte-addressable artifacts")
                         ))
                 ),
                 "dimensions", List.of(
-                        map("name", "modality", "values", List.of("text", "audio", "video", "annotation")),
-                        map("name", "scope", "values", List.of("single-document view", "multi-document annotation projection")),
-                        map("name", "featureProperty", "values", List.of("range-start", "range-end", "reference-target", "ordinal", "label", "weight", "association-role")),
-                        map("name", "association", "values", List.of("Reference", "Sequence", "Membership", "Equivalence")),
-                        map("name", "componentKind", "values", List.of("full canvas", "annotation layer")),
-                        map("name", "addressability", "values", List.of("corpus", "directory", "file", "view", "feature-structure", "type", "feature", "domain-unit"))
+                        map("name", "surface", "values", List.of("DUUIDocumentClient", "DUUIDocumentReader", "DUUIDocumentWriter", "DUUIXmiDocumentReader", "DUUIXmiDocumentWriter")),
+                        map("name", "flow", "values", List.of("client bytes", "reader input", "writer output")),
+                        map("name", "componentKind", "values", List.of("source", "sink", "io")),
+                        map("name", "addressability", "values", List.of("document-client", "reader-input", "writer-output"))
                 ),
                 "uml", """
                         classDiagram
-                        DUAUniverse "1" o-- "many" DUACorpus
-                        DUACorpus "1" o-- "many" DUADocument
-                        DUADocument "1" o-- "many" DUAView
-                        DUAView "1" o-- "many" DUAFeatureStructure
-                        DUAFeatureStructure --> DUAType
-                        DUAType "1" o-- "many" DUAFeature
-                        DUAFeatureStructure --> DUADomainUnit : projection
-                        DUADomainUnit --> DUAAssociation : Reference Sequence Membership Equivalence
-                        DUAInspectorBinding --> DUAFeature : typed slot mapping
+                        DUUIDocumentClient --> DUUIDocumentReader : read bytes
+                        DUUIDocumentReader --> DUUIXmiDocumentReader : deserialize XMI
+                        DUUIXmiDocumentWriter --> DUUIDocumentWriter : serialize XMI
+                        DUUIDocumentWriter --> DUUIDocumentClient : write bytes
                         """
         );
     }

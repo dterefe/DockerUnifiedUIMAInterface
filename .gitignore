@@ -43,3 +43,5 @@ docs/javadoc/
 *.bak
 *.swp
 *~
+duui-core/target/*
+duui-dua/target/*

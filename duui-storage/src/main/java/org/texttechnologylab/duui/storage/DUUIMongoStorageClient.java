@@ -5,7 +5,9 @@ import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.ReplaceOptions;
 import org.bson.Document;
+import org.bson.types.Binary;
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import org.texttechnologylab.duui.filesystem.DUUIDocumentClient;
 import org.texttechnologylab.duui.filesystem.DUUIExplorer;
@@ -15,6 +17,7 @@ import org.texttechnologylab.duui.filesystem.DUUIFileMetadata;
 import org.texttechnologylab.duui.filesystem.DUUIFileSystemObject;
 import org.texttechnologylab.duui.filesystem.DUUIStream;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
@@ -75,6 +78,17 @@ public final class DUUIMongoStorageClient implements DUUIDocumentClient {
     @Override
     public DUUIFileSystemObject proxy(DUUIAddress address) {
         return new MongoFile(addressPath(address));
+    }
+
+    @Override
+    public DUUIFile write(DUUIAddress address, InputStream input) throws IOException {
+        Objects.requireNonNull(input, "input");
+        String id = addressPath(address);
+        Document document = new Document("_id", id)
+                .append("data", new Binary(input.readAllBytes()))
+                .append("updatedAt", Instant.now());
+        collection.replaceOne(Filters.eq("_id", id), document, new ReplaceOptions().upsert(true));
+        return new MongoFile(id);
     }
 
     @Override

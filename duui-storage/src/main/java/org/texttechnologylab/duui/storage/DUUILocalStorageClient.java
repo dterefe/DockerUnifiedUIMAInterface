@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
@@ -60,6 +61,18 @@ public final class DUUILocalStorageClient implements DUUIDocumentClient {
             return new LocalDirectory(resolved);
         }
         return new LocalFile(resolved);
+    }
+
+    @Override
+    public DUUIFile write(DUUIAddress address, InputStream input) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Path target = resolve(address);
+        Path parent = target.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+        return new LocalFile(target);
     }
 
     @Override

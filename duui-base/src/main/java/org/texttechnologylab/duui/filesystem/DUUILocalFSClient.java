@@ -5,6 +5,7 @@ import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileOwnerAttributeView;
@@ -64,6 +65,18 @@ public final class DUUILocalFSClient implements DUUIDocumentClient {
 
     public Explorer explorer(Path path) {
         return new Explorer(resolve(path));
+    }
+
+    @Override
+    public File write(DUUIAddress address, InputStream input) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Path target = path(address);
+        Path parent = target.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+        return file(target);
     }
 
     @Override

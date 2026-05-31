@@ -14,6 +14,8 @@ import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +81,10 @@ public class DUUILuaCommunicationLayer implements IDUUICommunicationLayer {
     }
 
     public void serialize(JCas jc, ByteArrayOutputStream out, Map<String, String> parameters, String sourceView) throws CommunicationLayerException, CASException {
+        serializeStream(jc, out, parameters, sourceView);
+    }
+
+    public void serializeStream(JCas jc, OutputStream out, Map<String, String> parameters, String sourceView) throws CommunicationLayerException, CASException {
         LuaTable params = createLuaTableFromParameters(parameters);
 
         try {
@@ -93,6 +99,10 @@ public class DUUILuaCommunicationLayer implements IDUUICommunicationLayer {
     }
 
     public void deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException {
+        deserializeStream(jc, input, targetView);
+    }
+
+    public void deserializeStream(JCas jc, InputStream input, String targetView) throws CommunicationLayerException, CASException {
 
         JCas tJc;
 

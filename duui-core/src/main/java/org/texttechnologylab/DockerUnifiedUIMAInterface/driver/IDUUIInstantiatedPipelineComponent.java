@@ -263,19 +263,14 @@ public interface IDUUIInstantiatedPipelineComponent {
                     endpoint,
                     DUUIHttpMethod.POST,
                     DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
-                    (jcVal, out) -> {
-                        ByteArrayOutputStream bos = out instanceof ByteArrayOutputStream
-                                ? (ByteArrayOutputStream) out : new ByteArrayOutputStream();
-                        layer.serialize(jcVal, bos, comp.getParameters(), comp.getSourceView());
-                        if (bos != out) bos.writeTo(out);
-                    },
+                    (jcVal, out) -> layer.serializeStream(jcVal, out, comp.getParameters(), comp.getSourceView()),
                     (jcVal, in) -> {
-                        ByteArrayInputStream bis = in instanceof ByteArrayInputStream
-                                ? (ByteArrayInputStream) in
-                                : new ByteArrayInputStream(in.readAllBytes());
-                        layer.deserialize(jcVal, bis, comp.getTargetView());
+                        layer.deserializeStream(jcVal, in, comp.getTargetView());
                         return jcVal;
-                    }
+                    },
+                    new DUUIChannel.RequestCustomizer<>() {},
+                    pipelineComponent.getV1StreamingTransport(false),
+                    pipelineComponent.getV1ContentType("application/octet-stream")
             );
 
             long sizeArray = 0;

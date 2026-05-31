@@ -83,6 +83,8 @@ public class DUUIPipelineComponent {
     private static String sourceView = "sourceView";
     private static String targetView = "targetView";
     private static String timeout = "timeout";
+    private static String v1StreamingTransport = "v1StreamingTransport";
+    private static String v1ContentType = "v1ContentType";
 
     private String getVersion() throws URISyntaxException, IOException {
         ClassLoader classLoader = DUUIPipelineComponent.class.getClassLoader();
@@ -294,6 +296,23 @@ public class DUUIPipelineComponent {
         String workers = _options.get(workersOptionName);
         if(workers == null) return defaultValue;
         return Integer.parseInt(workers);
+    }
+
+    public DUUIPipelineComponent withV1Transport(boolean streamingTransport, String contentType) {
+        _options.put(v1StreamingTransport, String.valueOf(streamingTransport));
+        _options.put(v1ContentType,
+                contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType);
+        return this;
+    }
+
+    public boolean getV1StreamingTransport(boolean defaultValue) {
+        String value = _options.get(v1StreamingTransport);
+        return value == null ? defaultValue : Boolean.parseBoolean(value);
+    }
+
+    public String getV1ContentType(String defaultValue) {
+        String value = _options.get(v1ContentType);
+        return value == null || value.isBlank() ? defaultValue : value;
     }
 
     public DUUIPipelineComponent withUrl(String url) {

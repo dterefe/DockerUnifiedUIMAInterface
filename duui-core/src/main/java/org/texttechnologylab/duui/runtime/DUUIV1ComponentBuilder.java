@@ -263,7 +263,7 @@ public final class DUUIV1ComponentBuilder implements DUUIStageContribution {
             driver.withV1Transport(streamingTransport, contentType);
             driver.withV1Telemetry(telemetryConfig());
             DUUIComponent<JCas> duuiComponent = driver.instantiateV2(
-                    component, healthCas(), true, new AtomicBoolean(false));
+                    component, healthCas(), false, new AtomicBoolean(false));
 
             if (duuiComponent == null) {
                 throw new IllegalStateException("instantiateV2 returned null for component: " + id);

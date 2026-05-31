@@ -13,6 +13,8 @@ import org.xml.sax.SAXException;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +25,12 @@ import java.util.Map;
 public interface IDUUICommunicationLayer {
 
   public void serialize(JCas jc, ByteArrayOutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException;
+
+  default void serializeStream(JCas jc, OutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException, IOException {
+    ByteArrayOutputStream buffered = new ByteArrayOutputStream();
+    serialize(jc, buffered, parameters, sourceView);
+    buffered.writeTo(out);
+  }
 
   /**
    * Serializes a JCas to a byte array output stream by using the LUA script provided by the component.
@@ -37,6 +45,13 @@ public interface IDUUICommunicationLayer {
   }
 
   public void deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException;
+
+  default void deserializeStream(JCas jc, InputStream input, String targetView) throws CommunicationLayerException, CASException, IOException {
+    ByteArrayInputStream buffered = input instanceof ByteArrayInputStream byteArrayInput
+            ? byteArrayInput
+            : new ByteArrayInputStream(input.readAllBytes());
+    deserialize(jc, buffered, targetView);
+  }
 
   /**
    * Deserializes a byte array input stream to a JCas by using the LUA script provided by the component.

@@ -145,6 +145,8 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                 skipVerification
         );
         long start = System.currentTimeMillis();
+        long deadline = start + Math.max(1, timeout_ms);
+        long retrySleepMs = Math.min(2000L, Math.max(250L, timeout_ms / 20L));
         IDUUICommunicationLayer layer = new DUUIFallbackCommunicationLayer();  // Hier wird layer zum ersten mal erstellt.
         boolean fatal_error = false;
 
@@ -156,7 +158,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                 request = HttpRequest.newBuilder()
                         .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER))
                         .version(HttpClient.Version.HTTP_1_1)
-                        .timeout(Duration.ofSeconds(timeout_ms))
+                        .timeout(Duration.ofMillis(Math.max(1000L, Math.min(timeout_ms, 10_000L))))
                         .GET()
                         .build();
             } catch (Exception e) {
@@ -192,7 +194,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                                     request.uri().getHost(),
                                     request.uri().getPort()
                             );
-                            Thread.sleep(timeout_ms);
+                            sleepUntilDeadline(retrySleepMs, deadline);
                             iCount++;
                         } else if (e instanceof CompletionException ce) {
                             if (ce.getCause() != null) {
@@ -202,7 +204,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                                         ce.getCause().getMessage()
                                 );
                             }
-                            Thread.sleep(timeout_ms);
+                            sleepUntilDeadline(retrySleepMs, deadline);
                             iCount++;
                         } else {
                             throw new Exception("The Container did not provide a valid answer for communication layer retrieval.", e);
@@ -254,7 +256,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                 if (fatal_error) {
                     throw e;
                 } else {
-                    Thread.sleep(2000l);
+                    sleepUntilDeadline(retrySleepMs, deadline);
                     iError++;
                 }
 
@@ -340,6 +342,14 @@ public class DUUIDockerDriver extends DUUIV1Driver {
             }
             throw new Exception(format("The container returned response with code %d for %s", resp.statusCode(), request.uri()));
         }
+    }
+
+    private static void sleepUntilDeadline(long requestedMs, long deadlineMs) throws InterruptedException, TimeoutException {
+        long remainingMs = deadlineMs - System.currentTimeMillis();
+        if (remainingMs <= 0L) {
+            throw new TimeoutException("Timed out while waiting for component responsiveness");
+        }
+        Thread.sleep(Math.max(1L, Math.min(requestedMs, remainingMs)));
     }
 
     /**

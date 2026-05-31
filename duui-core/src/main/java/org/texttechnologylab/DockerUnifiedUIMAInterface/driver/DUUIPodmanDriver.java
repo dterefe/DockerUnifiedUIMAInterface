@@ -49,6 +49,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -256,6 +257,7 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
         }
 
 
+        component.withV1Transport(_v1StreamingTransport, _v1ContentType);
         DUUIDockerDriver.InstantiatedComponent comp = new DUUIDockerDriver.InstantiatedComponent(component, uuid);
 
         // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.
@@ -306,6 +308,7 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
                     pOptions.image(comp.getImageName());
                     pOptions.remove(true);
                     pOptions.publishImagePorts(true);
+                    pOptions.env(podmanEnv(comp.getPipelineComponent()));
 
                     // Explicit port mapping for port 9714 — works even for images without EXPOSE
                     pOptions.portMappings(List.of(
@@ -314,8 +317,9 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
 
                     if (comp.usesGPU()) {
                         List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
-                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 0, "/dev/nvidia0", "c", 0));
-                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 1, "/dev/nvidia1", "c", 0));
+                        for (int gpuIndex : podmanGpuDevices(comp.getPipelineComponent())) {
+                            linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, gpuIndex, "/dev/nvidia" + gpuIndex, "c", 0));
+                        }
                         linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
                         linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 254, "/dev/nvidia-modeset", "c", 0));
                         linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 0, "/dev/nvidia-uvm", "c", 0));
@@ -369,10 +373,11 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
 
                         final int iCopy = i;
                         final String uuidCopy = uuid;
+                        int containerTimeoutMs = containerStartupTimeoutMs(comp.getPipelineComponent());
                         IDUUICommunicationLayer layer = responsiveAfterTime(
                                 containerUrl,
                                 jc,
-                                _containerTimeout,
+                                containerTimeoutMs,
                                 _client,
                                 (msg) -> System.out.printf("[PodmanDriver][%s][Podman Replication %d/%d] %s\n",
                                         uuidCopy, iCopy + 1, comp.getScale(), msg),
@@ -444,6 +449,14 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
     public DUUIPodmanDriver withTimeout(int container_timeout_ms) {
         _containerTimeout = container_timeout_ms;
         return this;
+    }
+
+    private int containerStartupTimeoutMs(DUUIPipelineComponent component) {
+        long timeoutMs = component.getTimeout() * 1000L;
+        if (timeoutMs <= 0L) {
+            return _containerTimeout;
+        }
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(_containerTimeout, timeoutMs));
     }
 
     private void stop_container(String containerId) {
@@ -584,6 +597,7 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
             pOptions.image(component.getDockerImageName());
             pOptions.remove(true);
             pOptions.publishImagePorts(true);
+            pOptions.env(podmanEnv(component));
 
             // Explicit port mapping for port 9714 — works even for images without EXPOSE
             pOptions.portMappings(List.of(
@@ -591,10 +605,9 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
 
             if (component.getDockerGPU(false)) {
                 List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
-                linuxDevices.add(
-                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 0, "/dev/nvidia0", "c", 0));
-                linuxDevices.add(
-                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 1, "/dev/nvidia1", "c", 0));
+                for (int gpuIndex : podmanGpuDevices(component)) {
+                    linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, gpuIndex, "/dev/nvidia" + gpuIndex, "c", 0));
+                }
                 linuxDevices.add(
                         new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
                 linuxDevices.add(
@@ -656,20 +669,25 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
             System.out.printf("[PodmanDriver][V2][Podman Replication %d/%d] Container %s started, waiting for"
                     + " responsiveness at %s...%n", replicaIdx + 1, scale, containerId, containerURL);
 
-            // Wait for container responsiveness with retries (unless skipVerification)
-            if (!skipVerification) {
-                waitForContainerResponsive(containerURL, _containerTimeout);
+            try {
+                // Wait for container responsiveness with retries (unless skipVerification)
+                if (!skipVerification) {
+                    waitForContainerResponsive(containerURL, containerStartupTimeoutMs(component));
+                }
+
+                // Build endpoint and config for this replica
+                IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(containerURL), _client);
+                DUUIV1Config config = v1Config(workers,
+                        component.getSourceView(), component.getTargetView(), component.getParameters());
+
+                // DUUIV1Annotator constructor fetches documentation, typesystem, and
+                // communication layer — this also acts as a final readiness check
+                DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
+                annotators.add(annotator);
+            } catch (Exception e) {
+                stop_container(containerId, true);
+                throw e;
             }
-
-            // Build endpoint and config for this replica
-            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(URI.create(containerURL), _client);
-            DUUIV1Config config = v1Config(workers,
-                    component.getSourceView(), component.getTargetView(), component.getParameters());
-
-            // DUUIV1Annotator constructor fetches documentation, typesystem, and
-            // communication layer — this also acts as a final readiness check
-            DUUIV1Annotator annotator = new DUUIV1Annotator(replicaId, endpoint, config);
-            annotators.add(annotator);
 
             System.out.printf("[PodmanDriver][V2][Podman Replication %d/%d] Annotator %s ready (URL %s)%n",
                     replicaIdx + 1, scale, replicaId, containerURL);
@@ -836,6 +854,11 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
             return this;
         }
 
+        public DUUIPodmanDriver.Component withTimeout(long seconds) {
+            _component.withTimeout(seconds);
+            return this;
+        }
+
         public DUUIPodmanDriver.Component withRegistryAuth(String username, String password) {
             _component.withDockerAuth(username, password);
             return this;
@@ -852,6 +875,11 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
 
         public DUUIPodmanDriver.Component withGPU(boolean gpu) {
             _component.withDockerGPU(gpu);
+            return this;
+        }
+
+        public DUUIPodmanDriver.Component withEnv(String... envString) {
+            _component.withEnv(envString);
             return this;
         }
 
@@ -879,6 +907,50 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
             _component.withName(name);
             return this;
         }
+    }
+
+    private static Map<String, String> podmanEnv(DUUIPipelineComponent component) {
+        Map<String, String> env = podmanEnvWithoutGpuDefaults(component);
+        if (component.getDockerGPU(false)) {
+            String devices = podmanGpuDevicesSpec(env);
+            env.putIfAbsent("NVIDIA_VISIBLE_DEVICES", devices);
+            env.putIfAbsent("CUDA_VISIBLE_DEVICES", devices);
+        }
+        return env;
+    }
+
+    private static Map<String, String> podmanEnvWithoutGpuDefaults(DUUIPipelineComponent component) {
+        Map<String, String> env = new HashMap<>();
+        for (String entry : component.getEnv()) {
+            int split = entry.indexOf('=');
+            if (split > 0) {
+                env.put(entry.substring(0, split), entry.substring(split + 1));
+            }
+        }
+        return env;
+    }
+
+    private static List<Integer> podmanGpuDevices(DUUIPipelineComponent component) {
+        String spec = podmanGpuDevicesSpec(podmanEnvWithoutGpuDefaults(component));
+        List<Integer> devices = new ArrayList<>();
+        for (String part : spec.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                devices.add(Integer.parseInt(trimmed));
+            }
+        }
+        return devices.isEmpty() ? List.of(0) : devices;
+    }
+
+    private static String podmanGpuDevicesSpec(Map<String, String> env) {
+        String configured = env.getOrDefault("NVIDIA_VISIBLE_DEVICES", env.get("CUDA_VISIBLE_DEVICES"));
+        if (configured == null || configured.isBlank() || configured.equalsIgnoreCase("all")) {
+            configured = System.getProperty("duui.podman.gpu.devices");
+        }
+        if (configured == null || configured.isBlank() || configured.equalsIgnoreCase("all")) {
+            configured = System.getenv("DUUI_PODMAN_GPU_DEVICES");
+        }
+        return configured == null || configured.isBlank() || configured.equalsIgnoreCase("all") ? "0" : configured;
     }
 
 }

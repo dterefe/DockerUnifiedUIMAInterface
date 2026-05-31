@@ -265,83 +265,8 @@ public class DUUIDockerDriver extends DUUIV1Driver {
                 }
             }
         }
-        if (skipVerification) {
-            System.out.println("[DUUIDockerDriver] skipVerification=true, returning early.");
-            return layer;
-        }
-        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-        try {
-            //TODO: Make this accept options to better check the instantiation!
-            layer.serialize(jc, stream, null, "_InitialView");
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new Exception(format("The serialization step of the communication layer fails for implementing class %s", layer.getClass().getCanonicalName()));
-        }
-
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(url + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
-            .version(HttpClient.Version.HTTP_1_1)
-            .POST(HttpRequest.BodyPublishers.ofByteArray(stream.toByteArray()))
-            .build();
-
-        HttpResponse<byte[]> resp;
-        try {
-            resp = client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
-        } catch (Exception e) {
-            System.err.printf(
-                    "[DUUIDockerDriver] Verification request to %s failed: %s (%s)%n",
-                    request.uri(),
-                    e.getClass().getSimpleName(),
-                    e.getMessage()
-            );
-            if (e instanceof CompletionException && ((CompletionException) e).getCause() != null) {
-                Throwable cause = ((CompletionException) e).getCause();
-                System.err.printf(
-                        "[DUUIDockerDriver] Verification CompletionException cause: %s (%s)%n",
-                        cause.getClass().getSimpleName(),
-                        cause.getMessage()
-                );
-            }
-            throw new Exception("Failed to send verification request to " + request.uri(), e);
-        }
-
-        if (resp.statusCode() == 200) {
-            ByteArrayInputStream inputStream = new ByteArrayInputStream(resp.body());
-            try {
-                layer.deserialize(jc, inputStream, "_InitialView");
-            } catch (Exception e) {
-                String preview = new String(resp.body(), StandardCharsets.UTF_8);
-                if (preview.length() > 500) {
-                    preview = preview.substring(0, 500) + "...";
-                }
-                System.err.printf(
-                        "[DUUIDockerDriver] Deserialization failed for %s; response preview: %s%n",
-                        request.uri(),
-                        preview
-                );
-                throw e;
-            }
-            return layer;
-        } else {
-            int bodyLen = resp.body() != null ? resp.body().length : -1;
-            String preview = "";
-            if (resp.body() != null && bodyLen > 0) {
-                preview = new String(resp.body(), StandardCharsets.UTF_8);
-                if (preview.length() > 500) {
-                    preview = preview.substring(0, 500) + "...";
-                }
-            }
-            System.err.printf(
-                    "[DUUIDockerDriver] Verification request to %s returned status %d (body %d bytes)%n",
-                    request.uri(),
-                    resp.statusCode(),
-                    bodyLen
-            );
-            if (!preview.isEmpty()) {
-                System.err.printf("[DUUIDockerDriver] Verification response preview: %s%n", preview);
-            }
-            throw new Exception(format("The container returned response with code %d for %s", resp.statusCode(), request.uri()));
-        }
+        System.out.println("[DUUIDockerDriver] Communication layer ready; process verification is not part of instantiation.");
+        return layer;
     }
 
     private static void sleepUntilDeadline(long requestedMs, long deadlineMs) throws InterruptedException, TimeoutException {

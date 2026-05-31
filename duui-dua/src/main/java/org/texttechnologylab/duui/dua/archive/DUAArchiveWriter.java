@@ -11,6 +11,7 @@ import org.texttechnologylab.duui.dua.distributed.DUAShardObjectRef;
 import org.texttechnologylab.duui.dua.distributed.DUAShardReplica;
 import org.texttechnologylab.duui.dua.graph.DUAGraphCodec;
 import org.texttechnologylab.duui.dua.graph.DUAGraphPartition;
+import org.texttechnologylab.duui.dua.store.VirtualCorpusRegistry;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -123,6 +124,20 @@ public final class DUAArchiveWriter implements Closeable {
                 rangeEndExclusive,
                 objects,
                 replicas));
+        return this;
+    }
+
+    public DUAArchiveWriter writeVirtualCorpusRegistry(VirtualCorpusRegistry registry) throws IOException {
+        Objects.requireNonNull(registry, "registry");
+        if (registry.isEmpty()) {
+            return this;
+        }
+        String path = DUA.INDEXES + "virtual_corpora.json";
+        Path target = staging.resolve(path);
+        Files.createDirectories(target.getParent());
+        try (OutputStream output = Files.newOutputStream(target)) {
+            registry.writeJson(output);
+        }
         return this;
     }
 

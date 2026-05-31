@@ -17,6 +17,10 @@ public final class DUUIUimaComponentBuilder implements DUUIStageContribution {
     private String targetView = "_InitialView";
     private int scale = 1;
 
+    // UIMA AnalysisEngines are not thread-safe; concurrent access is not allowed.
+    // Concurrency is hardcoded to 1 — each replica gets exactly ONE node.
+    // There is no setter for concurrency and no way to override this.
+
     DUUIUimaComponentBuilder(DUUIStageScope<?> stage, String id) {
         this.stage = stage;
         this.id = id;
@@ -44,6 +48,8 @@ public final class DUUIUimaComponentBuilder implements DUUIStageContribution {
                         .sourceView(sourceView)
                         .build();
                 engines.add(engine);
+                // Concurrency is always 1: UIMA AnalysisEngines are not thread-safe.
+                // Each scale unit produces exactly one node.
                 nodes.add(new DUUINode<>(engine.id(), engine, engine));
             }
             stage.jcasComponent(new DUUIComponent<>(id, nodes, () -> {

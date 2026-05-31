@@ -1,5 +1,6 @@
 package org.texttechnologylab.duui.pipeline.io;
 
+import org.apache.commons.compress.compressors.CompressorStreamFactory;
 import org.apache.uima.cas.CASException;
 import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.jcas.JCas;
@@ -41,7 +42,16 @@ public final class DUUIXmiCollectionReader implements DUUIGenerator<JCas> {
     public void generate(DUUIArtifactEmitter<JCas> emitter) throws Exception {
         for (Path source : sources) {
             JCas cas = createCas();
-            try (InputStream input = Files.newInputStream(source)) {
+            try (InputStream raw = Files.newInputStream(source)) {
+                InputStream input = raw;
+                String fileName = source.getFileName().toString();
+                if (fileName.endsWith(".xz")) {
+                    input = new CompressorStreamFactory().createCompressorInputStream(CompressorStreamFactory.XZ, raw);
+                } else if (fileName.endsWith(".gz")) {
+                    input = new CompressorStreamFactory().createCompressorInputStream(CompressorStreamFactory.GZIP, raw);
+                } else if (fileName.endsWith(".bz2")) {
+                    input = new CompressorStreamFactory().createCompressorInputStream(CompressorStreamFactory.BZIP2, raw);
+                }
                 CasIOUtils.load(input, cas.getCas());
             }
             emitter.emit(DUUIArtifact.of(cas));
@@ -77,7 +87,11 @@ public final class DUUIXmiCollectionReader implements DUUIGenerator<JCas> {
                 try (Stream<Path> stream = Files.list(source)) {
                     stream
                             .filter(Files::isRegularFile)
-                            .filter(path -> path.getFileName().toString().endsWith(".xmi"))
+                            .filter(path -> {
+                                String name = path.getFileName().toString();
+                                return name.endsWith(".xmi") || name.endsWith(".xmi.bz2")
+                                    || name.endsWith(".xmi.gz") || name.endsWith(".xmi.xz");
+                            })
                             .sorted(Comparator.comparing(Path::toString))
                             .forEach(sources::add);
                 }

@@ -6,10 +6,13 @@ import org.texttechnologylab.duui.dua.DUA;
 import org.texttechnologylab.duui.dua.graph.DUAGraphCodec;
 import org.texttechnologylab.duui.dua.graph.DUAGraphCodecs;
 import org.texttechnologylab.duui.dua.graph.DUAGraphPartition;
+import org.texttechnologylab.duui.dua.store.VirtualCorpusRegistry;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
@@ -74,6 +77,21 @@ public final class DUAArchiveReader implements Closeable {
             throw new DUAArchiveException("Illegal DUA resource path: " + path);
         }
         return Files.readAllBytes(target);
+    }
+
+    public Optional<VirtualCorpusRegistry> virtualCorpusRegistry() {
+        String path = DUA.INDEXES + "virtual_corpora.json";
+        Path target = staging.resolve(path);
+        if (!Files.isRegularFile(target)) {
+            return Optional.empty();
+        }
+        try (InputStream input = Files.newInputStream(target)) {
+            return Optional.of(VirtualCorpusRegistry.readJson(input));
+        } catch (NoSuchFileException e) {
+            return Optional.empty();
+        } catch (IOException e) {
+            throw new DUAArchiveException("Failed to read virtual corpora registry", e);
+        }
     }
 
     @Override

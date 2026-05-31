@@ -35,6 +35,7 @@ public final class DUAJCasTarget implements DUATarget<JCas>, AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        writer.writeVirtualCorpusRegistry(bridge.virtualCorpusRegistry());
         writer.close();
     }
 }

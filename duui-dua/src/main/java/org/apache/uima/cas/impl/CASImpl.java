@@ -3434,7 +3434,7 @@ public class CASImpl extends AbstractCas_ImplBase
   }
 
   /**
-   * This might be called from low level set int value, if we support switching types, and we want
+   * This might be called from low level set int value, if we support switching typesystemIndex, and we want
    * to remove the old type from all indexes.
    * 
    * @param fs

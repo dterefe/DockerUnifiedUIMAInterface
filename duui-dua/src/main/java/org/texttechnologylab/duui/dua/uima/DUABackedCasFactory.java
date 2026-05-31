@@ -20,85 +20,85 @@ public final class DUABackedCasFactory {
     private DUABackedCasFactory() {
     }
 
-    public static JCas createJCas() throws UIMAException {
-        return createJCas(DUACasBackendProfile.DUA_CANONICAL);
+    public static JCas createView() throws UIMAException {
+        return createView(DUACasBackendProfile.DUA_CANONICAL);
     }
 
-    public static JCas createJCas(DUACasBackendProfile profile) throws UIMAException {
-        JCas jCas = JCasFactory.createJCas();
-        install(jCas, profile, null);
-        return jCas;
+    public static JCas createView(DUACasBackendProfile profile) throws UIMAException {
+        JCas view = JCasFactory.createJCas();
+        install(view, profile, null);
+        return view;
     }
 
-    public static JCas createJCas(TypeSystemDescription typeSystemDescription) throws UIMAException {
-        return createJCas(typeSystemDescription, DUACasBackendProfile.DUA_CANONICAL);
+    public static JCas createView(TypeSystemDescription typeSystemDescription) throws UIMAException {
+        return createView(typeSystemDescription, DUACasBackendProfile.DUA_CANONICAL);
     }
 
-    public static JCas createJCas(TypeSystemDescription typeSystemDescription, DUACasBackendProfile profile) throws UIMAException {
-        JCas jCas = JCasFactory.createJCas(typeSystemDescription);
-        install(jCas, profile, null);
-        return jCas;
+    public static JCas createView(TypeSystemDescription typeSystemDescription, DUACasBackendProfile profile) throws UIMAException {
+        JCas view = JCasFactory.createJCas(typeSystemDescription);
+        install(view, profile, null);
+        return view;
     }
 
-    public static JCas createSqliteJCas(Path sqlitePath) throws UIMAException {
-        JCas jCas = JCasFactory.createJCas();
-        install(jCas, DUACasBackendProfile.SQLITE, sqlitePath);
-        return jCas;
+    public static JCas createSqliteView(Path sqlitePath) throws UIMAException {
+        JCas view = JCasFactory.createJCas();
+        install(view, DUACasBackendProfile.SQLITE, sqlitePath);
+        return view;
     }
 
-    public static JCas createSqliteJCas(TypeSystemDescription typeSystemDescription, Path sqlitePath) throws UIMAException {
-        JCas jCas = JCasFactory.createJCas(typeSystemDescription);
-        install(jCas, DUACasBackendProfile.SQLITE, sqlitePath);
-        return jCas;
+    public static JCas createSqliteView(TypeSystemDescription typeSystemDescription, Path sqlitePath) throws UIMAException {
+        JCas view = JCasFactory.createJCas(typeSystemDescription);
+        install(view, DUACasBackendProfile.SQLITE, sqlitePath);
+        return view;
     }
 
-    public static JCas createCanonicalJCas(Path storageDirectory) throws UIMAException {
-        JCas jCas = JCasFactory.createJCas();
-        install(jCas, DUACasBackendProfile.DUA_CANONICAL, storageDirectory);
-        return jCas;
+    public static JCas createCanonicalView(Path storageDirectory) throws UIMAException {
+        JCas view = JCasFactory.createJCas();
+        install(view, DUACasBackendProfile.DUA_CANONICAL, storageDirectory);
+        return view;
     }
 
-    public static JCas createCanonicalJCas(TypeSystemDescription typeSystemDescription,
+    public static JCas createCanonicalView(TypeSystemDescription typeSystemDescription,
                                            Path storageDirectory) throws UIMAException {
-        JCas jCas = JCasFactory.createJCas(typeSystemDescription);
-        install(jCas, DUACasBackendProfile.DUA_CANONICAL, storageDirectory);
-        return jCas;
+        JCas view = JCasFactory.createJCas(typeSystemDescription);
+        install(view, DUACasBackendProfile.DUA_CANONICAL, storageDirectory);
+        return view;
     }
 
-    public static JCas createBaselineJCas() throws UIMAException {
+    public static JCas createBaselineView() throws UIMAException {
         return JCasFactory.createJCas();
     }
 
-    private static void install(JCas jCas, DUACasBackendProfile profile, Path sqlitePath) {
+    private static void install(JCas view, DUACasBackendProfile profile, Path sqlitePath) {
         switch (profile) {
             case DUA_CANONICAL, TIERED_ORDERED_KV_WRITE_BACK -> {
                 Path storageDirectory = sqlitePath == null ? temporaryCanonicalStore() : sqlitePath;
                 DUAOrderedKvCasStorage durable = new DUAOrderedKvCasStorage(storageDirectory);
-                DUACasBackendInstaller.install(jCas, new DUAStorageBackend(
+                DUACasBackendInstaller.install(view, new DUAStorageBackend(
                         new DUATieredCasStorage(durable, 100_000, DUATieredWritePolicy.WRITE_BACK)));
             }
             case UIMA_HEAP_BASELINE -> {
             }
             case CONCURRENT_MEMORY -> DUACasBackendInstaller.install(
-                    jCas, new DUAStorageBackend(new DUAConcurrentMemoryCasStorage()));
+                    view, new DUAStorageBackend(new DUAConcurrentMemoryCasStorage()));
             case DENSE_MEMORY -> DUACasBackendInstaller.install(
-                    jCas, new DUAStorageBackend(new DUADenseMemoryCasStorage()));
+                    view, new DUAStorageBackend(new DUADenseMemoryCasStorage()));
             case ORDERED_KV -> {
                 Path storageDirectory = sqlitePath == null ? temporaryCanonicalStore() : sqlitePath;
-                DUACasBackendInstaller.install(jCas, new DUAStorageBackend(new DUAOrderedKvCasStorage(storageDirectory)));
+                DUACasBackendInstaller.install(view, new DUAStorageBackend(new DUAOrderedKvCasStorage(storageDirectory)));
             }
             case SQLITE -> {
                 if (sqlitePath == null) {
                     throw new IllegalArgumentException("sqlitePath is required for SQLITE backend");
                 }
-                DUACasBackendInstaller.install(jCas, new DUAStorageBackend(new DUASqliteCasStorage(sqlitePath)));
+                DUACasBackendInstaller.install(view, new DUAStorageBackend(new DUASqliteCasStorage(sqlitePath)));
             }
             case TIERED_SQLITE_WRITE_BACK -> {
                 if (sqlitePath == null) {
                     throw new IllegalArgumentException("sqlitePath is required for TIERED_SQLITE_WRITE_BACK backend");
                 }
                 DUASqliteCasStorage durable = new DUASqliteCasStorage(sqlitePath);
-                DUACasBackendInstaller.install(jCas, new DUAStorageBackend(
+                DUACasBackendInstaller.install(view, new DUAStorageBackend(
                         new DUATieredCasStorage(durable, 100_000, DUATieredWritePolicy.WRITE_BACK)));
             }
         }

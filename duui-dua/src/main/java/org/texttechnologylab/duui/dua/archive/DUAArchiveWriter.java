@@ -5,23 +5,14 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.texttechnologylab.duui.dua.DUA;
 import org.texttechnologylab.duui.dua.DUAId;
-import org.texttechnologylab.duui.dua.distributed.DUADistributionPlan;
-import org.texttechnologylab.duui.dua.distributed.DUAShardManifest;
-import org.texttechnologylab.duui.dua.distributed.DUAShardObjectRef;
-import org.texttechnologylab.duui.dua.distributed.DUAShardReplica;
-import org.texttechnologylab.duui.dua.graph.DUAGraphCodec;
-import org.texttechnologylab.duui.dua.graph.DUAGraphPartition;
-import org.texttechnologylab.duui.dua.store.VirtualCorpusRegistry;
+import org.texttechnologylab.duui.dua.backend.DUABackendLayout;
+import org.texttechnologylab.duui.dua.backend.DUAStoreRole;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -57,15 +48,18 @@ public final class DUAArchiveWriter implements Closeable {
         return manifest;
     }
 
-    public DUAArchiveWriter addPartition(DUAGraphPartition partition, DUAGraphCodec codec) throws IOException {
-        Objects.requireNonNull(partition, "partition");
-        Objects.requireNonNull(codec, "codec");
-        String directory = DUA.GRAPHS + sanitize(partition.id()) + "/" + codec.id() + "/";
-        String path = directory + codec.defaultFileName();
-        Path target = staging.resolve(path);
-        codec.write(partition, target);
-        manifest.getPartitions().add(new DUAPartitionEntry(partition.id(), codec.id(), path, partition.scope()));
+    public DUAArchiveWriter backendLayout(DUABackendLayout layout) {
+        manifest.setBackendLayout(layout);
         return this;
+    }
+
+    public synchronized int allocateFsId() {
+        int allocated = manifest.getNextFsId();
+        if (allocated < 1 || allocated == Integer.MAX_VALUE) {
+            throw new DUAArchiveException("DUA archive fs id space is exhausted");
+        }
+        manifest.setNextFsId(allocated + 1);
+        return allocated;
     }
 
     public DUAArchiveWriter addArtifact(String id, String kind, String mediaType, byte[] payload) throws IOException {
@@ -80,64 +74,17 @@ public final class DUAArchiveWriter implements Closeable {
         return this;
     }
 
-    public DUAArchiveWriter addDistributionPlan(DUADistributionPlan plan) throws IOException {
-        Objects.requireNonNull(plan, "plan");
-        String routingPath = DUA.DISTRIBUTION + "routing/"
-                + sanitize(plan.routingTable().routingTableId()) + ".json";
-        writeJson(routingPath, plan.routingTable());
-        for (DUAShardManifest shard : plan.shards()) {
-            String shardPath = DUA.PARTITIONS + sanitize(shard.partitionId())
-                    + "/shards/" + sanitize(shard.shardId()) + "/manifest.json";
-            writeJson(shardPath, shard);
-        }
-        return this;
-    }
-
-    public DUAArchiveWriter addCasShardDirectory(String partitionId,
-                                                 String shardId,
-                                                 Path storageDirectory,
-                                                 long rangeStart,
-                                                 long rangeEndExclusive,
-                                                 List<DUAShardReplica> replicas) throws IOException {
-        Objects.requireNonNull(partitionId, "partitionId");
-        Objects.requireNonNull(shardId, "shardId");
-        Objects.requireNonNull(storageDirectory, "storageDirectory");
-        String shardRoot = DUA.PARTITIONS + sanitize(partitionId)
-                + "/shards/" + sanitize(shardId) + "/";
-        String objectRoot = shardRoot + "objects/";
-        List<DUAShardObjectRef> objects = new ArrayList<>();
-        try (var paths = Files.walk(storageDirectory)) {
-            for (Path source : paths.filter(Files::isRegularFile).sorted().toList()) {
-                String relative = storageDirectory.relativize(source).toString().replace('\\', '/');
-                String objectPath = objectRoot + relative;
-                Path target = staging.resolve(objectPath);
-                Files.createDirectories(target.getParent());
-                Files.copy(source, target);
-                objects.add(new DUAShardObjectRef(objectPath, sha256(target), Files.size(target)));
-            }
-        }
-        writeJson(shardRoot + "manifest.json", new DUAShardManifest(
-                shardId,
-                partitionId,
-                0,
-                rangeStart,
-                rangeEndExclusive,
-                objects,
-                replicas));
-        return this;
-    }
-
-    public DUAArchiveWriter writeVirtualCorpusRegistry(VirtualCorpusRegistry registry) throws IOException {
-        Objects.requireNonNull(registry, "registry");
-        if (registry.isEmpty()) {
-            return this;
-        }
-        String path = DUA.INDEXES + "virtual_corpora.json";
+    public DUAArchiveWriter addStoreSnapshot(DUAStoreRole role, String id, String mediaType, byte[] payload)
+            throws IOException {
+        Objects.requireNonNull(role, "role");
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(payload, "payload");
+        String path = DUA.STORES + sanitize(role.name().toLowerCase()) + "/" + sanitize(id) + ".bin";
         Path target = staging.resolve(path);
         Files.createDirectories(target.getParent());
-        try (OutputStream output = Files.newOutputStream(target)) {
-            registry.writeJson(output);
-        }
+        Files.write(target, payload);
+        manifest.getStoreSnapshots().add(new DUAStoreSnapshotEntry(
+                id, role, path, mediaType == null ? "application/octet-stream" : mediaType));
         return this;
     }
 
@@ -169,19 +116,10 @@ public final class DUAArchiveWriter implements Closeable {
 
     private void createLayout() throws IOException {
         Files.createDirectories(staging.resolve(DUA.ARTIFACTS));
-        Files.createDirectories(staging.resolve(DUA.GRAPHS));
         Files.createDirectories(staging.resolve(DUA.TYPESYSTEMS));
         Files.createDirectories(staging.resolve(DUA.CAS));
         Files.createDirectories(staging.resolve(DUA.INDEXES));
-        Files.createDirectories(staging.resolve(DUA.DISTRIBUTION));
-        Files.createDirectories(staging.resolve(DUA.PARTITIONS));
-        Files.createDirectories(staging.resolve(DUA.SCHEMAS));
-    }
-
-    private void writeJson(String path, Object value) throws IOException {
-        Path target = staging.resolve(path);
-        Files.createDirectories(target.getParent());
-        MAPPER.writeValue(target.toFile(), value);
+        Files.createDirectories(staging.resolve(DUA.STORES));
     }
 
     private void deleteStaging() throws IOException {
@@ -197,25 +135,5 @@ public final class DUAArchiveWriter implements Closeable {
 
     private static String sanitize(String value) {
         return value.replaceAll("[^A-Za-z0-9._-]", "_");
-    }
-
-    private static String sha256(Path path) throws IOException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            try (var input = Files.newInputStream(path)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    digest.update(buffer, 0, read);
-                }
-            }
-            StringBuilder builder = new StringBuilder(64);
-            for (byte b : digest.digest()) {
-                builder.append(String.format("%02x", b));
-            }
-            return builder.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is not available", e);
-        }
     }
 }

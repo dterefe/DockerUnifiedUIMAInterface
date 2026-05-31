@@ -30,7 +30,6 @@ public final class DUATieredCasStorage implements DUAFastCasStorage {
     private final ConcurrentHashMap<Integer, AtomicInteger> pendingByFs = new ConcurrentHashMap<>();
     private final LinkedBlockingQueue<Mutation> mutations;
     private final AtomicInteger pendingMutations = new AtomicInteger();
-    private final AtomicInteger nextWriteBackFsId = new AtomicInteger(1);
     private final AtomicReference<RuntimeException> writerFailure = new AtomicReference<>();
     private final Object pendingMonitor = new Object();
     private final Thread writer;
@@ -202,9 +201,6 @@ public final class DUATieredCasStorage implements DUAFastCasStorage {
     @Override
     public int allocateFsId(int typeCode, int viewId) {
         checkUsable();
-        if (writePolicy == DUATieredWritePolicy.WRITE_BACK) {
-            return nextWriteBackFsId.getAndIncrement();
-        }
         return durable.allocateFsId(typeCode, viewId);
     }
 

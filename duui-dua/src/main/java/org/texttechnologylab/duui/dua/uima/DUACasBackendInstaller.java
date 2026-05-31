@@ -9,8 +9,8 @@ public final class DUACasBackendInstaller {
     private DUACasBackendInstaller() {
     }
 
-    public static void install(JCas jCas, Backend backend) {
-        install(jCas.getCas(), backend);
+    public static void install(JCas view, Backend backend) {
+        install(view.getCas(), backend);
     }
 
     public static void install(CAS cas, Backend backend) {

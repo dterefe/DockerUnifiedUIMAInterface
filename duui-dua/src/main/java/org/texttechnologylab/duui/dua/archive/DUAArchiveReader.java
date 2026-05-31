@@ -3,20 +3,13 @@ package org.texttechnologylab.duui.dua.archive;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.texttechnologylab.duui.dua.DUA;
-import org.texttechnologylab.duui.dua.graph.DUAGraphCodec;
-import org.texttechnologylab.duui.dua.graph.DUAGraphCodecs;
-import org.texttechnologylab.duui.dua.graph.DUAGraphPartition;
-import org.texttechnologylab.duui.dua.store.VirtualCorpusRegistry;
+import org.texttechnologylab.duui.dua.backend.DUAStoreRole;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.zip.ZipFile;
 
 public final class DUAArchiveReader implements Closeable {
@@ -25,11 +18,9 @@ public final class DUAArchiveReader implements Closeable {
     private final Path archive;
     private final Path staging;
     private final DUAManifest manifest;
-    private final DUAGraphCodecs codecs;
 
-    private DUAArchiveReader(Path archive, DUAGraphCodecs codecs) throws IOException {
+    private DUAArchiveReader(Path archive) throws IOException {
         this.archive = Objects.requireNonNull(archive, "archive");
-        this.codecs = codecs == null ? DUAGraphCodecs.defaults() : codecs;
         this.staging = Files.createTempDirectory("dua-reader-");
         unzip();
         this.manifest = MAPPER.readValue(staging.resolve(DUA.MANIFEST).toFile(), DUAManifest.class);
@@ -37,29 +28,11 @@ public final class DUAArchiveReader implements Closeable {
     }
 
     public static DUAArchiveReader open(Path archive) throws IOException {
-        return new DUAArchiveReader(archive, DUAGraphCodecs.defaults());
-    }
-
-    public static DUAArchiveReader open(Path archive, DUAGraphCodecs codecs) throws IOException {
-        return new DUAArchiveReader(archive, codecs);
+        return new DUAArchiveReader(archive);
     }
 
     public DUAManifest manifest() {
         return manifest;
-    }
-
-    public List<DUAPartitionEntry> partitions() {
-        return List.copyOf(manifest.getPartitions());
-    }
-
-    public Optional<DUAGraphPartition> partition(String id, String codecId) throws IOException {
-        for (DUAPartitionEntry entry : manifest.getPartitions()) {
-            if (entry.id().equals(id) && entry.codec().equals(codecId)) {
-                DUAGraphCodec codec = codecs.require(codecId);
-                return Optional.of(codec.read(entry.id(), entry.scope(), staging.resolve(entry.path())));
-            }
-        }
-        return Optional.empty();
     }
 
     public byte[] artifactPayload(String id) throws IOException {
@@ -79,19 +52,13 @@ public final class DUAArchiveReader implements Closeable {
         return Files.readAllBytes(target);
     }
 
-    public Optional<VirtualCorpusRegistry> virtualCorpusRegistry() {
-        String path = DUA.INDEXES + "virtual_corpora.json";
-        Path target = staging.resolve(path);
-        if (!Files.isRegularFile(target)) {
-            return Optional.empty();
+    public byte[] storeSnapshotPayload(DUAStoreRole role, String id) throws IOException {
+        for (DUAStoreSnapshotEntry entry : manifest.getStoreSnapshots()) {
+            if (entry.role() == role && entry.id().equals(id)) {
+                return resourcePayload(entry.path());
+            }
         }
-        try (InputStream input = Files.newInputStream(target)) {
-            return Optional.of(VirtualCorpusRegistry.readJson(input));
-        } catch (NoSuchFileException e) {
-            return Optional.empty();
-        } catch (IOException e) {
-            throw new DUAArchiveException("Failed to read virtual corpora registry", e);
-        }
+        throw new DUAArchiveException("No DUA store snapshot for role " + role + " and id " + id);
     }
 
     @Override
@@ -130,6 +97,9 @@ public final class DUAArchiveReader implements Closeable {
         }
         if (manifest.getVersion() != DUA.FORMAT_VERSION) {
             throw new DUAArchiveException("Unsupported DUA version: " + manifest.getVersion());
+        }
+        if (manifest.getBackendLayout() == null || manifest.getBackendLayout().getStores().isEmpty()) {
+            throw new DUAArchiveException("DUA archive has no backend layout");
         }
     }
 }

@@ -16,9 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class DUABackedCasTest {
     @Test
-    void jCasUsesInstalledDuaBackendForSlotsAndArrays() throws Exception {
-        JCas jCas = DUABackedCasFactory.createJCas();
-        CAS cas = jCas.getCas();
+    void viewUsesInstalledDuaBackendForSlotsAndArrays() throws Exception {
+        JCas view = DUABackedCasFactory.createView();
+        CAS cas = view.getCas();
 
         Type annotationType = cas.getAnnotationType();
         FeatureStructure fs = cas.createFS(annotationType);
@@ -28,12 +28,12 @@ class DUABackedCasTest {
         assertEquals(4, fs.getIntValue(annotationType.getFeatureByBaseName("begin")));
         assertEquals(9, fs.getIntValue(annotationType.getFeatureByBaseName("end")));
 
-        IntegerArray array = new IntegerArray(jCas, 3);
+        IntegerArray array = new IntegerArray(view, 3);
         array.set(2, 42);
 
         assertEquals(42, array.get(2));
         assertNotNull(cas.getTypeSystem());
-        DUAStorageBackend backend = assertInstanceOf(DUAStorageBackend.class, jCas.getCasImpl().getBaseCAS().backend());
+        DUAStorageBackend backend = assertInstanceOf(DUAStorageBackend.class, view.getCasImpl().getBaseCAS().backend());
         assertInstanceOf(DUATieredCasStorage.class, backend.storage());
     }
 }

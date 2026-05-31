@@ -1,7 +1,6 @@
 package org.texttechnologylab.duui.dua;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,18 +38,35 @@ class DUACasStorageBackendTest {
     void sqliteBackendMatchesHeapCasForBasicReads() throws Exception {
         Path sqlite = Files.createTempFile("dua-cas-storage", ".sqlite");
         try (DUASqliteCasStorage storage = new DUASqliteCasStorage(sqlite)) {
-            JCas jCas = JCasFactory.createJCas();
-            DUACasBackendInstaller.install(jCas, new DUAStorageBackend(storage));
-            assertEquals(exercise(JCasFactory.createJCas()), exercise(jCas));
+            JCas view = JCasFactory.createJCas();
+            DUACasBackendInstaller.install(view, new DUAStorageBackend(storage));
+            assertEquals(exercise(JCasFactory.createJCas()), exercise(view));
+        }
+    }
+
+    @Test
+    void sqliteStorageInitializesFromEmbeddedSchemaOnCleanResourcePath() {
+        Path sqlite = temp.resolve("embedded-schema.sqlite");
+        try (DUASqliteCasStorage storage = new DUASqliteCasStorage(sqlite)) {
+            storage.writeIntSlot(1, 101, "begin", 17);
+            storage.initializeArray(DUACasArrayKind.STRING, 2, 1);
+            storage.writeArrayValue(DUACasArrayKind.STRING, 2, 0, DUACasValue.of("clean"));
+        }
+
+        try (DUASqliteCasStorage storage = new DUASqliteCasStorage(sqlite)) {
+            assertEquals(17, storage.readIntSlotOrDefault(1, 101, "begin", 0));
+            assertEquals("clean", storage.readArrayValue(DUACasArrayKind.STRING, 2, 0)
+                    .orElseThrow()
+                    .stringValue());
         }
     }
 
     @Test
     void orderedKvBackendMatchesHeapCasForBasicReads() throws Exception {
         try (DUAOrderedKvCasStorage storage = new DUAOrderedKvCasStorage(temp.resolve("ordered-kv"))) {
-            JCas jCas = JCasFactory.createJCas();
-            DUACasBackendInstaller.install(jCas, new DUAStorageBackend(storage));
-            assertEquals(exercise(JCasFactory.createJCas()), exercise(jCas));
+            JCas view = JCasFactory.createJCas();
+            DUACasBackendInstaller.install(view, new DUAStorageBackend(storage));
+            assertEquals(exercise(JCasFactory.createJCas()), exercise(view));
         }
     }
 
@@ -80,9 +96,9 @@ class DUACasStorageBackendTest {
 
     @Test
     void concurrentMemoryStorageSupportsVirtualThreadWritesToIndependentSlots() throws Exception {
-        JCas jCas = withConcurrentMemoryBackend();
-        DUAStorageBackend backend = (DUAStorageBackend) jCas.getCasImpl().getBaseCAS().backend();
-        Type annotationType = jCas.getTypeSystem().getType(CAS.TYPE_NAME_ANNOTATION);
+        JCas view = withConcurrentMemoryBackend();
+        DUAStorageBackend backend = (DUAStorageBackend) view.getCasImpl().getBaseCAS().backend();
+        Type annotationType = view.getTypeSystem().getType(CAS.TYPE_NAME_ANNOTATION);
         Feature begin = annotationType.getFeatureByBaseName("begin");
 
         int count = 1_000;
@@ -103,47 +119,22 @@ class DUACasStorageBackendTest {
         }
     }
 
-    @Test
-    void storageSchemaContractsArePackagedResources() {
-        assertSchemaResource("/dua/schema/sqlite/cas-storage-v1.sql");
-        assertSchemaResource("/dua/schema/kv/cas-keyspace-v1.md");
-        assertSchemaResource("/dua/schema/document/cas-document-v1.schema.json");
-        assertSchemaResource("/dua/schema/columnar/cas-columnar-v1.md");
-        assertSchemaResource("/dua/schema/graph/navigation-property-graph-v1.md");
-        assertSchemaResource("/dua/schema/object/payload-layout-v1.md");
-        assertSchemaResource("/dua/schema/transport/document-transfer-v1.schema.json");
-        assertSchemaResource("/dua/schema/service/module-descriptor-v1.schema.json");
-        assertSchemaResource("/dua/schema/service/storage-service-v1.openapi.yaml");
-        assertSchemaResource("/dua/schema/service/grpc/storage-service-v1.proto");
-        assertSchemaResource("/dua/schema/service/grpc/transport-service-v1.proto");
-        assertSchemaResource("/dua/schema/distributed/universe-distribution-v1.schema.json");
-        assertSchemaResource("/dua/schema/distributed/partition-manifest-v1.schema.json");
-        assertSchemaResource("/dua/schema/distributed/shard-manifest-v1.schema.json");
-        assertSchemaResource("/dua/schema/distributed/routing-table-v1.schema.json");
-        assertSchemaResource("/dua/schema/distributed/wal-segment-v1.md");
-        assertSchemaResource("/dua/schema/distributed/archive-layout-v1.md");
-    }
-
-    private static void assertSchemaResource(String path) {
-        assertNotNull(DUACasStorageBackendTest.class.getResource(path), path);
-    }
-
     private static JCas withConcurrentMemoryBackend() throws Exception {
-        JCas jCas = JCasFactory.createJCas();
-        DUACasBackendInstaller.install(jCas, new DUAStorageBackend(new DUAConcurrentMemoryCasStorage()));
-        return jCas;
+        JCas view = JCasFactory.createJCas();
+        DUACasBackendInstaller.install(view, new DUAStorageBackend(new DUAConcurrentMemoryCasStorage()));
+        return view;
     }
 
-    private static Snapshot exercise(JCas jCas) {
-        jCas.setDocumentText("abcdef");
-        Annotation annotation = new Annotation(jCas, 1, 4);
+    private static Snapshot exercise(JCas view) {
+        view.setDocumentText("abcdef");
+        Annotation annotation = new Annotation(view, 1, 4);
         annotation.setBegin(2);
         annotation.setEnd(5);
 
-        IntegerArray integers = new IntegerArray(jCas, 5);
+        IntegerArray integers = new IntegerArray(view, 5);
         integers.set(3, 42);
 
-        StringArray strings = new StringArray(jCas, 3);
+        StringArray strings = new StringArray(view, 3);
         strings.set(1, "dua");
 
         return new Snapshot(

@@ -6,9 +6,7 @@ import org.apache.uima.jcas.JCas;
 import org.apache.uima.util.CasIOUtils;
 import org.texttechnologylab.duui.dua.archive.DUAArchiveReader;
 import org.texttechnologylab.duui.dua.archive.DUAArchiveWriter;
-import org.texttechnologylab.duui.dua.graph.DUAGraphCodec;
 import org.texttechnologylab.duui.dua.DUAId;
-import org.texttechnologylab.duui.dua.store.VirtualCorpusRegistry;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -20,32 +18,9 @@ import java.util.Objects;
 import java.util.stream.Stream;
 
 public final class DUAXmiBridge {
-    private final DUACasGraph casGraph = new DUACasGraph();
-    private final DUAArtifactTypeRecognizer artifactRecognizer;
-    private VirtualCorpusRegistry virtualCorpusRegistry;
+    private final DUAXmiFsIdRemapper fsIdRemapper = new DUAXmiFsIdRemapper();
 
-    public DUAXmiBridge() {
-        this(DUAArtifactTypeRecognizer.createDefault(), new VirtualCorpusRegistry());
-    }
-
-    public DUAXmiBridge(DUAArtifactTypeRecognizer artifactRecognizer, VirtualCorpusRegistry virtualCorpusRegistry) {
-        this.artifactRecognizer = Objects.requireNonNull(artifactRecognizer, "artifactRecognizer");
-        this.virtualCorpusRegistry = Objects.requireNonNull(virtualCorpusRegistry, "virtualCorpusRegistry");
-    }
-
-    public VirtualCorpusRegistry virtualCorpusRegistry() {
-        return virtualCorpusRegistry;
-    }
-
-    public void setVirtualCorpusRegistry(VirtualCorpusRegistry registry) {
-        this.virtualCorpusRegistry = Objects.requireNonNull(registry, "registry");
-    }
-
-    public DUAArtifactTypeRecognizer artifactRecognizer() {
-        return artifactRecognizer;
-    }
-
-    public void importDirectory(Path source, Path dua, String corpusId, DUAGraphCodec codec) throws Exception {
+    public void importDirectory(Path source, Path dua) throws Exception {
         Objects.requireNonNull(source, "source");
         try (DUAArchiveWriter writer = DUAArchiveWriter.create(dua)) {
             try (Stream<Path> paths = Files.list(source)) {
@@ -54,45 +29,36 @@ public final class DUAXmiBridge {
                         .filter(candidate -> candidate.getFileName().toString().endsWith(".xmi"))
                         .sorted(Comparator.comparing(Path::toString))
                         .toList()) {
-                    importXmi(path, writer, corpusId, codec);
+                    importXmi(path, writer);
                 }
             }
-            writer.writeVirtualCorpusRegistry(virtualCorpusRegistry);
         }
     }
 
-    public void importXmi(Path source, DUAArchiveWriter writer, String corpusId, DUAGraphCodec codec) throws Exception {
+    public void importXmi(Path source, DUAArchiveWriter writer) throws Exception {
         String documentId = documentId(source);
-        JCas jCas = JCasFactory.createJCas();
+        JCas view = JCasFactory.createJCas();
+        byte[] sourcePayload = Files.readAllBytes(source);
         try (var input = Files.newInputStream(source)) {
-            CasIOUtils.load(input, jCas.getCas());
+            CasIOUtils.load(input, view.getCas());
         }
-        writer.addArtifact(documentId, "cas-xmi", "application/vnd.apache.uima.cas+xmi", Files.readAllBytes(source));
-        writer.addPartition(casGraph.fromCas(corpusId, documentId, jCas.getCas()), codec);
-        scanForVirtualCorpora(jCas.getCas(), documentId);
+        writer.addArtifact(documentId, "cas-xmi", "application/vnd.apache.uima.cas+xmi",
+                fsIdRemapper.remap(sourcePayload, view, writer::allocateFsId));
     }
 
-    public String addJCas(JCas jCas, DUAArchiveWriter writer, String corpusId, String documentId, DUAGraphCodec codec) throws Exception {
+    public String addCasPayload(JCas view, DUAArchiveWriter writer, String documentId) throws Exception {
         String effectiveDocumentId = documentId == null ? DUAId.create().value() : documentId;
-        writer.addArtifact(effectiveDocumentId, "cas-xmi", "application/vnd.apache.uima.cas+xmi", serialize(jCas));
-        writer.addPartition(casGraph.fromCas(corpusId, effectiveDocumentId, jCas.getCas()), codec);
-        scanForVirtualCorpora(jCas.getCas(), effectiveDocumentId);
+        writer.addArtifact(effectiveDocumentId, "cas-xmi", "application/vnd.apache.uima.cas+xmi",
+                fsIdRemapper.remap(serialize(view), view, writer::allocateFsId));
         return effectiveDocumentId;
     }
 
-    private void scanForVirtualCorpora(org.apache.uima.cas.CAS cas, String documentId) {
-        if (virtualCorpusRegistry == null) {
-            return;
-        }
-        artifactRecognizer.recognizeAndAssign(cas, documentId, virtualCorpusRegistry);
-    }
-
     public JCas materialize(DUAArchiveReader reader, String documentId) throws Exception {
-        JCas jCas = JCasFactory.createJCas();
+        JCas view = JCasFactory.createJCas();
         try (var input = new ByteArrayInputStream(reader.artifactPayload(documentId))) {
-            CasIOUtils.load(input, jCas.getCas());
+            CasIOUtils.load(input, view.getCas());
         }
-        return jCas;
+        return view;
     }
 
     public void exportXmi(DUAArchiveReader reader, String documentId, Path target) throws IOException {
@@ -103,9 +69,9 @@ public final class DUAXmiBridge {
         Files.write(target, reader.artifactPayload(documentId));
     }
 
-    private static byte[] serialize(JCas jCas) throws IOException {
+    private static byte[] serialize(JCas view) throws IOException {
         try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            CasIOUtils.save(jCas.getCas(), output, SerialFormat.XMI_1_1);
+            CasIOUtils.save(view.getCas(), output, SerialFormat.XMI_1_1);
             return output.toByteArray();
         }
     }

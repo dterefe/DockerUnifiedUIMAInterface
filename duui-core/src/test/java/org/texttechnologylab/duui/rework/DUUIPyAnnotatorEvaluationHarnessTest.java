@@ -20,6 +20,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPodmanDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIV1Driver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.io.AsyncCollectionReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.duui.event.DUUIEvent;
 import org.texttechnologylab.duui.event.DUUIEventService;
@@ -197,19 +198,21 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
             }
             composer.add(component.build());
 
-            for (Path document : documents) {
-                JCas cas = loadXmi(typeSystem, document);
-                long started = System.nanoTime();
-                try {
-                    composer.run(cas, "duui-py-eval-legacy-" + stem(document));
-                    long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
-                    rows.add(row(config, "legacy", document, true, null, durationMs,
-                            Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), cas, List.of(), ""));
-                } catch (Exception e) {
-                    long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
-                    rows.add(errorRow(config, "legacy", document, durationMs,
-                            Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), e.getMessage(), e.toString()));
-                }
+            Path input = materializeXmiDirectory("legacy-" + config.annotator(), documents, typeSystem);
+            AsyncCollectionReader reader = new AsyncCollectionReader(
+                    input.toString(), ".xmi", documents.size(), false);
+            reader.withMaxMemorySize(Long.MAX_VALUE);
+
+            long started = System.nanoTime();
+            try {
+                composer.run(reader, "duui-py-eval-legacy-" + config.annotator());
+                long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+                rows.add(aggregateRow(config, "legacy", documents, true, null, durationMs,
+                        Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), typeSystem));
+            } catch (Exception e) {
+                long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+                rows.add(aggregateRow(config, "legacy", documents, false, e.getMessage() + " cause=" + e,
+                        durationMs, Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), typeSystem));
             }
         } finally {
             if (composer != null) {
@@ -217,6 +220,40 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
             }
         }
         return rows;
+    }
+
+    private static ReportRow aggregateRow(
+            EvalConfig config,
+            String engine,
+            List<Path> documents,
+            boolean success,
+            String error,
+            long durationMs,
+            long wallMs,
+            TypeSystemDescription typeSystem
+    ) throws Exception {
+        int characters = 0;
+        for (Path document : documents) {
+            JCas cas = loadXmi(typeSystem, document);
+            characters += cas.getDocumentText() == null ? 0 : cas.getDocumentText().length();
+        }
+        return new ReportRow(
+                config.annotator(),
+                engine,
+                config.scheduling().propertyValue,
+                config.mode().propertyValue,
+                config.image(),
+                config.replicas(),
+                config.concurrency(),
+                "__collection__/" + documents.size() + "-documents",
+                characters,
+                durationMs,
+                wallMs,
+                success,
+                error == null ? "" : error,
+                Map.of("documents", documents.size()),
+                Map.of()
+        );
     }
 
     private Path materializeXmiDirectory(String id, List<Path> documents, TypeSystemDescription typeSystem) throws Exception {

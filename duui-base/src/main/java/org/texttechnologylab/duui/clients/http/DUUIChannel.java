@@ -1,11 +1,6 @@
 package org.texttechnologylab.duui.clients.http;
 
 import org.texttechnologylab.duui.event.DUUIEventService;
-import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
-import org.texttechnologylab.duui.timelines.DUUIPhaseAspect;
-import org.texttechnologylab.duui.timelines.DUUIDispatcher;
-import org.texttechnologylab.duui.timelines.DUUIStatus;
-import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -18,11 +13,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.lang.reflect.Method;
-import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
 
 public final class DUUIChannel<T> {
     @FunctionalInterface
@@ -47,7 +39,7 @@ public final class DUUIChannel<T> {
     private final RequestCustomizer<T> customizer;
     private final boolean streaming;
     private final String contentType;
-    private final DUUIPhaseAspect phaseAspect = new DUUIPhaseAspect(new DUUIDispatcher());
+    private DUUIRelay<T> responseRelay;
 
     public DUUIChannel(
         IDUUIEndpoint endpoint,
@@ -109,6 +101,15 @@ public final class DUUIChannel<T> {
         return streamingRequest(value);
     }
 
+    public void reset() throws IOException {
+        if (responseRelay == null) {
+            responseRelay = new DUUIRelay<>();
+            return;
+        }
+        responseRelay.close();
+        responseRelay.reset();
+    }
+
     private T bufferedRequest(T value) throws Exception {
         DUUIEventService eventService = DUUIEventService.current();
         long started = System.currentTimeMillis();
@@ -116,10 +117,7 @@ public final class DUUIChannel<T> {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         long serializeStarted = System.currentTimeMillis();
         eventService.logger("duui.http").debug("HTTP channel serialize started method=" + method + " route=" + route + " mode=buffer");
-        phaseAspect.around(this, SERIALIZE_METHOD, List.of(), () -> {
-            serializer.serialize(value, body);
-            return null;
-        });
+        serializer.serialize(value, body);
         long serializeMs = System.currentTimeMillis() - serializeStarted;
         byte[] requestBytes = body.toByteArray();
         eventService.metric("http", "duui.http.serialize_ms", serializeMs, "milliseconds", serializeMs,
@@ -138,20 +136,14 @@ public final class DUUIChannel<T> {
         try {
             eventService.logger("duui.http").info("HTTP channel request buffered method=" + method + " route=" + route + " uri=" + requestUri);
             long receiveStarted = System.currentTimeMillis();
-            HttpResponse<byte[]> response = phaseAspect.aroundCompletion(
-                    this,
-                    ANALYSE_METHOD,
-                    List.of(),
-                    () -> endpoint.client().sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-            ).join();
+            HttpResponse<byte[]> response = endpoint.client().sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
             long receiveMs = System.currentTimeMillis() - receiveStarted;
             eventService.metric("http", "duui.http.response_receive_ms", receiveMs, "milliseconds", receiveMs,
                     java.util.Map.of("mode", "buffer"));
             eventService.metric("http", "duui.http.response_bytes", response.body().length, "bytes", receiveMs,
                     java.util.Map.of("mode", "buffer"));
             long decodeStarted = System.currentTimeMillis();
-            T decoded = phaseAspect.around(this, DESERIALIZE_METHOD, List.of(),
-                    () -> deserializer.apply(value, new ByteArrayInputStream(response.body())));
+            T decoded = deserializer.apply(value, new ByteArrayInputStream(response.body()));
             long decodeMs = System.currentTimeMillis() - decodeStarted;
             long durationMs = System.currentTimeMillis() - started;
             eventService.metric("http", "duui.http.response_decode_ms", decodeMs, "milliseconds", decodeMs,
@@ -175,8 +167,8 @@ public final class DUUIChannel<T> {
         eventService.logger("duui.http").debug("HTTP channel streaming serialize scheduled method=" + method + " route=" + route + " endpoint=" + endpoint.uri());
         StreamingRequestBody streamingBody = streamingRequestBody(value, started, eventService);
 
-        DUUIRelay<T> responseRelay = new DUUIRelay<>();
-        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> deserializer.apply(value, input), eventService, phaseExecutor(DESERIALIZE_METHOD));
+        reset();
+        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> deserializer.apply(value, input), eventService);
 
         URI requestUri = customizer.uri(endpoint.uri().resolve(route), value);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
@@ -189,7 +181,7 @@ public final class DUUIChannel<T> {
 
         try {
             eventService.logger("duui.http").info("HTTP channel request streaming method=" + method + " route=" + route + " uri=" + requestUri);
-            CompletableFuture<HttpResponse<T>> responseFuture = sendAsync(request, handler);
+            CompletableFuture<HttpResponse<T>> responseFuture = endpoint.client().sendAsync(request, handler);
             responseFuture.whenComplete((response, error) -> {
                 if (error != null) {
                     responseRelay.cancel(error);
@@ -216,7 +208,7 @@ public final class DUUIChannel<T> {
         PipedInputStream input = new PipedInputStream(1024 * 1024);
         PipedOutputStream pipeOutput = new PipedOutputStream(input);
         CountingOutputStream countingOutput = new CountingOutputStream(pipeOutput);
-        CompletableFuture<Void> serializerFuture = phaseAspect.aroundAsync(this, SERIALIZE_METHOD, List.of(), () -> {
+        CompletableFuture<Void> serializerFuture = CompletableFuture.runAsync(() -> {
             long serializeStarted = System.currentTimeMillis();
             eventService.logger("duui.http").debug("HTTP channel serialize started method=" + method + " route=" + route + " mode=stream");
             try (CountingOutputStream output = countingOutput) {
@@ -231,25 +223,8 @@ public final class DUUIChannel<T> {
                 closeQuietly(pipeOutput);
                 throw new RuntimeException(error);
             }
-            return null;
         });
         return new StreamingRequestBody(input, serializerFuture);
-    }
-
-    private CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> handler) {
-        return phaseAspect.aroundCompletion(
-                this,
-                ANALYSE_METHOD,
-                List.of(),
-                () -> endpoint.client().sendAsync(request, handler)
-        );
-    }
-
-    private Executor phaseExecutor(Method method) {
-        return runnable -> phaseAspect.aroundAsync(this, method, List.of(), () -> {
-            runnable.run();
-            return null;
-        });
     }
 
     private static void closeQuietly(AutoCloseable closeable) {
@@ -261,32 +236,6 @@ public final class DUUIChannel<T> {
     }
 
     private record StreamingRequestBody(PipedInputStream input, CompletableFuture<Void> serializerFuture) {}
-
-    @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
-    private void serializePhase() {
-    }
-
-    @Phase(value = DUUIStatus.ANALYSE, dispatch = DUUIDispatchMode.IO)
-    private void analysePhase() {
-    }
-
-    @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.CPU)
-    private void deserializePhase() {
-    }
-
-    private static final Method SERIALIZE_METHOD = phaseMethod("serializePhase");
-    private static final Method ANALYSE_METHOD = phaseMethod("analysePhase");
-    private static final Method DESERIALIZE_METHOD = phaseMethod("deserializePhase");
-
-    private static Method phaseMethod(String name) {
-        try {
-            Method method = DUUIChannel.class.getDeclaredMethod(Objects.requireNonNull(name, "name"));
-            method.setAccessible(true);
-            return method;
-        } catch (NoSuchMethodException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
 
     private static final class CountingOutputStream extends FilterOutputStream {
         private long bytesWritten;

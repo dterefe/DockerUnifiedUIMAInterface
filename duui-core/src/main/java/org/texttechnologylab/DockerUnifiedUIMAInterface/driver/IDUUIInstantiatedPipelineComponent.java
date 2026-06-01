@@ -331,7 +331,7 @@ public interface IDUUIInstantiatedPipelineComponent {
             while (bRunning) {
                 try {
                     tries++;
-                    channel.request(viewJc);
+                    channel.post(viewJc);
                     annotatorEnd = System.nanoTime();
                     deserializeStart = annotatorEnd - deserializeNanos.get();
                     deserializeEnd = annotatorEnd;

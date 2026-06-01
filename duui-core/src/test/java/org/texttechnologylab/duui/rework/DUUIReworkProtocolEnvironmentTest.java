@@ -80,7 +80,7 @@ class DUUIReworkProtocolEnvironmentTest {
                     (value, output) -> output.write(value.getBytes(StandardCharsets.UTF_8)),
                     (value, input) -> new String(input.readAllBytes(), StandardCharsets.UTF_8));
 
-            assertEquals("processed:input", process.request("input"));
+            assertEquals("processed:input", process.post("input"));
         } finally {
             server.stop(0);
         }

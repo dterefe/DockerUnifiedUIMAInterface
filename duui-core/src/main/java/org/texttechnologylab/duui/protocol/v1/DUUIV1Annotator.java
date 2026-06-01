@@ -173,7 +173,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         }
         DUUIChannel<JCas> channel = processChannels.take();
         try {
-            channel.request(cas);
+            channel.post(cas);
         } finally {
             channel.reset();
             processChannels.offer(channel);

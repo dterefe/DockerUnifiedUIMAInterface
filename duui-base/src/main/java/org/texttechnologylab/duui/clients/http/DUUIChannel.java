@@ -94,13 +94,6 @@ public final class DUUIChannel<T> {
         this.contentType = contentType == null || contentType.isBlank() ? "application/octet-stream" : contentType;
     }
 
-    public T request(T value) throws Exception {
-        if (method == DUUIHttpMethod.GET) {
-            return get(value);
-        }
-        return post(value);
-    }
-
     public void reset() throws IOException {
         if (responseRelay == null) {
             responseRelay = new DUUIRelay<>();

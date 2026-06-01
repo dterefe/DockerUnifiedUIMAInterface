@@ -1,9 +1,6 @@
 package org.texttechnologylab.duui.clients.http;
 
 import org.texttechnologylab.duui.event.DUUIEventService;
-import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
-import org.texttechnologylab.duui.timelines.DUUIStatus;
-import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.FilterOutputStream;
 import java.io.IOException;
@@ -111,13 +108,13 @@ public final class DUUIChannel<T> {
         DUUIEventService eventService = DUUIEventService.current();
         reset();
         URI requestUri = customizer.uri(endpoint.uri().resolve(route), value);
-        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(DUUIChannelPhaseDispatch.deserialize(this, value, input)), eventService);
+        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(deserialize(value, input)), eventService);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(requestUri)
             .version(HttpClient.Version.HTTP_1_1)
             .GET();
         customizer.customize(builder, value);
-        CompletableFuture<HttpResponse<T>> response = cast(DUUIChannelPhaseDispatch.analyseAsync(this, builder.build(), handler));
+        CompletableFuture<HttpResponse<T>> response = cast(analyse(builder.build(), handler));
         response.whenComplete((ignored, error) -> {
             if (error != null) {
                 responseRelay.cancel(error);
@@ -141,7 +138,7 @@ public final class DUUIChannel<T> {
         eventService.logger("duui.http").debug("HTTP channel POST scheduled route=" + route + " endpoint=" + endpoint.uri());
         StreamingRequestBody body = requestBody(value);
         reset();
-        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(DUUIChannelPhaseDispatch.deserialize(this, value, input)), eventService);
+        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(deserialize(value, input)), eventService);
         URI requestUri = customizer.uri(endpoint.uri().resolve(route), value);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(requestUri)
@@ -151,7 +148,7 @@ public final class DUUIChannel<T> {
         customizer.customize(builder, value);
         try {
             eventService.logger("duui.http").info("HTTP channel POST route=" + route + " uri=" + requestUri);
-            CompletableFuture<HttpResponse<T>> responseFuture = cast(DUUIChannelPhaseDispatch.analyseAsync(this, builder.build(), handler));
+            CompletableFuture<HttpResponse<T>> responseFuture = cast(analyse(builder.build(), handler));
             responseFuture.whenComplete((response, error) -> {
                 if (error != null) {
                     responseRelay.cancel(error);
@@ -167,18 +164,15 @@ public final class DUUIChannel<T> {
         }
     }
 
-    @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
     public void serialize(Object value, OutputStream output) throws Exception {
         serializer.serialize(cast(value), output);
     }
 
-    @Phase(value = DUUIStatus.ANALYSE, dispatch = DUUIDispatchMode.IO)
     @SuppressWarnings({"rawtypes", "unchecked"})
     public CompletableFuture<HttpResponse> analyse(HttpRequest request, HttpResponse.BodyHandler handler) {
         return endpoint.client().sendAsync(request, handler);
     }
 
-    @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.CPU)
     public Object deserialize(Object value, InputStream input) throws Exception {
         return deserializer.apply(cast(value), input);
     }
@@ -187,7 +181,13 @@ public final class DUUIChannel<T> {
         PipedInputStream input = new PipedInputStream(1024 * 1024);
         PipedOutputStream pipeOutput = new PipedOutputStream(input);
         CountingOutputStream countingOutput = new CountingOutputStream(pipeOutput);
-        CompletableFuture<Void> serializerFuture = DUUIChannelPhaseDispatch.serializeAsync(this, value, countingOutput)
+        CompletableFuture<Void> serializerFuture = CompletableFuture.runAsync(() -> {
+                    try {
+                        serialize(value, countingOutput);
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                })
                 .whenComplete((ignored, error) -> closeQuietly(error == null ? countingOutput : pipeOutput));
         return new StreamingRequestBody(input, serializerFuture);
     }

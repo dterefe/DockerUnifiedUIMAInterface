@@ -1,6 +1,7 @@
 package org.texttechnologylab.duui.rework;
 
 import org.junit.jupiter.api.Test;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
@@ -9,10 +10,17 @@ import org.texttechnologylab.duui.orchestration.DUUITask;
 import org.texttechnologylab.duui.orchestration.worker.DUUIVirtualExecutorService;
 import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutor;
+import org.texttechnologylab.duui.timelines.DUUIPhaseAspect;
+import org.texttechnologylab.duui.timelines.DUUIDispatcher;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 
+import java.lang.reflect.Method;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,6 +44,14 @@ class DUUIReworkRuntimeTest {
 
             assertEquals("PLATFORM:runtime-platform", task.await());
         }
+    }
+
+    @Test
+    void phaseAspectSchedulesFromMethodAnnotations() throws Exception {
+        DUUIPhaseAspect aspect = new DUUIPhaseAspect(new DUUIDispatcher());
+
+        assertTrue(aspect.around(this, annotatedIoPhase(), List.of(), () -> Thread.currentThread().isVirtual()));
+        assertFalse(aspect.around(this, annotatedCpuPhase(), List.of(), () -> Thread.currentThread().isVirtual()));
     }
 
     @Test
@@ -73,6 +89,26 @@ class DUUIReworkRuntimeTest {
 
     private static String secondTaskId() {
         return secondTaskId;
+    }
+
+    @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
+    private void ioPhase() {
+    }
+
+    @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.CPU)
+    private void cpuPhase() {
+    }
+
+    private static Method annotatedIoPhase() throws NoSuchMethodException {
+        Method method = DUUIReworkRuntimeTest.class.getDeclaredMethod("ioPhase");
+        method.setAccessible(true);
+        return method;
+    }
+
+    private static Method annotatedCpuPhase() throws NoSuchMethodException {
+        Method method = DUUIReworkRuntimeTest.class.getDeclaredMethod("cpuPhase");
+        method.setAccessible(true);
+        return method;
     }
 
     @Test

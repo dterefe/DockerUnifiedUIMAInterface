@@ -1,6 +1,7 @@
 package org.texttechnologylab.duui.orchestration.worker;
 
 import org.texttechnologylab.duui.ems.DUUIActor;
+import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
 import org.texttechnologylab.duui.orchestration.DUUITask;
 
@@ -42,11 +43,13 @@ public final class DUUIWorker implements DUUIActor {
             throw new DUUIFrameworkStateException("Cannot bind task from orchestrator " + task.orchestratorId() + " to worker from orchestrator " + orchestratorId);
         }
         this.currentTask = task;
+        DUUIEventService.bindCurrent(task.context().eventService(), task.context().eventContext());
     }
 
     public void clear(DUUITask<?> task) {
         if (currentTask == task) {
             currentTask = null;
+            DUUIEventService.clearCurrent();
         }
     }
 

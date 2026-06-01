@@ -1,6 +1,8 @@
 package org.texttechnologylab.duui.orchestration;
 
 import org.texttechnologylab.duui.event.DUUIEventContext;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
+import org.texttechnologylab.duui.timelines.DUUIDispatcher;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
 
@@ -23,6 +25,7 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
     private final CompletableFuture<T> completion = new CompletableFuture<>();
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile Future<?> submittedFuture;
+    private volatile DUUIDispatchMode phaseDispatchOverride;
 
     public DUUITask(String orchestratorId, DUUIExecutionContext context, Callable<T> work) {
         this.id = UUID.randomUUID().toString();
@@ -42,6 +45,10 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
     public DUUITask<T> submit(org.texttechnologylab.duui.orchestration.worker.DUUIExecutor executor) {
         this.submittedFuture = Objects.requireNonNull(executor, "executor").submit(this);
         return this;
+    }
+
+    public void phaseDispatchOverride(DUUIDispatchMode mode) {
+        this.phaseDispatchOverride = mode;
     }
 
     public T await() {
@@ -80,18 +87,20 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
         }
         DUUIWorker worker = DUUIWorker.current();
         context.eventContext(context.eventContext().toBuilder().workerId(worker.id()).build());
-        if (worker.currentTask() == this) {
-            try {
+        try (DUUIDispatcher.DispatchOverride ignoredDispatch = DUUIDispatcher.bindDispatchOverride(phaseDispatchOverride)) {
+            if (worker.currentTask() == this) {
+                try {
+                    completion.complete(work.call());
+                } catch (Throwable t) {
+                    completion.completeExceptionally(t);
+                }
+                return;
+            }
+            try (DUUITaskScope ignored = enter()) {
                 completion.complete(work.call());
             } catch (Throwable t) {
                 completion.completeExceptionally(t);
             }
-            return;
-        }
-        try (DUUITaskScope ignored = enter()) {
-            completion.complete(work.call());
-        } catch (Throwable t) {
-            completion.completeExceptionally(t);
         }
     }
 

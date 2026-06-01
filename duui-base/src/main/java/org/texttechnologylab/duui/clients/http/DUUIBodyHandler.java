@@ -2,6 +2,7 @@ package org.texttechnologylab.duui.clients.http;
 
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUILogger;
+import org.texttechnologylab.duui.event.DUUIEventContext;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -13,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
 
 public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
@@ -24,11 +26,19 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
     private final DUUIRelay<T> relay;
     private final BodyDecoder<T> decoder;
     private final DUUIEventService eventService;
+    private final DUUIEventContext eventContext;
+    private final Executor decoderExecutor;
 
     public DUUIBodyHandler(DUUIRelay<T> relay, BodyDecoder<T> decoder, DUUIEventService eventService) {
+        this(relay, decoder, eventService, null);
+    }
+
+    public DUUIBodyHandler(DUUIRelay<T> relay, BodyDecoder<T> decoder, DUUIEventService eventService, Executor decoderExecutor) {
         this.relay = relay;
         this.decoder = decoder;
         this.eventService = eventService == null ? DUUIEventService.current() : eventService;
+        this.eventContext = this.eventService.currentContext();
+        this.decoderExecutor = decoderExecutor;
     }
 
     @Override
@@ -44,13 +54,15 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
         } else {
             logger.info("HTTP response body handler attached status_code=" + statusCode + " mode=stream");
         }
-        return new Subscriber<>(relay, decoder, eventService, statusCode);
+        return new Subscriber<>(relay, decoder, eventService, eventContext, decoderExecutor, statusCode);
     }
 
     private static final class Subscriber<T> implements HttpResponse.BodySubscriber<T> {
         private final DUUIRelay<T> relay;
         private final BodyDecoder<T> decoder;
         private final DUUIEventService eventService;
+        private final DUUIEventContext eventContext;
+        private final Executor decoderExecutor;
         private final DUUILogger logger;
         private final int statusCode;
         private OutputStream output;
@@ -61,10 +73,12 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
         private long bytes;
         private ByteArrayOutputStream errorBuffer;
 
-        private Subscriber(DUUIRelay<T> relay, BodyDecoder<T> decoder, DUUIEventService eventService, int statusCode) {
+        private Subscriber(DUUIRelay<T> relay, BodyDecoder<T> decoder, DUUIEventService eventService, DUUIEventContext eventContext, Executor decoderExecutor, int statusCode) {
             this.relay = relay;
             this.decoder = decoder;
             this.eventService = eventService;
+            this.eventContext = eventContext;
+            this.decoderExecutor = decoderExecutor;
             this.logger = eventService.logger("duui.http.body");
             this.statusCode = statusCode;
         }
@@ -91,7 +105,7 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
             }
 
             logger.debug("HTTP response body subscribed; starting greedy decoder task status_code=" + statusCode + " mode=stream");
-            decoderTask = CompletableFuture.runAsync(() -> {
+            Runnable decodeWork = () -> DUUIEventService.runWithCurrent(eventService, eventContext, () -> {
                 long started = System.currentTimeMillis();
                 try {
                     logger.trace("HTTP response greedy decoder waiting for first bytes status_code=" + statusCode + " mode=stream");
@@ -106,6 +120,9 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
                     relay.cancel(error);
                 }
             });
+            decoderTask = decoderExecutor == null
+                    ? CompletableFuture.runAsync(decodeWork)
+                    : CompletableFuture.runAsync(decodeWork, decoderExecutor);
             subscription.request(1);
             logger.trace("HTTP response body requested first upstream batch status_code=" + statusCode + " mode=stream");
         }
@@ -145,8 +162,9 @@ public final class DUUIBodyHandler<T> implements HttpResponse.BodyHandler<T> {
 
         @Override
         public void onComplete() {
-            eventService.metric("http", "duui.http.response_bytes", bytes, "bytes", 0L,
-                    java.util.Map.of("mode", "stream"));
+            DUUIEventService.runWithCurrent(eventService, eventContext, () ->
+                    eventService.metric("http", "duui.http.response_bytes", bytes, "bytes", 0L,
+                            java.util.Map.of("mode", "stream")));
 
             if (errorBuffer != null) {
                 // Dump the error response body

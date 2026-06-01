@@ -10,6 +10,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class DUUIEventService implements AutoCloseable {
     private static final DUUIEventService GLOBAL = new DUUIEventService(List.of(DUUIEventSinks.noOp()));
+    private static final ThreadLocal<DUUIEventService> CURRENT_SERVICE = new ThreadLocal<>();
+    private static final ThreadLocal<DUUIEventContext> CURRENT_CONTEXT = new ThreadLocal<>();
 
     private final CopyOnWriteArrayList<DUUIEventSink> sinks = new CopyOnWriteArrayList<>();
 
@@ -23,7 +25,54 @@ public final class DUUIEventService implements AutoCloseable {
     }
 
     public static DUUIEventService current() {
-        return GLOBAL;
+        DUUIEventService service = CURRENT_SERVICE.get();
+        return service == null ? GLOBAL : service;
+    }
+
+    public static void bindCurrent(DUUIEventService service, DUUIEventContext context) {
+        if (service == null) {
+            CURRENT_SERVICE.remove();
+        } else {
+            CURRENT_SERVICE.set(service);
+        }
+        bindCurrentContext(context);
+    }
+
+    public static void bindCurrentContext(DUUIEventContext context) {
+        if (context == null) {
+            CURRENT_CONTEXT.remove();
+        } else {
+            CURRENT_CONTEXT.set(context);
+        }
+    }
+
+    public static void clearCurrent() {
+        CURRENT_SERVICE.remove();
+        CURRENT_CONTEXT.remove();
+    }
+
+    public static void runWithCurrent(DUUIEventService service, DUUIEventContext context, Runnable work) {
+        try {
+            callWithCurrent(service, context, () -> {
+                work.run();
+                return null;
+            });
+        } catch (RuntimeException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IllegalStateException(error);
+        }
+    }
+
+    public static <T> T callWithCurrent(DUUIEventService service, DUUIEventContext context, Callable<T> work) throws Exception {
+        DUUIEventService previousService = CURRENT_SERVICE.get();
+        DUUIEventContext previousContext = CURRENT_CONTEXT.get();
+        bindCurrent(service, context);
+        try {
+            return work.call();
+        } finally {
+            bindCurrent(previousService, previousContext);
+        }
     }
 
     public void addSink(DUUIEventSink sink) {
@@ -99,7 +148,8 @@ public final class DUUIEventService implements AutoCloseable {
     }
 
     public DUUIEventContext currentContext() {
-        DUUIEventContext.Builder builder = new DUUIEventContext.Builder();
+        DUUIEventContext context = CURRENT_CONTEXT.get();
+        DUUIEventContext.Builder builder = context == null ? new DUUIEventContext.Builder() : context.toBuilder();
         DUUIEventContext.currentPhaseId().ifPresent(builder::phaseId);
         DUUIEventContext.currentPhaseStatus().ifPresent(builder::phaseStatus);
         DUUIEventContext.currentPhaseLifecycle().ifPresent(builder::phaseLifecycle);

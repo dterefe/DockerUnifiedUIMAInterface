@@ -59,6 +59,7 @@ public final class DUUIExecutionContext {
 
     public DUUIExecutionContext eventContext(DUUIEventContext context) {
         put(DUUIEventContext.class, context);
+        DUUIEventService.bindCurrentContext(context);
         return this;
     }
 

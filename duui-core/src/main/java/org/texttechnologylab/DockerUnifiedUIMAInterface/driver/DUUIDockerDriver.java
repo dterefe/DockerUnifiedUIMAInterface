@@ -625,8 +625,8 @@ public class DUUIDockerDriver extends DUUIV1Driver {
     }
 
     /**
-     * Waits for a container to become responsive by polling its {@code /v1/documentation} endpoint.
-     * Retries up to 30 times with a 1-second delay between attempts.
+     * Waits for a container to become responsive by polling required DUUI protocol endpoints.
+     * Documentation is optional, so readiness is based on communication layer and typesystem.
      *
      * @param containerURL the base URL of the container (e.g., {@code http://localhost:32768})
      * @param timeoutMs    maximum total wait time in milliseconds
@@ -638,14 +638,8 @@ public class DUUIDockerDriver extends DUUIV1Driver {
         while (System.currentTimeMillis() < deadline) {
             attempt++;
             try {
-                HttpRequest req = HttpRequest.newBuilder()
-                        .uri(URI.create(containerURL + "/v1/documentation"))
-                        .version(HttpClient.Version.HTTP_1_1)
-                        .timeout(Duration.ofSeconds(5))
-                        .GET()
-                        .build();
-                HttpResponse<Void> resp = _client.send(req, HttpResponse.BodyHandlers.discarding());
-                if (resp.statusCode() == 200) {
+                if (requiredEndpointReady(containerURL, DUUIComposer.V1_COMPONENT_ENDPOINT_COMMUNICATION_LAYER)
+                        && requiredEndpointReady(containerURL, DUUIComposer.V1_COMPONENT_ENDPOINT_TYPESYSTEM)) {
                     System.out.printf("[DUUIDockerDriver][V2] Container %s responsive after %d attempt(s)%n",
                             containerURL, attempt);
                     return;
@@ -663,6 +657,21 @@ public class DUUIDockerDriver extends DUUIV1Driver {
         }
         throw new PipelineComponentException(
                 format("Container %s did not become responsive within %d ms", containerURL, timeoutMs));
+    }
+
+    private boolean requiredEndpointReady(String containerURL, String route) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(containerURL + route))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+            HttpResponse<Void> resp = _client.send(req, HttpResponse.BodyHandlers.discarding());
+            return resp.statusCode() == 200;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     // === DUUIDockerClient delegation helpers ===

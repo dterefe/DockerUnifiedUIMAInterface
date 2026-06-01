@@ -85,13 +85,20 @@ public final class DUUISystemScope implements AutoCloseable {
         if (executor == null) {
             executor = effectiveExecutor;
         }
-        return new DUUIOrchestrator(
-                pipelineById(pipelineId),
-                scheduler,
-                director,
-                effectiveExecutor,
-                orchestratorConfig
-        ).run(artifacts, rootContext());
+        DUUIExecutionContext context = rootContext();
+        try {
+            return DUUIEventService.callWithCurrent(eventService, context.eventContext(), () -> new DUUIOrchestrator(
+                    pipelineById(pipelineId),
+                    scheduler,
+                    director,
+                    effectiveExecutor,
+                    orchestratorConfig
+            ).run(artifacts, context));
+        } catch (RuntimeException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     public DUUIOrchestrationResult run(String pipelineId) {
@@ -99,13 +106,20 @@ public final class DUUISystemScope implements AutoCloseable {
         if (executor == null) {
             executor = effectiveExecutor;
         }
-        return new DUUIOrchestrator(
-                pipelineById(pipelineId),
-                scheduler,
-                director,
-                effectiveExecutor,
-                orchestratorConfig
-        ).run(rootContext());
+        DUUIExecutionContext context = rootContext();
+        try {
+            return DUUIEventService.callWithCurrent(eventService, context.eventContext(), () -> new DUUIOrchestrator(
+                    pipelineById(pipelineId),
+                    scheduler,
+                    director,
+                    effectiveExecutor,
+                    orchestratorConfig
+            ).run(context));
+        } catch (RuntimeException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     public DUUIOrchestrationResult run(String pipelineId, DUUIArtifact<?> artifact) {

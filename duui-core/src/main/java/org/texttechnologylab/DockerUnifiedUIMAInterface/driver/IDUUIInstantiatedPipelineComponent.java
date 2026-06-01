@@ -5,6 +5,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InvalidObjectException;
 import java.net.ProxySelector;
@@ -17,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.cas.CASException;
@@ -52,6 +54,30 @@ public interface IDUUIInstantiatedPipelineComponent {
             .followRedirects(HttpClient.Redirect.ALWAYS)
             .proxy(ProxySelector.getDefault())
             .connectTimeout(Duration.ofSeconds(1000)).build();
+
+    final class CountingOutputStream extends FilterOutputStream {
+        private long bytesWritten;
+
+        CountingOutputStream(java.io.OutputStream output) {
+            super(output);
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            out.write(b);
+            bytesWritten++;
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            out.write(b, off, len);
+            bytesWritten += len;
+        }
+
+        long bytesWritten() {
+            return bytesWritten;
+        }
+    }
 
     /**
      * @return the non-null {@link DUUIPipelineComponent} configuration backing this instantiated component.
@@ -256,6 +282,10 @@ public interface IDUUIInstantiatedPipelineComponent {
                 return;
             }
 
+            AtomicLong serializeNanos = new AtomicLong();
+            AtomicLong deserializeNanos = new AtomicLong();
+            AtomicLong requestBytes = new AtomicLong();
+
             // Build DUUIChannel for async V1 processing
             IDUUIEndpoint endpoint = new DUUIHttpEndpoint(
                     URI.create(queue.getValue0().generateURL()), _client);
@@ -263,9 +293,23 @@ public interface IDUUIInstantiatedPipelineComponent {
                     endpoint,
                     DUUIHttpMethod.POST,
                     DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
-                    (jcVal, out) -> layer.serializeStream(jcVal, out, comp.getParameters(), comp.getSourceView()),
+                    (jcVal, out) -> {
+                        long phaseStart = System.nanoTime();
+                        CountingOutputStream counting = new CountingOutputStream(out);
+                        try {
+                            layer.serializeStream(jcVal, counting, comp.getParameters(), comp.getSourceView());
+                        } finally {
+                            serializeNanos.addAndGet(System.nanoTime() - phaseStart);
+                            requestBytes.addAndGet(counting.bytesWritten());
+                        }
+                    },
                     (jcVal, in) -> {
-                        layer.deserializeStream(jcVal, in, comp.getTargetView());
+                        long phaseStart = System.nanoTime();
+                        try {
+                            layer.deserializeStream(jcVal, in, comp.getTargetView());
+                        } finally {
+                            deserializeNanos.addAndGet(System.nanoTime() - phaseStart);
+                        }
                         return jcVal;
                     },
                     new DUUIChannel.RequestCustomizer<>() {},
@@ -289,8 +333,9 @@ public interface IDUUIInstantiatedPipelineComponent {
                     tries++;
                     channel.request(viewJc);
                     annotatorEnd = System.nanoTime();
-                    deserializeStart = annotatorEnd;
-                    deserializeEnd = System.nanoTime();
+                    deserializeStart = annotatorEnd - deserializeNanos.get();
+                    deserializeEnd = annotatorEnd;
+                    sizeArray = requestBytes.get();
                     break;
                 } catch (Exception e) {
                     System.out.printf(
@@ -346,8 +391,11 @@ public interface IDUUIInstantiatedPipelineComponent {
                 ann.setTimestamp(System.nanoTime());
                 ann.setPipelineName(perf.getRunKey());
                 ann.addToIndexes();
-                perf.addData(serializeEnd - serializeStart, deserializeEnd - deserializeStart,
-                        annotatorEnd - annotatorStart, queue.getValue2() - queue.getValue1(),
+                long serializeDuration = serializeNanos.get() == 0 ? serializeEnd - serializeStart : serializeNanos.get();
+                long deserializeDuration = deserializeNanos.get();
+                long requestDuration = Math.max(0, annotatorEnd - annotatorStart - serializeDuration - deserializeDuration);
+                perf.addData(serializeDuration, deserializeDuration,
+                        requestDuration, queue.getValue2() - queue.getValue1(),
                         deserializeEnd - queue.getValue1(),
                         String.valueOf(comp.getPipelineComponent().getFinalizedRepresentationHash()),
                         sizeArray, jc, null);

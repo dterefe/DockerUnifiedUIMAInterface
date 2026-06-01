@@ -24,6 +24,7 @@ import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIRemoteEventStream;
 import org.texttechnologylab.duui.pipeline.component.DUUIAnnotator;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -76,7 +77,13 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         DUUIEventService.current().logger("duui.v1").debug("Loaded v1 communication layer id=" + id);
         this.eventStream = DUUIRemoteEventStream.connect(endpoint, config.telemetry(), id);
         this.processChannel = processChannel(endpoint, communicationLayer, config);
-        this.processor = cas -> processChannel.request(cas);
+        this.processor = communicationLayer.supportsProcess()
+                ? cas -> communicationLayer.process(
+                        cas.getView(config.sourceView()),
+                        new DUUIHttpRequestHandler(endpoint.client(), endpoint.uri().toString(), 60),
+                        config.parameters(),
+                        targetCas(cas, config.targetView()))
+                : cas -> processChannel.request(cas);
         long initDuration = System.currentTimeMillis() - initStart;
         DUUIEventService.current().metric("v1", "duui.v1.initialization_ms", initDuration, "milliseconds", initDuration,
                 Map.of("annotator", id, "endpoint", endpoint.uri().toString()));
@@ -314,6 +321,14 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
             communicationLayer.deserialize(cas, input, config.targetView());
             return cas;
         };
+    }
+
+    private static JCas targetCas(JCas cas, String targetView) throws CASException {
+        try {
+            return cas.getView(targetView);
+        } catch (CASException e) {
+            return cas.createView(targetView);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

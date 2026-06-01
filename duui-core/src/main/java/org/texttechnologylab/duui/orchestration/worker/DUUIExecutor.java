@@ -74,7 +74,9 @@ public final class DUUIExecutor implements AutoCloseable {
     }
 
     public <T> Future<?> submit(DUUITask<T> task, DUUIDispatchPolicy dispatchPolicy) {
-        ExecutorService executor = executorFor(dispatchPolicy);
+        DUUIDispatchPolicy policy = dispatchPolicy == null ? DUUIDispatchPolicy.mixed() : dispatchPolicy;
+        task.phaseDispatchOverride(policy.mode() == DUUIDispatchMode.CPU || policy.mode() == DUUIDispatchMode.IO ? policy.mode() : null);
+        ExecutorService executor = executorFor(policy);
         executor.execute(task);
         return task;
     }

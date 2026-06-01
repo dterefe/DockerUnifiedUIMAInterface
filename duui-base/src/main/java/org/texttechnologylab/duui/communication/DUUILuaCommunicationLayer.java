@@ -103,6 +103,28 @@ public final class DUUILuaCommunicationLayer implements DUUICommunicationLayer {
     }
 
     @Override
+    public boolean supportsProcess() {
+        LuaValue value = globals.get("SUPPORTS_PROCESS");
+        return value != LuaValue.NIL && value.toboolean();
+    }
+
+    @Override
+    public void process(JCas sourceCas, Object requestHandler, Map<String, String> parameters, JCas targetCas) throws Exception {
+        LuaTable params = new LuaTable();
+        if (parameters != null) {
+            for (Map.Entry<String, String> e : parameters.entrySet()) {
+                params.set(e.getKey(), e.getValue());
+            }
+        }
+        globals.get("process").invoke(new LuaValue[] {
+                CoerceJavaToLua.coerce(sourceCas),
+                CoerceJavaToLua.coerce(requestHandler),
+                params,
+                CoerceJavaToLua.coerce(targetCas)
+        });
+    }
+
+    @Override
     public DUUICommunicationLayer copy() throws Exception {
         return new DUUILuaCommunicationLayer(script);
     }

@@ -13,5 +13,13 @@ public interface DUUICommunicationLayer {
 
     void deserialize(JCas targetCas, InputStream input, String targetView) throws CASException;
 
+    default boolean supportsProcess() {
+        return false;
+    }
+
+    default void process(JCas sourceCas, Object requestHandler, Map<String, String> parameters, JCas targetCas) throws Exception {
+        throw new UnsupportedOperationException("Communication layer does not support process().");
+    }
+
     DUUICommunicationLayer copy() throws Exception;
 }

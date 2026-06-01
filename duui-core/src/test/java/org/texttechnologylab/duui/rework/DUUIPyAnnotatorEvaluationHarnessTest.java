@@ -22,6 +22,9 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIPodmanDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIV1Driver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.io.AsyncCollectionReader;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIMockStorageBackend;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelinePerformancePoint;
 import org.texttechnologylab.duui.event.DUUIEvent;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIInMemoryEventSink;
@@ -172,6 +175,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
     private List<ReportRow> runLegacyComposer(EvalConfig config, List<Path> documents, TypeSystemDescription typeSystem) throws Exception {
         List<ReportRow> rows = new ArrayList<>();
         DUUIComposer composer = null;
+        DUUIMockStorageBackend storage = new DUUIMockStorageBackend();
         long suiteStarted = System.nanoTime();
         try {
             DUUIV1Driver driver = (DUUIV1Driver) new DUUIPodmanDriver()
@@ -181,7 +185,8 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                     .withLuaContext(new DUUILuaContext().withJsonLibrary())
                     .withSkipVerification(false)
                     .withWorkers(config.concurrency())
-                    .withCasPoolsize(config.concurrency());
+                    .withCasPoolsize(config.concurrency())
+                    .withStorageBackend(storage);
             composer.addDriver(driver);
 
             DUUIPodmanDriver.Component component = new DUUIPodmanDriver.Component(config.image())
@@ -208,11 +213,11 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                 composer.run(reader, "duui-py-eval-legacy-" + config.annotator());
                 long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
                 rows.add(aggregateRow(config, "legacy", documents, true, null, durationMs,
-                        Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), typeSystem));
+                        Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), typeSystem, legacyMetrics(storage)));
             } catch (Exception e) {
                 long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
                 rows.add(aggregateRow(config, "legacy", documents, false, e.getMessage() + " cause=" + e,
-                        durationMs, Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), typeSystem));
+                        durationMs, Duration.ofNanos(System.nanoTime() - suiteStarted).toMillis(), typeSystem, legacyMetrics(storage)));
             }
         } finally {
             if (composer != null) {
@@ -230,7 +235,8 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
             String error,
             long durationMs,
             long wallMs,
-            TypeSystemDescription typeSystem
+            TypeSystemDescription typeSystem,
+            Map<String, Double> metrics
     ) throws Exception {
         int characters = 0;
         for (Path document : documents) {
@@ -252,8 +258,32 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                 success,
                 error == null ? "" : error,
                 Map.of("documents", documents.size()),
-                Map.of()
+                metrics
         );
+    }
+
+    private static Map<String, Double> legacyMetrics(DUUIMockStorageBackend storage) {
+        Map<String, Double> metrics = new LinkedHashMap<>();
+        for (var performances : storage.getPerformanceMonitoring().values()) {
+            for (DUUIPipelineDocumentPerformance performance : performances) {
+                for (DUUIPipelinePerformancePoint point : performance.getPerformancePoints()) {
+                    mergeNanosAsMillis(metrics, "legacy.serialize_ms", point.getDurationSerialize());
+                    mergeNanosAsMillis(metrics, "legacy.process_ms", point.getDurationAnnotator());
+                    mergeNanosAsMillis(metrics, "legacy.deserialize_ms", point.getDurationDeserialize());
+                    mergeNanosAsMillis(metrics, "legacy.component_total_ms", point.getDurationComponentTotal());
+                    if (point.getSerializedSize() != null) {
+                        metrics.merge("legacy.request_bytes", point.getSerializedSize().doubleValue(), Double::sum);
+                    }
+                }
+            }
+        }
+        return metrics;
+    }
+
+    private static void mergeNanosAsMillis(Map<String, Double> metrics, String key, Long nanos) {
+        if (nanos != null) {
+            metrics.merge(key, nanos / 1_000_000.0, Double::sum);
+        }
     }
 
     private Path materializeXmiDirectory(String id, List<Path> documents, TypeSystemDescription typeSystem) throws Exception {

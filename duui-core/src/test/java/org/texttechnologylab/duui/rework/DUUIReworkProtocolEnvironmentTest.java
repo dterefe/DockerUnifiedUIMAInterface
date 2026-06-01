@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -112,6 +113,36 @@ class DUUIReworkProtocolEnvironmentTest {
     }
 
     @Test
+    void v1AnnotatorUsesLuaProcessCapabilityWithoutProcessEndpoint() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicBoolean processEndpointCalled = new AtomicBoolean(false);
+        String typeSystem = typeSystemXml();
+        server.createContext("/v1/typesystem", exchange -> respond(exchange, 200, typeSystem));
+        server.createContext("/v1/communication_layer", exchange -> respond(exchange, 200, luaProcessCommunicationLayer()));
+        server.createContext("/v1/process", exchange -> {
+            processEndpointCalled.set(true);
+            respond(exchange, 500, "process endpoint should not be called");
+        });
+        server.start();
+        try {
+            DUUIRemoteEnvironment environment = new DUUIRemoteEnvironment();
+            DUUIRemoteEndpoint endpoint = environment.endpoint("http://127.0.0.1:" + server.getAddress().getPort());
+            DUUIV1Annotator annotator = new DUUIV1Annotator(
+                    "lua-process",
+                    endpoint,
+                    new DUUIV1Config(1, "_InitialView", "_InitialView", Map.of()));
+            JCas cas = JCasFactory.createJCas();
+
+            annotator.process(DUUIArtifact.of(cas));
+
+            assertEquals("lua-process-ok", cas.getDocumentText());
+            assertFalse(processEndpointCalled.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void v1DriverUsesConfiguredTransportAndTelemetryForV2Config() {
         TestV1Driver driver = new TestV1Driver();
         driver.withV1Transport(false, "application/x-duui-test");
@@ -165,6 +196,24 @@ class DUUIReworkProtocolEnvironmentTest {
                   local bytes = input:readAllBytes()
                   local text = luajava.newInstance("java.lang.String", bytes, "UTF-8")
                   view:setDocumentText(text)
+                end
+                """;
+    }
+
+    private static String luaProcessCommunicationLayer() {
+        return """
+                SUPPORTS_PROCESS = true
+
+                function serialize(view, output, parameters, sourceView)
+                  error("serialize should not be called")
+                end
+
+                function deserialize(view, input)
+                  error("deserialize should not be called")
+                end
+
+                function process(source, handler, parameters, target)
+                  target:setDocumentText("lua-process-ok")
                 end
                 """;
     }

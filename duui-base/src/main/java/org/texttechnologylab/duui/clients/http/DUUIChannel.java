@@ -2,12 +2,10 @@ package org.texttechnologylab.duui.clients.http;
 
 import org.texttechnologylab.duui.event.DUUIEventService;
 
-import java.io.FilterOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -136,15 +134,15 @@ public final class DUUIChannel<T> {
     public T post(T value) throws Exception {
         DUUIEventService eventService = DUUIEventService.current();
         eventService.logger("duui.http").debug("HTTP channel POST scheduled route=" + route + " endpoint=" + endpoint.uri());
-        StreamingRequestBody body = requestBody(value);
         reset();
+        ByteArrayOutputStream body = requestBody(value);
         DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(deserialize(value, input)), eventService);
         URI requestUri = customizer.uri(endpoint.uri().resolve(route), value);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(requestUri)
                 .version(HttpClient.Version.HTTP_1_1)
                 .header("Content-Type", contentType)
-                .POST(HttpRequest.BodyPublishers.ofInputStream(() -> body.input));
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()));
         customizer.customize(builder, value);
         try {
             eventService.logger("duui.http").info("HTTP channel POST route=" + route + " uri=" + requestUri);
@@ -154,7 +152,6 @@ public final class DUUIChannel<T> {
                     responseRelay.cancel(error);
                 }
             });
-            body.serializerFuture.join();
             T response = responseRelay.future().join();
             responseFuture.join();
             return response;
@@ -177,19 +174,10 @@ public final class DUUIChannel<T> {
         return deserializer.apply(cast(value), input);
     }
 
-    private StreamingRequestBody requestBody(T value) throws IOException {
-        PipedInputStream input = new PipedInputStream(1024 * 1024);
-        PipedOutputStream pipeOutput = new PipedOutputStream(input);
-        CountingOutputStream countingOutput = new CountingOutputStream(pipeOutput);
-        CompletableFuture<Void> serializerFuture = CompletableFuture.runAsync(() -> {
-                    try {
-                        serialize(value, countingOutput);
-                    } catch (Exception error) {
-                        throw new RuntimeException(error);
-                    }
-                })
-                .whenComplete((ignored, error) -> closeQuietly(error == null ? countingOutput : pipeOutput));
-        return new StreamingRequestBody(input, serializerFuture);
+    private ByteArrayOutputStream requestBody(T value) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        serialize(value, output);
+        return output;
     }
 
     @SuppressWarnings("unchecked")
@@ -197,37 +185,4 @@ public final class DUUIChannel<T> {
         return (V) value;
     }
 
-    private static void closeQuietly(AutoCloseable closeable) {
-        if (closeable == null) return;
-        try {
-            closeable.close();
-        } catch (Exception ignored) {
-        }
-    }
-
-    private record StreamingRequestBody(PipedInputStream input, CompletableFuture<Void> serializerFuture) {}
-
-    private static final class CountingOutputStream extends FilterOutputStream {
-        private long bytesWritten;
-
-        private CountingOutputStream(OutputStream output) {
-            super(output);
-        }
-
-        @Override
-        public void write(int b) throws IOException {
-            out.write(b);
-            bytesWritten++;
-        }
-
-        @Override
-        public void write(byte[] b, int off, int len) throws IOException {
-            out.write(b, off, len);
-            bytesWritten += len;
-        }
-
-        long bytesWritten() {
-            return bytesWritten;
-        }
-    }
 }

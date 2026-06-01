@@ -96,7 +96,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         TypeSystemDescription typesystem,
         DUUICommunicationLayer communicationLayer,
         Processor processor
-    ) {
+    ) throws Exception {
         this.gid = GID.create();
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
@@ -241,10 +241,10 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         IDUUIEndpoint endpoint,
         DUUICommunicationLayer communicationLayer,
         DUUIV1Config config
-    ) {
+    ) throws Exception {
         BlockingQueue<DUUIChannel<JCas>> channels = new LinkedBlockingQueue<>();
         for (int index = 0; index < config.concurrency(); index++) {
-            channels.offer(processChannel(endpoint, communicationLayer, config));
+            channels.offer(processChannel(endpoint, communicationLayer.copy(), config));
         }
         return channels;
     }
@@ -347,12 +347,12 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     }
 
     private DUUISerializer<JCas> processSerializer(DUUICommunicationLayer communicationLayer, DUUIV1Config config) {
-        return (cas, output) -> serialize(cas, output, config.parameters(), config.sourceView());
+        return (cas, output) -> communicationLayer.serialize(cas, output, config.parameters(), config.sourceView());
     }
 
     private DUUIChannel.ResponseApplier<JCas> processDeserializer(DUUICommunicationLayer communicationLayer, DUUIV1Config config) {
         return (cas, input) -> {
-            deserialize(cas, input, config.targetView());
+            communicationLayer.deserialize(cas, input, config.targetView());
             return cas;
         };
     }

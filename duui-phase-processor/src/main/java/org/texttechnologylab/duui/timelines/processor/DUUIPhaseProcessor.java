@@ -16,6 +16,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.TypeParameterElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
@@ -132,7 +133,7 @@ public final class DUUIPhaseProcessor extends AbstractProcessor {
 
         TypeMirror returnType = method.getReturnType();
         boolean returnsVoid = returnType.getKind() == TypeKind.VOID;
-        out.write("    static " + returnType + " " + methodName + "(" + owner.getQualifiedName() + " owner");
+        out.write("    static " + typeParameters(owner) + returnType + " " + methodName + "(" + ownerType(owner) + " owner");
         for (VariableElement parameter : parameters) {
             out.write(", " + parameter.asType() + " " + parameter.getSimpleName());
         }
@@ -172,7 +173,7 @@ public final class DUUIPhaseProcessor extends AbstractProcessor {
         String asyncReturn = returnsVoid ? "java.util.concurrent.CompletableFuture<Void>"
                 : returnsCompletion ? returnType.toString()
                 : "java.util.concurrent.CompletableFuture<" + boxed(returnType) + ">";
-        out.write("    static " + asyncReturn + " " + methodName + "Async(" + owner.getQualifiedName() + " owner");
+        out.write("    static " + typeParameters(owner) + asyncReturn + " " + methodName + "Async(" + ownerType(owner) + " owner");
         for (VariableElement parameter : parameters) {
             out.write(", " + parameter.asType() + " " + parameter.getSimpleName());
         }
@@ -224,6 +225,27 @@ public final class DUUIPhaseProcessor extends AbstractProcessor {
             case DOUBLE -> "Double";
             default -> type.toString();
         };
+    }
+
+    private String typeParameters(TypeElement owner) {
+        List<? extends TypeParameterElement> parameters = owner.getTypeParameters();
+        if (parameters.isEmpty()) {
+            return "";
+        }
+        return parameters.stream()
+                .map(TypeParameterElement::toString)
+                .collect(Collectors.joining(", ", "<", "> "));
+    }
+
+    private String ownerType(TypeElement owner) {
+        List<? extends TypeParameterElement> parameters = owner.getTypeParameters();
+        if (parameters.isEmpty()) {
+            return owner.getQualifiedName().toString();
+        }
+        String arguments = parameters.stream()
+                .map(parameter -> parameter.getSimpleName().toString())
+                .collect(Collectors.joining(", ", "<", ">"));
+        return owner.getQualifiedName() + arguments;
     }
 
     private void writeActorResolver(Writer out) throws IOException {

@@ -114,7 +114,7 @@ public final class DUUIChannel<T> {
         DUUIEventService eventService = DUUIEventService.current();
         reset();
         URI requestUri = customizer.uri(endpoint.uri().resolve(route), value);
-        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(DUUIChannelPhaseDispatch.deserialize(this, value, input)), eventService);
+        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> DUUIChannelPhaseDispatch.deserialize(this, value, input), eventService);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(requestUri)
             .version(HttpClient.Version.HTTP_1_1)
@@ -144,7 +144,7 @@ public final class DUUIChannel<T> {
         eventService.logger("duui.http").debug("HTTP channel POST scheduled route=" + route + " endpoint=" + endpoint.uri());
         StreamingRequestBody body = requestBody(value);
         reset();
-        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> cast(DUUIChannelPhaseDispatch.deserialize(this, value, input)), eventService);
+        DUUIBodyHandler<T> handler = new DUUIBodyHandler<>(responseRelay, input -> DUUIChannelPhaseDispatch.deserialize(this, value, input), eventService);
         URI requestUri = customizer.uri(endpoint.uri().resolve(route), value);
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(requestUri)
@@ -171,8 +171,8 @@ public final class DUUIChannel<T> {
     }
 
     @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
-    public void serialize(Object value, OutputStream output) throws Exception {
-        serializer.serialize(cast(value), output);
+    public void serialize(T value, OutputStream output) throws Exception {
+        serializer.serialize(value, output);
     }
 
     @Phase(value = DUUIStatus.ANALYSE, dispatch = DUUIDispatchMode.IO)
@@ -182,8 +182,8 @@ public final class DUUIChannel<T> {
     }
 
     @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.CPU)
-    public Object deserialize(Object value, InputStream input) throws Exception {
-        return deserializer.apply(cast(value), input);
+    public T deserialize(T value, InputStream input) throws Exception {
+        return deserializer.apply(value, input);
     }
 
     private DUUIDispatcher dispatcher() {

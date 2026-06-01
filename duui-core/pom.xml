@@ -18,6 +18,7 @@
     <dependencies>
         <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-base</artifactId></dependency>
         <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-storage</artifactId></dependency>
+        <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-phase-processor</artifactId><scope>provided</scope></dependency>
         <dependency><groupId>org.apache.uima</groupId><artifactId>uimaj-core</artifactId></dependency>
         <dependency><groupId>org.apache.uima</groupId><artifactId>uimafit-core</artifactId></dependency>
         <dependency><groupId>org.dkpro.core</groupId><artifactId>dkpro-core-api-segmentation-asl</artifactId></dependency>

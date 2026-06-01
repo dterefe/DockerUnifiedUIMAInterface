@@ -23,10 +23,10 @@ import org.texttechnologylab.duui.pipeline.DUUIPipeline;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.DUUIStageType;
 import org.texttechnologylab.duui.pipeline.DUUIJoin;
+import org.texttechnologylab.duui.timelines.DUUIDispatcher;
 import org.texttechnologylab.duui.timelines.DUUIStatus;
 import org.texttechnologylab.duui.timelines.Phase;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.IdentityHashMap;
@@ -137,21 +137,7 @@ public final class DUUIOrchestrator {
             DUUIExecutionContext rootContext
     ) {
         try {
-            executor.dispatcher().dispatch(new org.texttechnologylab.duui.timelines.DUUIDispatcher.Invocation<>(
-                    SOURCE_PHASE,
-                    SOURCE_METHOD,
-                    this,
-                    List.of(),
-                    () -> {
-                        binding.source().generate(artifact -> {
-                            DUUIEventService.current().logger("duui.orchestrator").debug("Source emitted artifact artifact=" + artifact.id() + " checkpoint=" + binding.output().id());
-                            queues.computeIfAbsent(binding.output(), ignored -> binding.output().queue()).add(artifact);
-                            contexts.put(artifact.id(), rootContext.copyValues());
-                            governor.onArtifactQueued(orchestratorId(), pipeline, artifact, binding.output(), Map.of("source", "pipeline-source"));
-                        });
-                        return null;
-                    }
-            ));
+            DUUIOrchestratorPhaseDispatch.source(this, binding, queues, contexts, rootContext);
         } catch (Exception e) {
             throw new DUUIFrameworkStateException("DUUI source failed before task scheduling.", e);
         }
@@ -462,21 +448,20 @@ public final class DUUIOrchestrator {
     public DUUIScheduler scheduler() { return scheduler; }
     public DUUIDirector director() { return director; }
     public DUUIExecutor executor() { return executor; }
+    public DUUIDispatcher dispatcher() { return executor.dispatcher(); }
 
     @Phase(DUUIStatus.SOURCE)
-    private void sourcePhase() {
-    }
-
-    private static final Method SOURCE_METHOD = sourceMethod();
-    private static final Phase SOURCE_PHASE = SOURCE_METHOD.getAnnotation(Phase.class);
-
-    private static Method sourceMethod() {
-        try {
-            Method method = DUUIOrchestrator.class.getDeclaredMethod("sourcePhase");
-            method.setAccessible(true);
-            return method;
-        } catch (NoSuchMethodException e) {
-            throw new ExceptionInInitializerError(e);
-        }
+    public void source(
+            DUUIPipeline.SourceBinding binding,
+            Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues,
+            Map<String, DUUIExecutionContext> contexts,
+            DUUIExecutionContext rootContext
+    ) throws Exception {
+        binding.source().generate(artifact -> {
+            DUUIEventService.current().logger("duui.orchestrator").debug("Source emitted artifact artifact=" + artifact.id() + " checkpoint=" + binding.output().id());
+            queues.computeIfAbsent(binding.output(), ignored -> binding.output().queue()).add(artifact);
+            contexts.put(artifact.id(), rootContext.copyValues());
+            governor.onArtifactQueued(orchestratorId(), pipeline, artifact, binding.output(), Map.of("source", "pipeline-source"));
+        });
     }
 }

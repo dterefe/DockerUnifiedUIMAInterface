@@ -92,11 +92,11 @@ class DUUIReworkRuntimeTest {
     }
 
     @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
-    private void ioPhase() {
+    public void ioPhase() {
     }
 
     @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.CPU)
-    private void cpuPhase() {
+    public void cpuPhase() {
     }
 
     private static Method annotatedIoPhase() throws NoSuchMethodException {

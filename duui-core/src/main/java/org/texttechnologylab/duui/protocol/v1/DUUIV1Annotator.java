@@ -23,21 +23,14 @@ import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIRemoteEventStream;
-import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 import org.texttechnologylab.duui.pipeline.component.DUUIAnnotator;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
-import org.texttechnologylab.duui.timelines.DUUIPhaseAspect;
-import org.texttechnologylab.duui.timelines.DUUIDispatcher;
-import org.texttechnologylab.duui.timelines.DUUIStatus;
-import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -66,7 +59,6 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     private final DUUISignal<DUUICommunicationLayer> communicationLayerSignal;
     private final BlockingQueue<DUUIChannel<JCas>> processChannels;
     private final DUUIRemoteEventStream eventStream;
-    private final DUUIPhaseAspect phaseAspect = new DUUIPhaseAspect(new DUUIDispatcher());
 
     public DUUIV1Annotator(String id, IDUUIEndpoint endpoint, DUUIV1Config config) throws Exception {
         long initStart = System.currentTimeMillis();
@@ -89,7 +81,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         this.processChannels = communicationLayer.supportsProcess()
                 ? new LinkedBlockingQueue<>()
                 : processChannels(endpoint, communicationLayer, config);
-        this.processor = this::analyse;
+        this.processor = this::processRequest;
         long initDuration = System.currentTimeMillis() - initStart;
         DUUIEventService.current().metric("v1", "duui.v1.initialization_ms", initDuration, "milliseconds", initDuration,
                 Map.of("annotator", id, "endpoint", endpoint.uri().toString()));
@@ -158,18 +150,19 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         return communicationLayer;
     }
 
-    @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
     public void serialize(JCas cas, OutputStream stream, Map<String, String> parameters, String sourceView) throws CASException {
         communicationLayer.serialize(cas, stream, parameters, sourceView);
     }
 
-    @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.CPU)
     public void deserialize(JCas cas, InputStream stream, String targetView) throws CASException {
         communicationLayer.deserialize(cas, stream, targetView);
     }
 
-    @Phase(value = DUUIStatus.ANALYSE, dispatch = DUUIDispatchMode.IO)
     public void analyse(JCas cas) throws Exception {
+        processor.process(cas);
+    }
+
+    private void processRequest(JCas cas) throws Exception {
         if (communicationLayer.supportsProcess()) {
             communicationLayer.process(
                     cas.getView(config.sourceView()),
@@ -196,10 +189,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         service.logger("duui.v1").debug("V1 annotator parameters annotator=" + id() + " params=" + config.parameters());
         DUUIEventScope scope = service.scope("v1.process");
         try {
-            phaseAspect.around(this, ANALYSE_METHOD, List.of(), () -> {
-                processor.process(artifact.payload());
-                return null;
-            });
+            analyse(artifact.payload());
             long durationMs = System.currentTimeMillis() - started;
             service.metric("v1", "duui.v1.process_ms", durationMs, "milliseconds", durationMs,
                     Map.of("annotator", id(), "endpoint", endpointHandle.uri().toString()));
@@ -357,17 +347,14 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
     }
 
     private DUUISerializer<JCas> processSerializer(DUUICommunicationLayer communicationLayer, DUUIV1Config config) {
-        return (cas, output) -> phaseAspect.around(this, SERIALIZE_METHOD, List.of(), () -> {
-            serialize(cas, output, config.parameters(), config.sourceView());
-            return null;
-        });
+        return (cas, output) -> serialize(cas, output, config.parameters(), config.sourceView());
     }
 
     private DUUIChannel.ResponseApplier<JCas> processDeserializer(DUUICommunicationLayer communicationLayer, DUUIV1Config config) {
-        return (cas, input) -> phaseAspect.around(this, DESERIALIZE_METHOD, List.of(), () -> {
+        return (cas, input) -> {
             deserialize(cas, input, config.targetView());
             return cas;
-        });
+        };
     }
 
     private static JCas targetCas(JCas cas, String targetView) throws CASException {
@@ -375,20 +362,6 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
             return cas.getView(targetView);
         } catch (CASException e) {
             return cas.createView(targetView);
-        }
-    }
-
-    private static final Method SERIALIZE_METHOD = phaseMethod("serialize", JCas.class, OutputStream.class, Map.class, String.class);
-    private static final Method ANALYSE_METHOD = phaseMethod("analyse", JCas.class);
-    private static final Method DESERIALIZE_METHOD = phaseMethod("deserialize", JCas.class, InputStream.class, String.class);
-
-    private static Method phaseMethod(String name, Class<?>... parameterTypes) {
-        try {
-            Method method = DUUIV1Annotator.class.getDeclaredMethod(Objects.requireNonNull(name, "name"), parameterTypes);
-            method.setAccessible(true);
-            return method;
-        } catch (NoSuchMethodException e) {
-            throw new ExceptionInInitializerError(e);
         }
     }
 

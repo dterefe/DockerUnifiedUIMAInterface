@@ -30,6 +30,8 @@
     </developers>
 
     <modules>
+        <module>duui-phase-api</module>
+        <module>duui-phase-processor</module>
         <module>duui-base</module>
         <module>duui-storage</module>
         <module>duui-core</module>
@@ -72,12 +74,22 @@
         <dependencies>
             <dependency>
                 <groupId>org.texttechnologylab</groupId>
+                <artifactId>duui-phase-api</artifactId>
+                <version>${duui.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.texttechnologylab</groupId>
                 <artifactId>duui-base</artifactId>
                 <version>${duui.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.texttechnologylab</groupId>
                 <artifactId>duui-storage</artifactId>
+                <version>${duui.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.texttechnologylab</groupId>
+                <artifactId>duui-phase-processor</artifactId>
                 <version>${duui.version}</version>
             </dependency>
             <dependency>

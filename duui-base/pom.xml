@@ -16,6 +16,8 @@
     <description>Foundation primitives: DUUIClient, EMS, telemetry/event/logging/metrics, HTTP channel/relay, client/proxy separation, exception hierarchy, framework utilities.</description>
 
     <dependencies>
+        <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-phase-api</artifactId></dependency>
+        <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-phase-processor</artifactId><scope>provided</scope></dependency>
         <dependency><groupId>org.apache.uima</groupId><artifactId>uimaj-core</artifactId></dependency>
         <dependency><groupId>org.apache.uima</groupId><artifactId>uimafit-core</artifactId></dependency>
         <dependency><groupId>org.luaj</groupId><artifactId>luaj-jse</artifactId><version>${luaj.version}</version></dependency>

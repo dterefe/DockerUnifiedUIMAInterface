@@ -25,7 +25,6 @@ import org.texttechnologylab.duui.timelines.DUUIDispatcher;
 import org.texttechnologylab.duui.timelines.DUUIStatus;
 import org.texttechnologylab.duui.timelines.Phase;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -173,38 +172,13 @@ public final class DUUIExecutor implements AutoCloseable {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private <T> DUUIArtifact<T> processStage(DUUIStage<T> stage, DUUIArtifact<T> artifact) throws Exception {
         return switch (stage.type()) {
-            case PROCESSOR -> dispatchPhase(PROCESSOR_PHASE, stage, artifact, () -> stage.executionMode() == DUUIExecutionMode.PARALLEL
-                    ? processParallel(stage, artifact)
-                    : processLinear(stage, artifact));
-            case ADAPTER -> dispatchPhase(ADAPTER_PHASE, stage, artifact, () -> {
-                DUUIArtifact<?> emitted = ((DUUIAdapter) stage.operation()).adapt(artifact);
-                DUUIWorker.current().requireCurrentTask().context().emit(emitted);
-                return artifact;
-            });
-            case FORK -> dispatchPhase(FORK_PHASE, stage, artifact, () -> {
-                ((DUUIFork) stage.operation()).fork(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
-                return artifact;
-            });
-            case SPLIT -> dispatchPhase(SPLIT_PHASE, stage, artifact, () -> {
-                ((DUUISplit) stage.operation()).split(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
-                return artifact;
-            });
-            case TARGET -> dispatchPhase(TARGET_PHASE, stage, artifact, () -> {
-                ((DUUITarget) stage.operation()).accept(artifact);
-                return artifact;
-            });
-            case JOIN -> dispatchPhase(JOIN_PHASE, stage, artifact, () -> artifact);
+            case PROCESSOR -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.processor(this, stage, artifact);
+            case ADAPTER -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.adapter(this, stage, artifact);
+            case FORK -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.fork(this, stage, artifact);
+            case SPLIT -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.split(this, stage, artifact);
+            case TARGET -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.target(this, stage, artifact);
+            case JOIN -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.join(this, stage, artifact);
         };
-    }
-
-    private <T> DUUIArtifact<T> dispatchPhase(Method method, DUUIStage<T> stage, DUUIArtifact<T> artifact, java.util.concurrent.Callable<DUUIArtifact<T>> callable) throws Exception {
-        return dispatcher.dispatch(new DUUIDispatcher.Invocation<>(
-                method.getAnnotation(Phase.class),
-                method,
-                this,
-                actorList(stage, artifact),
-                callable
-        ));
     }
 
     private static <T> List<org.texttechnologylab.duui.ems.DUUIActor> actorList(DUUIStage<T> stage, DUUIArtifact<T> artifact) {
@@ -335,43 +309,56 @@ public final class DUUIExecutor implements AutoCloseable {
     }
 
     @Phase(DUUIStatus.PROCESSOR)
-    private void processorPhase() {
+    public Object processor(Object stageValue, Object artifactValue) throws Exception {
+        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+        return stage.executionMode() == DUUIExecutionMode.PARALLEL
+                ? processParallel((DUUIStage) stage, (DUUIArtifact) artifact)
+                : processLinear((DUUIStage) stage, (DUUIArtifact) artifact);
     }
 
     @Phase(DUUIStatus.ADAPTER)
-    private void adapterPhase() {
+    public Object adapter(Object stageValue, Object artifactValue) throws Exception {
+        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+        DUUIArtifact<?> emitted = ((DUUIAdapter) stage.operation()).adapt(artifact);
+        DUUIWorker.current().requireCurrentTask().context().emit(emitted);
+        return artifact;
     }
 
     @Phase(DUUIStatus.FORK)
-    private void forkPhase() {
+    public Object fork(Object stageValue, Object artifactValue) throws Exception {
+        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+        ((DUUIFork) stage.operation()).fork(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
+        return artifact;
     }
 
     @Phase(DUUIStatus.SPLIT)
-    private void splitPhase() {
+    public Object split(Object stageValue, Object artifactValue) throws Exception {
+        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+        ((DUUISplit) stage.operation()).split(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
+        return artifact;
     }
 
     @Phase(DUUIStatus.JOIN)
-    private void joinPhase() {
+    public Object join(Object stageValue, Object artifactValue) {
+        return artifactValue;
     }
 
     @Phase(DUUIStatus.TARGET)
-    private void targetPhase() {
+    public Object target(Object stageValue, Object artifactValue) throws Exception {
+        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+        ((DUUITarget) stage.operation()).accept(artifact);
+        return artifact;
     }
 
-    private static final Method PROCESSOR_PHASE = phaseMethod("processorPhase");
-    private static final Method ADAPTER_PHASE = phaseMethod("adapterPhase");
-    private static final Method FORK_PHASE = phaseMethod("forkPhase");
-    private static final Method SPLIT_PHASE = phaseMethod("splitPhase");
-    private static final Method JOIN_PHASE = phaseMethod("joinPhase");
-    private static final Method TARGET_PHASE = phaseMethod("targetPhase");
-
-    private static Method phaseMethod(String name) {
-        try {
-            Method method = DUUIExecutor.class.getDeclaredMethod(Objects.requireNonNull(name, "name"));
-            method.setAccessible(true);
-            return method;
-        } catch (NoSuchMethodException e) {
-            throw new ExceptionInInitializerError(e);
+    private List<org.texttechnologylab.duui.ems.DUUIActor> phaseActors(String phaseMethod, Object[] args) {
+        if (args == null || args.length < 2 || !(args[0] instanceof DUUIStage<?> stage) || !(args[1] instanceof DUUIArtifact<?> artifact)) {
+            return List.of();
         }
+        return actorList((DUUIStage) stage, (DUUIArtifact) artifact);
     }
 }

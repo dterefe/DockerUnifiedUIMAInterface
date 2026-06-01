@@ -131,12 +131,20 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
         }
     }
 
-    private static JsonObject readOnlyBindMount(String path) {
+    private static JsonObject bindMount(String path, boolean readOnly) {
+        JsonArray options = new JsonArray();
+        if (readOnly) {
+            options.add("ro");
+        }
         return new JsonObject()
                 .put("type", "bind")
                 .put("source", path)
                 .put("destination", path)
-                .put("options", new JsonArray(List.of("ro")));
+                .put("options", options);
+    }
+
+    private static JsonObject readOnlyBindMount(String path) {
+        return bindMount(path, true);
     }
 
     private static JsonArray nvidiaDriverLibraryMounts() {
@@ -164,6 +172,31 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
                 }
             }
         }
+        return mounts;
+    }
+
+    private static JsonArray nvidiaDeviceMounts(DUUIPipelineComponent component) {
+        JsonArray mounts = new JsonArray();
+        Set<String> mountedPaths = new LinkedHashSet<>();
+        for (int gpuIndex : podmanGpuDevices(component)) {
+            addExistingBindMount(mounts, mountedPaths, "/dev/nvidia" + gpuIndex, false);
+        }
+        addExistingBindMount(mounts, mountedPaths, "/dev/nvidiactl", false);
+        addExistingBindMount(mounts, mountedPaths, "/dev/nvidia-modeset", false);
+        addExistingBindMount(mounts, mountedPaths, "/dev/nvidia-uvm", false);
+        addExistingBindMount(mounts, mountedPaths, "/dev/nvidia-uvm-tools", false);
+        return mounts;
+    }
+
+    private static void addExistingBindMount(JsonArray mounts, Set<String> mountedPaths, String path, boolean readOnly) {
+        if (new File(path).exists() && mountedPaths.add(path)) {
+            mounts.add(bindMount(path, readOnly));
+        }
+    }
+
+    private static JsonArray nvidiaMounts(DUUIPipelineComponent component) {
+        JsonArray mounts = nvidiaDriverLibraryMounts();
+        mounts.addAll(nvidiaDeviceMounts(component));
         return mounts;
     }
 
@@ -316,16 +349,7 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
                     ));
 
                     if (comp.usesGPU()) {
-                        List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
-                        for (int gpuIndex : podmanGpuDevices(comp.getPipelineComponent())) {
-                            linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, gpuIndex, "/dev/nvidia" + gpuIndex, "c", 0));
-                        }
-                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
-                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 254, "/dev/nvidia-modeset", "c", 0));
-                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 0, "/dev/nvidia-uvm", "c", 0));
-                        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 1, "/dev/nvidia-uvm-tools", "c", 0));
-                        pOptions.hostDeviceList(linuxDevices);
-                        pOptions.json().put("mounts", nvidiaDriverLibraryMounts());
+                        applyPodmanGpuDevices(pOptions, comp.getPipelineComponent());
                     }
 
 
@@ -604,20 +628,7 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
                     new ContainerCreateOptions.PortMapping(9714, "", 0, "tcp", 0)));
 
             if (component.getDockerGPU(false)) {
-                List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
-                for (int gpuIndex : podmanGpuDevices(component)) {
-                    linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, gpuIndex, "/dev/nvidia" + gpuIndex, "c", 0));
-                }
-                linuxDevices.add(
-                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
-                linuxDevices.add(
-                        new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 254, "/dev/nvidia-modeset", "c", 0));
-                linuxDevices.add(
-                        new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 0, "/dev/nvidia-uvm", "c", 0));
-                linuxDevices.add(
-                        new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 1, "/dev/nvidia-uvm-tools", "c", 0));
-                pOptions.hostDeviceList(linuxDevices);
-                pOptions.json().put("mounts", nvidiaDriverLibraryMounts());
+                applyPodmanGpuDevices(pOptions, component);
             }
 
             JsonObject pObject = null;
@@ -949,6 +960,25 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
             }
         }
         return devices.isEmpty() ? List.of(0) : devices;
+    }
+
+    private static void applyPodmanGpuDevices(ContainerCreateOptions options, DUUIPipelineComponent component) {
+        List<ContainerCreateOptions.LinuxDevice> linuxDevices = nvidiaDevices(component);
+        options.devices(linuxDevices);
+        options.hostDeviceList(linuxDevices);
+        options.json().put("mounts", nvidiaMounts(component));
+    }
+
+    private static List<ContainerCreateOptions.LinuxDevice> nvidiaDevices(DUUIPipelineComponent component) {
+        List<ContainerCreateOptions.LinuxDevice> linuxDevices = new ArrayList<>();
+        for (int gpuIndex : podmanGpuDevices(component)) {
+            linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, gpuIndex, "/dev/nvidia" + gpuIndex, "c", 0));
+        }
+        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 255, "/dev/nvidiactl", "c", 0));
+        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 195, 254, "/dev/nvidia-modeset", "c", 0));
+        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 0, "/dev/nvidia-uvm", "c", 0));
+        linuxDevices.add(new ContainerCreateOptions.LinuxDevice(0666, 0, 510, 1, "/dev/nvidia-uvm-tools", "c", 0));
+        return linuxDevices;
     }
 
     private static String podmanGpuDevicesSpec(Map<String, String> env) {

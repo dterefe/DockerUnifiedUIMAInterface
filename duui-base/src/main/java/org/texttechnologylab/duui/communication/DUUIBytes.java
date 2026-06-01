@@ -37,7 +37,7 @@ public final class DUUIBytes {
         output.write(bytes);
     }
 
-    public static void write(OutputStream output, String value) throws IOException {
+    public static void writeString(OutputStream output, String value) throws IOException {
         if (value != null) {
             output.write(value.getBytes(StandardCharsets.UTF_8));
         }

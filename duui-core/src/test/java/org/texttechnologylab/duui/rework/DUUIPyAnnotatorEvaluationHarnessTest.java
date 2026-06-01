@@ -29,6 +29,7 @@ import org.texttechnologylab.duui.event.DUUIEvent;
 import org.texttechnologylab.duui.event.DUUIEventService;
 import org.texttechnologylab.duui.event.DUUIInMemoryEventSink;
 import org.texttechnologylab.duui.exception.DUUIExecutionResult;
+import org.texttechnologylab.duui.exception.DUUIExecutionStatus;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
@@ -152,18 +153,18 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
         List<ReportRow> rows = new ArrayList<>();
         Map<String, Path> inputByText = inputTextKeys(documents, typeSystem);
         for (DUUIExecutionResult<?> execution : result.results()) {
+            if (execution.failure() != null || execution.status() != DUUIExecutionStatus.SUCCESS) {
+                rows.add(errorRow(config, "v2", Path.of("unknown"), execution.durationMs(), wallMs,
+                        execution.failure() == null ? execution.status().name() : execution.failure().message(),
+                        execution.failure() == null ? null : execution.failure().cause()));
+                continue;
+            }
             if (!(execution.artifact().payload() instanceof JCas cas)) {
                 continue;
             }
             String artifactId = execution.artifact().gid().toString();
             rows.add(row(config, "v2", inputByText.getOrDefault(textKey(cas), Path.of("unknown")),
                     true, null, execution.durationMs(), wallMs, cas, sink.events(), artifactId));
-        }
-        for (DUUIExecutionResult<?> execution : result.results()) {
-            if (execution.failure() != null) {
-                rows.add(errorRow(config, "v2", Path.of("unknown"), execution.durationMs(), wallMs,
-                        execution.failure().message(), execution.failure().cause()));
-            }
         }
         if (rows.isEmpty() && (result.hasFailures() || !result.unroutableArtifacts().isEmpty())) {
             rows.add(errorRow(config, "v2", Path.of("unknown"), 0L, wallMs,
@@ -690,8 +691,8 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                     "model", System.getProperty("duui.py.taxonerd.model", "en_ner_eco_md"),
                     "linking", System.getProperty("duui.py.taxonerd.linking", "gbif_backbone"),
                     "threshold", System.getProperty("duui.py.taxonerd.threshold", "0.7"),
-                    "input_strategy", System.getProperty("duui.py.taxonerd.input_strategy", "legacy-procedure"),
-                    "linker_strategy", System.getProperty("duui.py.taxonerd.linker_strategy", "ann-original"),
+                    "input_strategy", System.getProperty("duui.py.taxonerd.input_strategy", "whole-document"),
+                    "linker_strategy", System.getProperty("duui.py.taxonerd.linker_strategy", "exact-first-batched"),
                     "allow_unlinked", System.getProperty("duui.py.taxonerd.allow_unlinked", "false"),
                     "prefer_gpu", System.getProperty("duui.py.taxonerd.prefer_gpu", "true"),
                     "timeout", System.getProperty("duui.py.taxonerd.timeout", "600"));

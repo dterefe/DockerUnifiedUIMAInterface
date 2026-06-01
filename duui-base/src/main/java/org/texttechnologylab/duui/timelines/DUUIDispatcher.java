@@ -26,13 +26,19 @@ public final class DUUIDispatcher {
     private static final Executor PLATFORM_EXECUTOR = ForkJoinPool.commonPool();
     private static final ThreadLocal<DUUIDispatchMode> DISPATCH_OVERRIDE = new ThreadLocal<>();
 
+    private final Executor virtualExecutor;
+    private final Executor platformExecutor;
     private final DUUITimeline runtimeTimeline;
     private final DUUIRegistry<String, DUUITimeline> timelines;
     private final DUUIRegistry<String, DUUITracker> trackers;
     private final DUUIIndex<DUUIStatus, String> trackerIndex;
 
     public DUUIDispatcher() {
-        this(new DUUITimeline(null), new DUUIInMemoryRegistry<>(), new DUUIInMemoryRegistry<>(), new DUUIInMemoryIndex<>());
+        this(VIRTUAL_EXECUTOR, PLATFORM_EXECUTOR);
+    }
+
+    public DUUIDispatcher(Executor virtualExecutor, Executor platformExecutor) {
+        this(virtualExecutor, platformExecutor, new DUUITimeline(null), new DUUIInMemoryRegistry<>(), new DUUIInMemoryRegistry<>(), new DUUIInMemoryIndex<>());
     }
 
     public DUUIDispatcher(
@@ -41,6 +47,19 @@ public final class DUUIDispatcher {
             DUUIRegistry<String, DUUITracker> trackers,
             DUUIIndex<DUUIStatus, String> trackerIndex
     ) {
+        this(VIRTUAL_EXECUTOR, PLATFORM_EXECUTOR, runtimeTimeline, timelines, trackers, trackerIndex);
+    }
+
+    public DUUIDispatcher(
+            Executor virtualExecutor,
+            Executor platformExecutor,
+            DUUITimeline runtimeTimeline,
+            DUUIRegistry<String, DUUITimeline> timelines,
+            DUUIRegistry<String, DUUITracker> trackers,
+            DUUIIndex<DUUIStatus, String> trackerIndex
+    ) {
+        this.virtualExecutor = virtualExecutor == null ? VIRTUAL_EXECUTOR : virtualExecutor;
+        this.platformExecutor = platformExecutor == null ? PLATFORM_EXECUTOR : platformExecutor;
         this.runtimeTimeline = Objects.requireNonNull(runtimeTimeline, "runtimeTimeline");
         this.timelines = Objects.requireNonNull(timelines, "timelines");
         this.trackers = Objects.requireNonNull(trackers, "trackers");
@@ -157,12 +176,12 @@ public final class DUUIDispatcher {
         return override == null ? phase.dispatch() : override;
     }
 
-    private static Executor executorFor(DUUIDispatchMode mode) {
+    private Executor executorFor(DUUIDispatchMode mode) {
         if (mode == DUUIDispatchMode.IO) {
-            return VIRTUAL_EXECUTOR;
+            return virtualExecutor;
         }
         if (mode == DUUIDispatchMode.CPU) {
-            return PLATFORM_EXECUTOR;
+            return platformExecutor;
         }
         return Runnable::run;
     }

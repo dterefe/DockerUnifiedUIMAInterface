@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,6 +41,7 @@ public final class DUUIExecutor implements AutoCloseable {
     private final DUUIDispatcher dispatcher;
     private final Map<Integer, DUUIPlatformExecutorService> platformExecutors = new ConcurrentHashMap<>();
     private final DUUIVirtualExecutorService virtualExecutor;
+    private final DUUIPlatformExecutorService phasePlatformExecutor;
 
     public DUUIExecutor() {
         this(UUID.randomUUID().toString(), new DUUIFailureClassifier());
@@ -54,14 +56,19 @@ public final class DUUIExecutor implements AutoCloseable {
     }
 
     public DUUIExecutor(String orchestratorId, DUUIFailureClassifier failureClassifier) {
-        this(orchestratorId, failureClassifier, new DUUIDispatcher());
+        this(orchestratorId, failureClassifier, null);
     }
 
     public DUUIExecutor(String orchestratorId, DUUIFailureClassifier failureClassifier, DUUIDispatcher dispatcher) {
         this.orchestratorId = orchestratorId == null ? UUID.randomUUID().toString() : orchestratorId;
         this.failureClassifier = failureClassifier == null ? new DUUIFailureClassifier() : failureClassifier;
-        this.dispatcher = dispatcher == null ? new DUUIDispatcher() : dispatcher;
         this.virtualExecutor = new DUUIVirtualExecutorService(this.orchestratorId);
+        this.phasePlatformExecutor = new DUUIPlatformExecutorService(
+                this.orchestratorId,
+                Math.max(1, Runtime.getRuntime().availableProcessors()));
+        this.dispatcher = dispatcher == null
+                ? new DUUIDispatcher(phaseExecutor(virtualExecutor), phaseExecutor(phasePlatformExecutor))
+                : dispatcher;
     }
 
     public <T> DUUITask<T> task(DUUIExecutionContext context, java.util.concurrent.Callable<T> work) {
@@ -302,10 +309,33 @@ public final class DUUIExecutor implements AutoCloseable {
     @Override
     public void close() {
         virtualExecutor.shutdown();
+        phasePlatformExecutor.shutdown();
         for (DUUIPlatformExecutorService executor : platformExecutors.values()) {
             executor.shutdown();
         }
         platformExecutors.clear();
+    }
+
+    private Executor phaseExecutor(ExecutorService executor) {
+        return command -> {
+            DUUITask<?> task = DUUIWorkerRegistry.currentWorker()
+                    .map(DUUIWorker::currentTask)
+                    .orElse(null);
+            executor.execute(() -> {
+                DUUIWorker worker = DUUIWorker.current();
+                boolean bound = task != null && worker.currentTask() != task;
+                if (bound) {
+                    worker.bind(task);
+                }
+                try {
+                    command.run();
+                } finally {
+                    if (bound) {
+                        worker.clear(task);
+                    }
+                }
+            });
+        };
     }
 
     @Phase(DUUIStatus.PROCESSOR)

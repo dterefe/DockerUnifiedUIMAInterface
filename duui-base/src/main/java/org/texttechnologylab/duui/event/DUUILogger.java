@@ -1,6 +1,11 @@
 package org.texttechnologylab.duui.event;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 public final class DUUILogger {
+    private static final String DEFAULT_NAME = "duui";
+
     private final String name;
     private final DUUIEventService service;
 
@@ -9,52 +14,61 @@ public final class DUUILogger {
         this.service = service;
     }
 
-    public void trace(String message) { log(DUUIEventLevel.TRACE, message); }
-    public void debug(String message) { log(DUUIEventLevel.DEBUG, message); }
-    public void info(String message) { log(DUUIEventLevel.INFO, message); }
-    public void warn(String message) { log(DUUIEventLevel.WARN, message); }
-    public void warning(String message) { log(DUUIEventLevel.WARNING, message); }
-    public void critical(String message) { log(DUUIEventLevel.CRITICAL, message); }
-
-    public void error(String message) {
-        service.emit(DUUIEvent.builder(DUUIEventType.ERROR)
-                .context(service.currentContext())
-                .name(name)
-                .level(DUUIEventLevel.ERROR)
-                .message(message)
-                .build());
+    public static DUUILogger get() {
+        return get(DEFAULT_NAME);
     }
+
+    public static DUUILogger get(String name) {
+        return DUUIEventService.current().logger(name == null || name.isBlank() ? DEFAULT_NAME : name);
+    }
+
+    public void trace(String message, String... args) { log(DUUIEventLevel.TRACE, message, args); }
+    public void debug(String message, String... args) { log(DUUIEventLevel.DEBUG, message, args); }
+    public void info(String message, String... args) { log(DUUIEventLevel.INFO, message, args); }
+    public void warn(String message, String... args) { log(DUUIEventLevel.WARN, message, args); }
+    public void warning(String message, String... args) { log(DUUIEventLevel.WARNING, message, args); }
+    public void error(String message, String... args) { log(DUUIEventLevel.ERROR, message, args); }
+    public void critical(String message, String... args) { log(DUUIEventLevel.CRITICAL, message, args); }
+    public void fatal(String message, String... args) { log(DUUIEventLevel.CRITICAL, message, args); }
+    public void severe(String message, String... args) { log(DUUIEventLevel.ERROR, message, args); }
 
     public void error(String message, Throwable error) {
-        service.error(name, message, error, service.currentContext());
-    }
-
-    private void log(DUUIEventLevel level, String message) {
-        service.emit(DUUIEvent.builder(DUUIEventType.LOG)
-                .context(service.currentContext())
-                .name(name)
-                .level(level)
-                .message(message)
+        service.emit(new DUUILog(DUUIEventLevel.ERROR, message, Map.of())
+                .event(name, service.currentContext())
+                .toBuilder()
+                .error(error == null ? null : error.getClass().getName(), DUUIEventService.stackTrace(error), null)
                 .build());
     }
 
-    public void count(String metric) {
-        count(metric, 1.0);
+    public void error(String message, Throwable error, String... args) {
+        service.emit(new DUUILog(DUUIEventLevel.ERROR, message, attributes(args))
+                .event(name, service.currentContext())
+                .toBuilder()
+                .error(error == null ? null : error.getClass().getName(), DUUIEventService.stackTrace(error), null)
+                .build());
     }
 
-    public void count(String metric, double value) {
-        service.metric("processing", metric, value, "count", 0L, java.util.Map.of());
+    private void log(DUUIEventLevel level, String message, String... args) {
+        service.emit(new DUUILog(level, message, attributes(args)).event(name, service.currentContext()));
     }
 
-    public void gauge(String metric, double value) {
-        gauge(metric, value, "value");
-    }
-
-    public void gauge(String metric, double value, String unit) {
-        service.metric("processing", metric, value, unit, 0L, java.util.Map.of());
-    }
-
-    public void timing(String metric, java.time.Duration elapsed) {
-        service.metric("processing", metric, elapsed.toMillis(), "milliseconds", elapsed.toMillis(), java.util.Map.of());
+    private static Map<String, Object> attributes(String... args) {
+        if (args == null || args.length == 0) {
+            return Map.of();
+        }
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
+            if (arg == null) {
+                continue;
+            }
+            int separator = arg.indexOf('=');
+            if (separator > 0) {
+                attributes.put(arg.substring(0, separator), arg.substring(separator + 1));
+            } else {
+                attributes.put("arg" + i, arg);
+            }
+        }
+        return attributes;
     }
 }

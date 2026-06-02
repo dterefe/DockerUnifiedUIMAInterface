@@ -2,34 +2,37 @@ package org.texttechnologylab.duui.protocol.v1;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.uima.UIMAFramework;
+import org.apache.uima.jcas.JCas;
+import org.apache.uima.resource.metadata.TypeSystemDescription;
+import org.apache.uima.util.XMLInputSource;
+import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.clients.http.DUUIChannel;
 import org.texttechnologylab.duui.clients.http.DUUIDeserializer;
+import org.texttechnologylab.duui.clients.http.DUUIHttpResponse;
 import org.texttechnologylab.duui.clients.http.DUUIHttpMethod;
+import org.texttechnologylab.duui.clients.http.DUUIRelay;
 import org.texttechnologylab.duui.clients.http.DUUISignal;
+import org.texttechnologylab.duui.clients.http.DUUIStreamBodyHandler;
 import org.texttechnologylab.duui.communication.DUUICommunicationLayer;
 import org.texttechnologylab.duui.communication.DUUILuaCommunicationLayer;
 import org.texttechnologylab.duui.ems.DUUITraits;
 import org.texttechnologylab.duui.ems.GID;
-import org.texttechnologylab.duui.artifact.DUUIArtifact;
-import org.apache.uima.UIMAFramework;
-import org.apache.uima.cas.CASException;
-import org.apache.uima.jcas.JCas;
-import org.apache.uima.resource.metadata.TypeSystemDescription;
-import org.apache.uima.util.XMLInputSource;
-
-import org.texttechnologylab.duui.clients.http.DUUISerializer;
-import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
+import org.texttechnologylab.duui.event.DUUIEvent;
 import org.texttechnologylab.duui.event.DUUIEventContext;
-import org.texttechnologylab.duui.event.DUUIEventScope;
 import org.texttechnologylab.duui.event.DUUIEventService;
-import org.texttechnologylab.duui.event.DUUIRemoteEventStream;
+import org.texttechnologylab.duui.filesystem.DUUIStream;
+import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 import org.texttechnologylab.duui.pipeline.component.DUUIAnnotator;
-import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
@@ -38,29 +41,38 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
 public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper JSON = new ObjectMapper();
 
-    @FunctionalInterface
-    public interface Processor {
-        void process(JCas cas) throws Exception;
+    public record DUUIPipe(
+            DUUIRelay<JCas> inputRelay,
+            DUUIRelay<DUUIHttpResponse> outputRelay
+    ) {
+        public DUUIPipe {
+            Objects.requireNonNull(inputRelay, "inputRelay");
+            Objects.requireNonNull(outputRelay, "outputRelay");
+        }
     }
 
     private final GID gid;
     private final DUUITraits traits;
     private final String id;
-    private final IDUUIEndpoint endpointHandle;
+    private final org.texttechnologylab.duui.clients.http.IDUUIEndpoint endpointHandle;
     private final DUUIV1Config config;
     private final Documentation documentation;
     private final TypeSystemDescription typesystem;
     private final DUUICommunicationLayer communicationLayer;
-    private final Processor processor;
     private final DUUISignal<Documentation> documentationSignal;
     private final DUUISignal<TypeSystemDescription> typesystemSignal;
     private final DUUISignal<DUUICommunicationLayer> communicationLayerSignal;
-    private final BlockingQueue<DUUIChannel<JCas>> processChannels;
-    private final DUUIRemoteEventStream eventStream;
+    private final DUUISignal<DUUIStream<DUUIEvent>> eventSignal;
+    private final DUUIChannel<JCas> processChannel;
+    private final BlockingQueue<DUUIPipe> processPipes;
 
-    public DUUIV1Annotator(String id, IDUUIEndpoint endpoint, DUUIV1Config config) throws Exception {
+    public DUUIV1Annotator(
+            String id,
+            org.texttechnologylab.duui.clients.http.IDUUIEndpoint endpoint,
+            DUUIV1Config config
+    ) throws Exception {
         long initStart = System.currentTimeMillis();
         this.gid = GID.create();
         this.traits = DUUITraits.empty();
@@ -68,51 +80,85 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         this.endpointHandle = Objects.requireNonNull(endpoint, "endpoint");
         this.config = Objects.requireNonNull(config, "config");
         DUUIEventService.current().logger("duui.v1").info("Initializing v1 annotator id=" + id + " endpoint=" + endpoint.uri());
-        this.documentationSignal = documentationSignal(endpoint);
-        this.typesystemSignal = typesystemSignal(endpoint);
-        this.communicationLayerSignal = communicationLayerSignal(endpoint);
+        this.documentationSignal = new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/documentation",
+                (DUUIDeserializer<Documentation>) input -> JSON.readValue(input, Documentation.class));
+        this.typesystemSignal = new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/typesystem",
+                (DUUIDeserializer<TypeSystemDescription>) input -> UIMAFramework.getXMLParser().parseTypeSystemDescription(new XMLInputSource(input, null)));
+        this.communicationLayerSignal = new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/communication_layer",
+                (DUUIDeserializer<DUUICommunicationLayer>) input -> new DUUILuaCommunicationLayer(new String(input.readAllBytes(), StandardCharsets.UTF_8)));
+        DUUIV1TelemetryConfig telemetry = config.telemetry() == null ? DUUIV1TelemetryConfig.disabled() : config.telemetry();
+        this.eventSignal = new DUUISignal<>(
+                endpoint,
+                DUUIHttpMethod.GET,
+                "/v2/events?ttl_minutes=" + URLEncoder.encode(String.valueOf(telemetry.ttlMinutes()), StandardCharsets.UTF_8)
+                        + "&annotator_id=" + URLEncoder.encode(id, StandardCharsets.UTF_8)
+                        + "&replica_id=" + URLEncoder.encode(id, StandardCharsets.UTF_8),
+                new DUUIStreamBodyHandler<>(DUUIEvent.remoteDeserializer()));
         this.documentation = requestDocumentationOptional(endpoint);
         DUUIEventService.current().logger("duui.v1").debug("Loaded v1 documentation id=" + id + " name=" + documentation.annotator_name() + " version=" + documentation.version());
         this.typesystem = typesystemSignal.request();
         DUUIEventService.current().logger("duui.v1").debug("Loaded v1 typesystem id=" + id);
         this.communicationLayer = communicationLayerSignal.request();
         DUUIEventService.current().logger("duui.v1").debug("Loaded v1 communication layer id=" + id);
-        this.eventStream = DUUIRemoteEventStream.connect(endpoint, config.telemetry(), id);
-        this.processChannels = communicationLayer.supportsProcess()
-                ? new LinkedBlockingQueue<>()
-                : processChannels(endpoint, communicationLayer, config);
-        this.processor = this::processRequest;
-        long initDuration = System.currentTimeMillis() - initStart;
-        DUUIEventService.current().metric("v1", "duui.v1.initialization_ms", initDuration, "milliseconds", initDuration,
-                Map.of("annotator", id, "endpoint", endpoint.uri().toString()));
-        DUUIEventService.current().logger("duui.v1").info("Initialized v1 annotator id=" + id + " duration_ms=" + initDuration);
-    }
+        this.processChannel = new DUUIChannel<>(
+                endpoint,
+                DUUIHttpMethod.POST,
+                "/v1/process",
+                new DUUIChannel.RequestCustomizer<>() {
+                    @Override
+                    public URI uri(URI baseUri, JCas value) {
+                        if (!config.telemetry().enabled()) {
+                            return baseUri;
+                        }
+                        try {
+                            DUUIEventContext context = DUUIEventService.current().currentContext();
+                            String encodedContextSource = context.toRemoteContextMap().entrySet().stream()
+                                    .map(entry -> entry.getKey() + "=" + entry.getValue())
+                                    .collect(java.util.stream.Collectors.joining(","));
+                            String encoded = URLEncoder.encode(encodedContextSource, StandardCharsets.UTF_8);
+                            String separator = baseUri.getQuery() == null ? "?" : "&";
+                            return URI.create(baseUri + separator + "event-context=" + encoded);
+                        } catch (Exception ignored) {
+                            return baseUri;
+                        }
+                    }
 
-    public DUUIV1Annotator(
-        String id,
-        IDUUIEndpoint endpoint,
-        DUUIV1Config config,
-        Documentation documentation,
-        TypeSystemDescription typesystem,
-        DUUICommunicationLayer communicationLayer,
-        Processor processor
-    ) throws Exception {
-        this.gid = GID.create();
-        this.traits = DUUITraits.empty();
-        this.id = Objects.requireNonNull(id, "id");
-        this.endpointHandle = Objects.requireNonNull(endpoint, "endpoint");
-        this.config = Objects.requireNonNull(config, "config");
-        this.documentation = Objects.requireNonNull(documentation, "documentation");
-        this.typesystem = Objects.requireNonNull(typesystem, "typesystem");
-        this.communicationLayer = Objects.requireNonNull(communicationLayer, "communicationLayer");
-        this.processor = Objects.requireNonNull(processor, "processor");
-        this.documentationSignal = documentationSignal(endpoint);
-        this.typesystemSignal = typesystemSignal(endpoint);
-        this.communicationLayerSignal = communicationLayerSignal(endpoint);
-        this.eventStream = DUUIRemoteEventStream.connect(endpoint, config.telemetry(), id);
-        this.processChannels = communicationLayer.supportsProcess()
-                ? new LinkedBlockingQueue<>()
-                : processChannels(endpoint, communicationLayer, config);
+                    @Override
+                    public void customize(HttpRequest.Builder builder, JCas value) {
+                        header(builder, "Content-Type", config.contentType());
+                        if (!config.telemetry().enabled()) {
+                            return;
+                        }
+                        DUUIEventContext context = DUUIEventService.current().currentContext();
+                        String requestId = UUID.randomUUID().toString();
+                        header(builder, "x-request-id", requestId);
+                        header(builder, "X-DUUI-Request-Id", requestId);
+                        header(builder, "X-DUUI-Orchestrator-Id", context.orchestratorId());
+                        header(builder, "X-DUUI-Artifact-Id", context.artifactId());
+                        header(builder, "X-DUUI-Component-Id", context.componentId());
+                        header(builder, "X-DUUI-Replica-Id", firstPresent(context.nodeId(), context.annotatorId(), id));
+                        header(builder, "X-DUUI-Annotator-Id", firstPresent(context.annotatorId(), id));
+                        header(builder, "X-DUUI-Machine-Id", context.workerId());
+                        header(builder, "X-DUUI-Pipeline-Run-Id", context.taskId());
+                        if (context.trace() != null) {
+                            header(builder, "traceparent", "00-" + context.trace().traceId() + "-" + context.trace().spanId() + "-01");
+                        }
+                        try {
+                            header(builder, "X-DUUI-Telemetry", JSON.writeValueAsString(Map.of(
+                                    "sample_interval_ms", config.telemetry().sampleIntervalMs()
+                            )));
+                        } catch (Exception ignored) {
+                        }
+                    }
+                },
+                config.contentType());
+        BlockingQueue<DUUIPipe> pipes = new LinkedBlockingQueue<>();
+        for (int index = 0; index < config.concurrency(); index++) {
+            pipes.offer(new DUUIPipe(new DUUIRelay<>(), new DUUIRelay<>()));
+        }
+        this.processPipes = pipes;
+        long initDuration = System.currentTimeMillis() - initStart;
+        DUUIEventService.current().logger("duui.v1").info("Initialized v1 annotator id=" + id + " duration_ms=" + initDuration);
     }
 
     @Override
@@ -130,7 +176,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         return id;
     }
 
-    public IDUUIEndpoint endpoint() {
+    public org.texttechnologylab.duui.clients.http.IDUUIEndpoint endpoint() {
         return endpointHandle;
     }
 
@@ -138,88 +184,86 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         return config;
     }
 
-    public Documentation documentation() {
-        return documentation;
+    @Phase(value = DUUIStatus.READ, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<Documentation> documentation() {
+        return DUUIFlow.dispatch(documentation);
     }
 
-    public TypeSystemDescription typesystem() {
-        return typesystem;
+    @Phase(value = DUUIStatus.READ, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<TypeSystemDescription> typesystemDescription() {
+        return DUUIFlow.dispatch(typesystem);
     }
 
-    public DUUICommunicationLayer communicationLayer() {
-        return communicationLayer;
+    @Phase(value = DUUIStatus.READ, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<DUUICommunicationLayer> communicationLayer() {
+        return DUUIFlow.dispatch(communicationLayer);
     }
 
-    public void serialize(JCas cas, OutputStream stream, Map<String, String> parameters, String sourceView) throws CASException {
-        communicationLayer.serialize(cas, stream, parameters, sourceView);
-    }
-
-    public void deserialize(JCas cas, InputStream stream, String targetView) throws CASException {
-        communicationLayer.deserialize(cas, stream, targetView);
-    }
-
-    public void analyse(JCas cas) throws Exception {
-        processor.process(cas);
-    }
-
-    private void processRequest(JCas cas) throws Exception {
-        if (communicationLayer.supportsProcess()) {
-            communicationLayer.process(
-                    cas.getView(config.sourceView()),
-                    new DUUIHttpRequestHandler(endpointHandle.client(), endpointHandle.uri().toString(), 60),
-                    config.parameters(),
-                    targetCas(cas, config.targetView()));
-            return;
-        }
-        DUUIChannel<JCas> channel = processChannels.take();
+    @Phase(value = DUUIStatus.READ, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<DUUIStream<DUUIEvent>> events() {
         try {
-            channel.post(cas);
-        } finally {
-            channel.reset();
-            processChannels.offer(channel);
-        }
-    }
-
-    @Override
-    public DUUIArtifact<JCas> process(DUUIArtifact<JCas> artifact) throws Exception {
-        DUUIEventService service = DUUIEventService.current();
-        int textLength = documentTextLength(artifact.payload());
-        long started = System.currentTimeMillis();
-        service.logger("duui.v1").info("V1 annotator request started annotator=" + id() + " endpoint=" + endpointHandle.uri() + " artifact=" + artifact.id() + " text_chars=" + textLength + " source_view=" + config.sourceView() + " target_view=" + config.targetView());
-        service.logger("duui.v1").debug("V1 annotator parameters annotator=" + id() + " params=" + config.parameters());
-        DUUIEventScope scope = service.scope("v1.process");
-        try {
-            analyse(artifact.payload());
-            long durationMs = System.currentTimeMillis() - started;
-            service.metric("v1", "duui.v1.process_ms", durationMs, "milliseconds", durationMs,
-                    Map.of("annotator", id(), "endpoint", endpointHandle.uri().toString()));
-            service.logger("duui.v1").info("V1 annotator request completed annotator=" + id() + " artifact=" + artifact.id() + " duration_ms=" + durationMs);
-            return artifact;
+            return DUUIFlow.dispatch(eventSignal.request());
         } catch (Exception error) {
-            long durationMs = System.currentTimeMillis() - started;
-            service.metric("v1", "duui.v1.failed_process_ms", durationMs, "milliseconds", durationMs,
-                    Map.of("annotator", id(), "endpoint", endpointHandle.uri().toString()));
-            service.logger("duui.v1").error("V1 annotator request failed annotator=" + id() + " artifact=" + artifact.id() + " duration_ms=" + durationMs, error);
-            scope.fail(error);
-            throw error;
-        } finally {
-            scope.close();
+            return DUUIFlow.fail(error);
         }
     }
 
-    private DUUISignal<Documentation> documentationSignal(IDUUIEndpoint endpoint) {
-        return new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/documentation", documentationDeserializer());
+    public DUUIPipe borrowPipe() throws InterruptedException {
+        return processPipes.take();
     }
 
-    private DUUISignal<TypeSystemDescription> typesystemSignal(IDUUIEndpoint endpoint) {
-        return new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/typesystem", typesystemDeserializer());
+    public void returnPipe(DUUIPipe pipe) throws Exception {
+        if (pipe != null) {
+            pipe.inputRelay().reset();
+            pipe.outputRelay().reset();
+            processPipes.offer(pipe);
+        }
     }
 
-    private DUUISignal<DUUICommunicationLayer> communicationLayerSignal(IDUUIEndpoint endpoint) {
-        return new DUUISignal<>(endpoint, DUUIHttpMethod.GET, "/v1/communication_layer", communicationLayerDeserializer());
+    public void cancelPipe(DUUIPipe pipe, Throwable error) {
+        if (pipe != null) {
+            pipe.inputRelay().cancel(error);
+            pipe.outputRelay().cancel(error);
+        }
     }
 
-    private Documentation requestDocumentationOptional(IDUUIEndpoint endpoint) {
+    @Phase(value = DUUIStatus.SERIALIZE, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<Void> serialize(JCas cas, DUUIRelay<JCas> relay) {
+        try (OutputStream output = relay.outputStream()) {
+            communicationLayer.serialize(cas, output, config.parameters(), config.sourceView());
+            return DUUIFlow.dispatch(null);
+        } catch (Exception error) {
+            relay.cancel(error);
+            return DUUIFlow.fail(error);
+        }
+    }
+
+    @Phase(value = DUUIStatus.DESERIALIZE, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<Void> deserialize(JCas cas, DUUIRelay<?> relay) {
+        try (InputStream input = relay.inputStream()) {
+            communicationLayer.deserialize(cas, input, config.targetView());
+            return DUUIFlow.dispatch(null);
+        } catch (Exception error) {
+            relay.cancel(error);
+            return DUUIFlow.fail(error);
+        }
+    }
+
+    @Phase(value = DUUIStatus.ANALYSE, dispatch = DUUIDispatchMode.IO)
+    public DUUIFlow<DUUIArtifact<JCas>> analyse(
+            DUUIArtifact<JCas> artifact,
+            DUUIRelay<JCas> inputRelay,
+            DUUIRelay<DUUIHttpResponse> outputRelay
+    ) {
+        try {
+            processChannel.request(inputRelay, outputRelay);
+            return DUUIFlow.dispatch(artifact);
+        } catch (Exception error) {
+            return DUUIFlow.fail(error);
+        }
+    }
+
+    private Documentation requestDocumentationOptional(org.texttechnologylab.duui.clients.http.IDUUIEndpoint endpoint) {
         try {
             return documentationSignal.request();
         } catch (Exception error) {
@@ -237,81 +281,16 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         }
     }
 
-    private BlockingQueue<DUUIChannel<JCas>> processChannels(
-        IDUUIEndpoint endpoint,
-        DUUICommunicationLayer communicationLayer,
-        DUUIV1Config config
-    ) throws Exception {
-        BlockingQueue<DUUIChannel<JCas>> channels = new LinkedBlockingQueue<>();
-        for (int index = 0; index < config.concurrency(); index++) {
-            channels.offer(processChannel(endpoint, communicationLayer.copy(), config));
-        }
-        return channels;
-    }
-
-    private DUUIChannel<JCas> processChannel(
-        IDUUIEndpoint endpoint,
-        DUUICommunicationLayer communicationLayer,
-        DUUIV1Config config
-    ) {
-        DUUISerializer<JCas> serializer = processSerializer(communicationLayer, config);
-        DUUIChannel.ResponseApplier<JCas> applier = processDeserializer(communicationLayer, config);
-        return new DUUIChannel<>(endpoint, DUUIHttpMethod.POST, "/v1/process", serializer, applier,
-                telemetryCustomizer(config), config.streamingTransport(), config.contentType());
-    }
-
-    private DUUIChannel.RequestCustomizer<JCas> telemetryCustomizer(DUUIV1Config config) {
-        if (!config.telemetry().enabled()) {
-            return new DUUIChannel.RequestCustomizer<>() {};
-        }
-        return new DUUIChannel.RequestCustomizer<>() {
-            @Override
-            public URI uri(URI baseUri, JCas value) {
-                try {
-                    DUUIEventContext context = DUUIEventService.current().currentContext();
-                    String eventContext = context.toRemoteContextMap().entrySet().stream()
-                            .map(entry -> entry.getKey() + "=" + entry.getValue())
-                            .collect(java.util.stream.Collectors.joining(","));
-                    String encoded = URLEncoder.encode(eventContext, StandardCharsets.UTF_8);
-                    String separator = baseUri.getQuery() == null ? "?" : "&";
-                    return URI.create(baseUri + separator + "event-context=" + encoded);
-                } catch (Exception ignored) {
-                    return baseUri;
-                }
-            }
-
-            @Override
-            public void customize(java.net.http.HttpRequest.Builder builder, JCas value) {
-                DUUIEventContext context = DUUIEventService.current().currentContext();
-                String requestId = UUID.randomUUID().toString();
-                header(builder, "x-request-id", requestId);
-                header(builder, "X-DUUI-Request-Id", requestId);
-                header(builder, "X-DUUI-Orchestrator-Id", context.orchestratorId());
-                header(builder, "X-DUUI-Artifact-Id", context.artifactId());
-                header(builder, "X-DUUI-Component-Id", context.componentId());
-                header(builder, "X-DUUI-Replica-Id", firstPresent(context.nodeId(), context.annotatorId(), id));
-                header(builder, "X-DUUI-Annotator-Id", firstPresent(context.annotatorId(), id));
-                header(builder, "X-DUUI-Machine-Id", context.workerId());
-                header(builder, "X-DUUI-Pipeline-Run-Id", context.taskId());
-                header(builder, "traceparent", traceparent(context));
-                try {
-                    header(builder, "X-DUUI-Telemetry", MAPPER.writeValueAsString(Map.of(
-                            "sample_interval_ms", config.telemetry().sampleIntervalMs()
-                    )));
-                } catch (Exception ignored) {
-                }
-            }
-        };
-    }
-
-    private static void header(java.net.http.HttpRequest.Builder builder, String name, String value) {
+    private static void header(HttpRequest.Builder builder, String name, String value) {
         if (value != null && !value.isBlank()) {
             builder.header(name, value);
         }
     }
 
     private static String firstPresent(String... values) {
-        if (values == null) return null;
+        if (values == null) {
+            return null;
+        }
         for (String value : values) {
             if (value != null && !value.isBlank()) {
                 return value;
@@ -320,59 +299,14 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         return null;
     }
 
-    private static String traceparent(DUUIEventContext context) {
-        if (context == null || context.trace() == null) {
-            return null;
-        }
-        return "00-" + context.trace().traceId() + "-" + context.trace().spanId() + "-01";
-    }
-
-    private static int documentTextLength(JCas cas) {
-        if (cas == null || cas.getDocumentText() == null) {
-            return 0;
-        }
-        return cas.getDocumentText().length();
-    }
-
-    private DUUIDeserializer<Documentation> documentationDeserializer() {
-        return input -> MAPPER.readValue(input, Documentation.class);
-    }
-
-    private DUUIDeserializer<TypeSystemDescription> typesystemDeserializer() {
-        return input -> UIMAFramework.getXMLParser().parseTypeSystemDescription(new XMLInputSource(input, null));
-    }
-
-    private DUUIDeserializer<DUUICommunicationLayer> communicationLayerDeserializer() {
-        return input -> new DUUILuaCommunicationLayer(new String(input.readAllBytes(), StandardCharsets.UTF_8));
-    }
-
-    private DUUISerializer<JCas> processSerializer(DUUICommunicationLayer communicationLayer, DUUIV1Config config) {
-        return (cas, output) -> communicationLayer.serialize(cas, output, config.parameters(), config.sourceView());
-    }
-
-    private DUUIChannel.ResponseApplier<JCas> processDeserializer(DUUICommunicationLayer communicationLayer, DUUIV1Config config) {
-        return (cas, input) -> {
-            communicationLayer.deserialize(cas, input, config.targetView());
-            return cas;
-        };
-    }
-
-    private static JCas targetCas(JCas cas, String targetView) throws CASException {
-        try {
-            return cas.getView(targetView);
-        } catch (CASException e) {
-            return cas.createView(targetView);
-        }
-    }
-
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Documentation(
-        String annotator_name,
-        String version,
-        String description,
-        String implementation_lang,
-        Map<String, Object> meta,
-        Map<String, Object> parameters
+            String annotator_name,
+            String version,
+            String description,
+            String implementation_lang,
+            Map<String, Object> meta,
+            Map<String, Object> parameters
     ) {
     }
 }

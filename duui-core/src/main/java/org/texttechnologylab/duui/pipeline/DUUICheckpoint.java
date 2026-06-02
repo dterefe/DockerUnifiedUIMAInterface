@@ -24,7 +24,7 @@ public final class DUUICheckpoint<T> implements DUUIResource {
     }
 
     public DUUICheckpoint(String id, DUUICheckpointConfig config, DUUIFailurePolicy failurePolicy) {
-        this.gid = GID.create();
+        this.gid = GID.create(DUUICheckpoint.class);
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
         this.config = config == null ? DUUICheckpointConfig.DEFAULT : config;

@@ -22,6 +22,7 @@ import org.texttechnologylab.duui.pipeline.DUUITarget;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.DUUIExecutionMode;
 import org.texttechnologylab.duui.timelines.DUUIDispatcher;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 import org.texttechnologylab.duui.timelines.DUUIStatus;
 import org.texttechnologylab.duui.timelines.Phase;
 
@@ -30,10 +31,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletionException;
 
 public final class DUUIExecutor implements AutoCloseable {
     private final String orchestratorId;
@@ -41,7 +42,6 @@ public final class DUUIExecutor implements AutoCloseable {
     private final DUUIDispatcher dispatcher;
     private final Map<Integer, DUUIPlatformExecutorService> platformExecutors = new ConcurrentHashMap<>();
     private final DUUIVirtualExecutorService virtualExecutor;
-    private final DUUIPlatformExecutorService phasePlatformExecutor;
 
     public DUUIExecutor() {
         this(UUID.randomUUID().toString(), new DUUIFailureClassifier());
@@ -63,12 +63,7 @@ public final class DUUIExecutor implements AutoCloseable {
         this.orchestratorId = orchestratorId == null ? UUID.randomUUID().toString() : orchestratorId;
         this.failureClassifier = failureClassifier == null ? new DUUIFailureClassifier() : failureClassifier;
         this.virtualExecutor = new DUUIVirtualExecutorService(this.orchestratorId);
-        this.phasePlatformExecutor = new DUUIPlatformExecutorService(
-                this.orchestratorId,
-                Math.max(1, Runtime.getRuntime().availableProcessors()));
-        this.dispatcher = dispatcher == null
-                ? new DUUIDispatcher(phaseExecutor(virtualExecutor), phaseExecutor(phasePlatformExecutor))
-                : dispatcher;
+        this.dispatcher = dispatcher == null ? new DUUIDispatcher() : dispatcher;
     }
 
     public <T> DUUITask<T> task(DUUIExecutionContext context, java.util.concurrent.Callable<T> work) {
@@ -81,8 +76,14 @@ public final class DUUIExecutor implements AutoCloseable {
 
     public <T> Future<?> submit(DUUITask<T> task, DUUIDispatchPolicy dispatchPolicy) {
         DUUIDispatchPolicy policy = dispatchPolicy == null ? DUUIDispatchPolicy.mixed() : dispatchPolicy;
-        task.phaseDispatchOverride(policy.mode() == DUUIDispatchMode.CPU || policy.mode() == DUUIDispatchMode.IO ? policy.mode() : null);
-        ExecutorService executor = executorFor(policy);
+        task.dispatchModeOverride(policy.mode() == DUUIDispatchMode.CPU || policy.mode() == DUUIDispatchMode.IO ? policy.mode() : null);
+        ExecutorService executor;
+        if (policy.mode() == DUUIDispatchMode.IO) {
+            executor = virtualExecutor;
+        } else {
+            int parallelism = policy.parallelism() == null ? Runtime.getRuntime().availableProcessors() : Math.max(1, policy.parallelism());
+            executor = platformExecutors.computeIfAbsent(parallelism, key -> new DUUIPlatformExecutorService(orchestratorId, key));
+        }
         executor.execute(task);
         return task;
     }
@@ -113,9 +114,16 @@ public final class DUUIExecutor implements AutoCloseable {
             DUUIArtifact<T> artifact
     ) {
         long start = System.currentTimeMillis();
-        DUUIFailurePolicy policy = resolvePolicy(checkpoint, stage);
+        DUUIFailurePolicy policy = stage.failurePolicy() != null
+                ? stage.failurePolicy()
+                : checkpoint.failurePolicy() != null ? checkpoint.failurePolicy() : DUUIFailurePolicy.FAIL_FAST;
         DUUIFailure lastFailure = null;
-        DUUIExecutionContext executionContext = currentExecutionContext();
+        DUUIExecutionContext executionContext;
+        try {
+            executionContext = DUUIWorker.current().requireCurrentTask().context();
+        } catch (RuntimeException ignored) {
+            executionContext = null;
+        }
         DUUIEventContext previousContext = executionContext == null ? null : executionContext.eventContext();
         if (executionContext != null) {
             executionContext.eventContext((previousContext == null ? DUUIEventContext.root(orchestratorId, null) : previousContext).toBuilder()
@@ -129,32 +137,22 @@ public final class DUUIExecutor implements AutoCloseable {
         int attempt = 0;
         try {
             for (attempt = 1; attempt <= policy.maxAttempts(); attempt++) {
-                long attemptStart = System.currentTimeMillis();
                 DUUIEventService.current().logger("duui.executor").info("Stage attempt started stage=" + stage.id() + " artifact=" + artifact.id() + " attempt=" + attempt + "/" + policy.maxAttempts());
-                DUUIEventService.current().metric("stage", "duui.stage.attempt", attempt, "count", 0L,
-                        java.util.Map.of("stage", stage.id(), "artifact", artifact.id()));
                 DUUIEventScope scope = DUUIEventService.current().scope("stage:" + stage.id());
                 try {
                     DUUIArtifact<T> processed = processStage(stage, artifact);
                     long duration = System.currentTimeMillis() - start;
-                    long attemptDuration = System.currentTimeMillis() - attemptStart;
-                    DUUIEventService.current().metric("stage", "duui.stage.attempt_duration_ms", attemptDuration, "milliseconds", attemptDuration,
-                            java.util.Map.of("stage", stage.id(), "artifact", artifact.id(), "status", "success"));
-                    DUUIEventService.current().metric("stage", "duui.stage.duration_ms", duration, "milliseconds", duration,
-                            java.util.Map.of("stage", stage.id(), "artifact", artifact.id(), "status", "success"));
                     DUUIEventService.current().logger("duui.executor").info("Stage completed stage=" + stage.id() + " artifact=" + artifact.id() + " attempt=" + attempt + " duration_ms=" + duration);
                     return DUUIExecutionResult.success(processed, duration, attempt);
                 } catch (Exception e) {
                     scope.fail(e);
                     lastFailure = failureClassifier.classify(e, artifact, checkpoint, stage);
-                    long attemptDuration = System.currentTimeMillis() - attemptStart;
-                    DUUIEventService.current().metric("stage", "duui.stage.attempt_duration_ms", attemptDuration, "milliseconds", attemptDuration,
-                            java.util.Map.of("stage", stage.id(), "artifact", artifact.id(), "status", "failed"));
                     DUUIEventService.current().logger("duui.executor").error("Stage attempt failed stage=" + stage.id() + " artifact=" + artifact.id() + " attempt=" + attempt + " action=" + policy.action(), e);
-                    if (!shouldRetry(policy, attempt)) {
+                    if (attempt >= policy.maxAttempts()
+                            || (policy.action() != DUUIFailureAction.RETRY
+                            && policy.action() != DUUIFailureAction.BACKOFF_AND_RETRY
+                            && policy.action() != DUUIFailureAction.THROTTLE_AND_RETRY)) {
                         long duration = System.currentTimeMillis() - start;
-                        DUUIEventService.current().metric("stage", "duui.stage.duration_ms", duration, "milliseconds", duration,
-                                java.util.Map.of("stage", stage.id(), "artifact", artifact.id(), "status", "failed"));
                         return DUUIExecutionResult.failure(artifact, lastFailure, duration, attempt);
                     }
                     DUUIEventService.current().logger("duui.executor").warning("Retrying stage stage=" + stage.id() + " artifact=" + artifact.id() + " next_attempt=" + (attempt + 1));
@@ -165,8 +163,6 @@ public final class DUUIExecutor implements AutoCloseable {
             }
 
             long duration = System.currentTimeMillis() - start;
-            DUUIEventService.current().metric("stage", "duui.stage.duration_ms", duration, "milliseconds", duration,
-                    java.util.Map.of("stage", stage.id(), "artifact", artifact.id(), "status", "failed"));
             DUUIEventService.current().logger("duui.executor").error("Stage exhausted attempts stage=" + stage.id() + " artifact=" + artifact.id());
             return DUUIExecutionResult.failure(artifact, lastFailure, duration, attempt);
         } finally {
@@ -178,36 +174,15 @@ public final class DUUIExecutor implements AutoCloseable {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private <T> DUUIArtifact<T> processStage(DUUIStage<T> stage, DUUIArtifact<T> artifact) throws Exception {
-        return switch (stage.type()) {
-            case PROCESSOR -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.processor(this, stage, artifact);
-            case ADAPTER -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.adapter(this, stage, artifact);
-            case FORK -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.fork(this, stage, artifact);
-            case SPLIT -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.split(this, stage, artifact);
-            case TARGET -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.target(this, stage, artifact);
-            case JOIN -> (DUUIArtifact<T>) DUUIExecutorPhaseDispatch.join(this, stage, artifact);
+        DUUIFlow<? extends DUUIArtifact<?>> flow = switch (stage.type()) {
+            case PROCESSOR -> processor(stage, artifact);
+            case ADAPTER -> adapter(stage, artifact);
+            case FORK -> fork(stage, artifact);
+            case SPLIT -> split(stage, artifact);
+            case TARGET -> target(stage, artifact);
+            case JOIN -> join(stage, artifact);
         };
-    }
-
-    private static <T> List<org.texttechnologylab.duui.ems.DUUIActor> actorList(DUUIStage<T> stage, DUUIArtifact<T> artifact) {
-        List<org.texttechnologylab.duui.ems.DUUIActor> actors = new ArrayList<>();
-        actors.add(artifact);
-        if (stage.type() == org.texttechnologylab.duui.pipeline.DUUIStageType.PROCESSOR) {
-            actors.addAll(stage.components());
-        }
-        return actors;
-    }
-
-    private static DUUIFailurePolicy resolvePolicy(DUUICheckpoint<?> checkpoint, DUUIStage<?> stage) {
-        if (stage.failurePolicy() != null) return stage.failurePolicy();
-        if (checkpoint.failurePolicy() != null) return checkpoint.failurePolicy();
-        return DUUIFailurePolicy.FAIL_FAST;
-    }
-
-    private static boolean shouldRetry(DUUIFailurePolicy policy, int attempt) {
-        if (attempt >= policy.maxAttempts()) return false;
-        return policy.action() == DUUIFailureAction.RETRY
-                || policy.action() == DUUIFailureAction.BACKOFF_AND_RETRY
-                || policy.action() == DUUIFailureAction.THROTTLE_AND_RETRY;
+        return (DUUIArtifact<T>) awaitPhase(flow);
     }
 
     private static void sleepBeforeRetry(DUUIFailurePolicy policy, int attempt) {
@@ -243,7 +218,7 @@ public final class DUUIExecutor implements AutoCloseable {
             }
             try {
                 DUUIEventService.current().logger("duui.executor").debug("Linear component dispatch component=" + component.id() + " stage=" + stage.id() + " artifact=" + current.id());
-                current = component.process(current);
+                current = (DUUIArtifact<T>) awaitPhase(component.process(current));
             } finally {
                 executionContext.eventContext(previousContext);
             }
@@ -268,7 +243,7 @@ public final class DUUIExecutor implements AutoCloseable {
                         .componentId(component.id())
                         .build());
             }
-            DUUITask<DUUIArtifact<T>> task = task(childContext, () -> component.process(artifact));
+            DUUITask<DUUIArtifact<T>> task = task(childContext, () -> (DUUIArtifact<T>) awaitPhase(component.process(artifact)));
             DUUIEventService.current().logger("duui.executor").debug("Submitting parallel component component=" + component.id() + " task=" + task.id() + " stage=" + stage.id());
             submit(task, dispatchPolicy);
             tasks.add(task);
@@ -286,109 +261,109 @@ public final class DUUIExecutor implements AutoCloseable {
         return current;
     }
 
-    private ExecutorService executorFor(DUUIDispatchPolicy dispatchPolicy) {
-        DUUIDispatchPolicy policy = dispatchPolicy == null ? DUUIDispatchPolicy.mixed() : dispatchPolicy;
-        if (policy.mode() == DUUIDispatchMode.IO) {
-            return virtualExecutor;
-        }
-        int parallelism = policy.parallelism() == null ? Runtime.getRuntime().availableProcessors() : Math.max(1, policy.parallelism());
-        return platformExecutors.computeIfAbsent(parallelism, key -> new DUUIPlatformExecutorService(orchestratorId, key));
-    }
-
-    private static DUUIExecutionContext currentExecutionContext() {
-        try {
-            return DUUIWorker.current().requireCurrentTask().context();
-        } catch (RuntimeException ignored) {
-            return null;
-        }
-    }
-
     public String orchestratorId() { return orchestratorId; }
     public DUUIDispatcher dispatcher() { return dispatcher; }
 
     @Override
     public void close() {
         virtualExecutor.shutdown();
-        phasePlatformExecutor.shutdown();
         for (DUUIPlatformExecutorService executor : platformExecutors.values()) {
             executor.shutdown();
         }
         platformExecutors.clear();
     }
 
-    private Executor phaseExecutor(ExecutorService executor) {
-        return command -> {
-            DUUITask<?> task = DUUIWorkerRegistry.currentWorker()
-                    .map(DUUIWorker::currentTask)
-                    .orElse(null);
-            executor.execute(() -> {
-                DUUIWorker worker = DUUIWorker.current();
-                boolean bound = task != null && worker.currentTask() != task;
-                if (bound) {
-                    worker.bind(task);
-                }
-                try {
-                    command.run();
-                } finally {
-                    if (bound) {
-                        worker.clear(task);
-                    }
-                }
-            });
-        };
-    }
-
     @Phase(DUUIStatus.PROCESSOR)
-    public Object processor(Object stageValue, Object artifactValue) throws Exception {
-        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
-        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-        return stage.executionMode() == DUUIExecutionMode.PARALLEL
-                ? processParallel((DUUIStage) stage, (DUUIArtifact) artifact)
-                : processLinear((DUUIStage) stage, (DUUIArtifact) artifact);
+    public DUUIFlow<DUUIArtifact<?>> processor(Object stageValue, Object artifactValue) {
+        try {
+            DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+            DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+            DUUIArtifact<?> processed = stage.executionMode() == DUUIExecutionMode.PARALLEL
+                    ? processParallel((DUUIStage) stage, (DUUIArtifact) artifact)
+                    : processLinear((DUUIStage) stage, (DUUIArtifact) artifact);
+            return DUUIFlow.dispatch(processed);
+        } catch (InterruptedException error) {
+            return DUUIFlow.cancel(error);
+        } catch (Exception error) {
+            return DUUIFlow.fail(error);
+        }
     }
 
     @Phase(DUUIStatus.ADAPTER)
-    public Object adapter(Object stageValue, Object artifactValue) throws Exception {
-        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
-        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-        DUUIArtifact<?> emitted = ((DUUIAdapter) stage.operation()).adapt(artifact);
-        DUUIWorker.current().requireCurrentTask().context().emit(emitted);
-        return artifact;
+    public DUUIFlow<DUUIArtifact<?>> adapter(Object stageValue, Object artifactValue) {
+        try {
+            DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+            DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+            DUUIArtifact<?> emitted = ((DUUIAdapter) stage.operation()).adapt(artifact);
+            DUUIWorker.current().requireCurrentTask().context().emit(emitted);
+            return DUUIFlow.dispatch(artifact);
+        } catch (InterruptedException error) {
+            return DUUIFlow.cancel(error);
+        } catch (Exception error) {
+            return DUUIFlow.fail(error);
+        }
     }
 
     @Phase(DUUIStatus.FORK)
-    public Object fork(Object stageValue, Object artifactValue) throws Exception {
-        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
-        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-        ((DUUIFork) stage.operation()).fork(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
-        return artifact;
+    public DUUIFlow<DUUIArtifact<?>> fork(Object stageValue, Object artifactValue) {
+        try {
+            DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+            DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+            ((DUUIFork) stage.operation()).fork(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
+            return DUUIFlow.dispatch(artifact);
+        } catch (InterruptedException error) {
+            return DUUIFlow.cancel(error);
+        } catch (Exception error) {
+            return DUUIFlow.fail(error);
+        }
     }
 
     @Phase(DUUIStatus.SPLIT)
-    public Object split(Object stageValue, Object artifactValue) throws Exception {
-        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
-        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-        ((DUUISplit) stage.operation()).split(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
-        return artifact;
+    public DUUIFlow<DUUIArtifact<?>> split(Object stageValue, Object artifactValue) {
+        try {
+            DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+            DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+            ((DUUISplit) stage.operation()).split(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
+            return DUUIFlow.dispatch(artifact);
+        } catch (InterruptedException error) {
+            return DUUIFlow.cancel(error);
+        } catch (Exception error) {
+            return DUUIFlow.fail(error);
+        }
     }
 
     @Phase(DUUIStatus.JOIN)
-    public Object join(Object stageValue, Object artifactValue) {
-        return artifactValue;
+    public DUUIFlow<DUUIArtifact<?>> join(Object stageValue, Object artifactValue) {
+        return DUUIFlow.dispatch((DUUIArtifact<?>) artifactValue);
     }
 
     @Phase(DUUIStatus.TARGET)
-    public Object target(Object stageValue, Object artifactValue) throws Exception {
-        DUUIStage<?> stage = (DUUIStage<?>) stageValue;
-        DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-        ((DUUITarget) stage.operation()).accept(artifact);
-        return artifact;
+    public DUUIFlow<DUUIArtifact<?>> target(Object stageValue, Object artifactValue) {
+        try {
+            DUUIStage<?> stage = (DUUIStage<?>) stageValue;
+            DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
+            ((DUUITarget) stage.operation()).accept(artifact);
+            return DUUIFlow.dispatch(artifact);
+        } catch (InterruptedException error) {
+            return DUUIFlow.cancel(error);
+        } catch (Exception error) {
+            return DUUIFlow.fail(error);
+        }
     }
 
-    private List<org.texttechnologylab.duui.ems.DUUIActor> phaseActors(String phaseMethod, Object[] args) {
-        if (args == null || args.length < 2 || !(args[0] instanceof DUUIStage<?> stage) || !(args[1] instanceof DUUIArtifact<?> artifact)) {
-            return List.of();
+    private static DUUIArtifact<?> awaitPhase(DUUIFlow<? extends DUUIArtifact<?>> flow) throws Exception {
+        try {
+            return flow.join();
+        } catch (CompletionException error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof Exception exception) {
+                throw exception;
+            }
+            if (cause instanceof Error fatal) {
+                throw fatal;
+            }
+            throw error;
         }
-        return actorList((DUUIStage) stage, (DUUIArtifact) artifact);
     }
+
 }

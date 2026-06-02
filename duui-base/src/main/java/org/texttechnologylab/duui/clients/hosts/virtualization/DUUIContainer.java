@@ -2,6 +2,7 @@ package org.texttechnologylab.duui.clients.hosts.virtualization;
 
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import org.texttechnologylab.duui.clients.handle.DUUIProxy;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 
 import java.time.Instant;
 
@@ -35,13 +36,13 @@ public abstract class DUUIContainer implements DUUIProxy {
         return createdAt;
     }
 
-    public abstract boolean running() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<Boolean> running() throws DUUIVirtualizationException;
 
-    public abstract DUUIContainer start() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<DUUIContainer> start() throws DUUIVirtualizationException;
 
-    public abstract DUUIContainer stop() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<DUUIContainer> stop() throws DUUIVirtualizationException;
 
-    public abstract DUUIContainer restart() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<DUUIContainer> restart() throws DUUIVirtualizationException;
 
-    public abstract void delete() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<Void> delete() throws DUUIVirtualizationException;
 }

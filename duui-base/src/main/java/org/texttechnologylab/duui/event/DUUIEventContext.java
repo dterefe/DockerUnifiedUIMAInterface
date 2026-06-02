@@ -3,6 +3,7 @@ package org.texttechnologylab.duui.event;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import org.texttechnologylab.duui.timelines.DUUIPhase;
 
 public record DUUIEventContext(
         DUUITraceContext trace,
@@ -74,6 +75,16 @@ public record DUUIEventContext(
         CURRENT_PHASE_ID.remove();
         CURRENT_PHASE_STATUS.remove();
         CURRENT_PHASE_LIFECYCLE.remove();
+    }
+
+    public static void setCurrentPhase(DUUIPhase phase) {
+        if (phase == null) {
+            clearPhase();
+            return;
+        }
+        setCurrentPhaseId(phase.id());
+        setCurrentPhaseStatus(phase.status().name());
+        setCurrentPhaseLifecycle(phase.lifecycle().name());
     }
 
     public static Optional<String> currentPhaseId() {

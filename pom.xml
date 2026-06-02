@@ -30,8 +30,6 @@
     </developers>
 
     <modules>
-        <module>duui-phase-api</module>
-        <module>duui-phase-processor</module>
         <module>duui-base</module>
         <module>duui-storage</module>
         <module>duui-core</module>
@@ -57,6 +55,7 @@
         <msgpack.version>0.9.1</msgpack.version>
         <sqlite.version>3.45.3.0</sqlite.version>
         <netty.version>4.1.118.Final</netty.version>
+        <aspectj.version>1.9.22.1</aspectj.version>
     </properties>
 
     <repositories>
@@ -74,22 +73,12 @@
         <dependencies>
             <dependency>
                 <groupId>org.texttechnologylab</groupId>
-                <artifactId>duui-phase-api</artifactId>
-                <version>${duui.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.texttechnologylab</groupId>
                 <artifactId>duui-base</artifactId>
                 <version>${duui.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.texttechnologylab</groupId>
                 <artifactId>duui-storage</artifactId>
-                <version>${duui.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.texttechnologylab</groupId>
-                <artifactId>duui-phase-processor</artifactId>
                 <version>${duui.version}</version>
             </dependency>
             <dependency>

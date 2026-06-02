@@ -19,11 +19,11 @@ public final class DUUIArtifact<T> implements DUUISubject, DUUIActor {
     }
 
     public static <T> DUUIArtifact<T> of(T subject) {
-        return new DUUIArtifact<>(GID.create(), subject, DUUITraits.empty());
+        return new DUUIArtifact<>(GID.create(DUUIArtifact.class), subject, DUUITraits.empty());
     }
 
     public static <T> DUUIArtifact<T> of(T subject, DUUITraits traits) {
-        return new DUUIArtifact<>(GID.create(), subject, traits);
+        return new DUUIArtifact<>(GID.create(DUUIArtifact.class), subject, traits);
     }
 
     public DUUIArtifact<T> withTraits(DUUITraits traits) {

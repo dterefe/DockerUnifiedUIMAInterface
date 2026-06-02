@@ -12,6 +12,9 @@ import io.vertx.core.json.JsonObject;
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import org.texttechnologylab.duui.clients.DUUIClient;
 import org.texttechnologylab.duui.clients.handle.DUUIProxy;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 import podman.client.PodmanClient;
 import podman.client.containers.ContainerDeleteOptions;
 import podman.client.containers.ContainerGetLogsOptions;
@@ -174,14 +177,19 @@ public final class DUUIPodmanClient implements DUUIClient<DUUIProxy> {
             return inspect().getJsonObject("State", new JsonObject());
         }
 
-        public boolean running() {
-            JsonObject state = state();
-            Boolean running = state.getBoolean("Running");
-            if (running != null) {
-                return running;
+        @Phase(DUUIStatus.PING)
+        public DUUIFlow<Boolean> running() {
+            try {
+                JsonObject state = state();
+                Boolean running = state.getBoolean("Running");
+                if (running != null) {
+                    return DUUIFlow.dispatch(running);
+                }
+                String status = state.getString("Status");
+                return DUUIFlow.dispatch(status != null && status.equalsIgnoreCase("running"));
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
             }
-            String status = state.getString("Status");
-            return status != null && status.equalsIgnoreCase("running");
         }
 
         public Integer exitCode() {
@@ -236,60 +244,108 @@ public final class DUUIPodmanClient implements DUUIClient<DUUIProxy> {
             return podman.containers().logs(id, options == null ? new ContainerGetLogsOptions() : options);
         }
 
-        public Container start() {
-            await(podman.containers().start(id));
-            return this;
+        @Phase(DUUIStatus.START)
+        public DUUIFlow<Container> start() {
+            try {
+                await(podman.containers().start(id));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container start(String detachKeys) {
-            await(podman.containers().start(id, detachKeys));
-            return this;
+        @Phase(DUUIStatus.START)
+        public DUUIFlow<Container> start(String detachKeys) {
+            try {
+                await(podman.containers().start(id, detachKeys));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container stop() {
+        @Phase(DUUIStatus.STOP)
+        public DUUIFlow<Container> stop() {
             return stop(false, 10);
         }
 
-        public Container stop(boolean ignoreIfStopped, int timeoutSeconds) {
-            await(podman.containers().stop(id, ignoreIfStopped, timeoutSeconds));
-            return this;
+        @Phase(DUUIStatus.STOP)
+        public DUUIFlow<Container> stop(boolean ignoreIfStopped, int timeoutSeconds) {
+            try {
+                await(podman.containers().stop(id, ignoreIfStopped, timeoutSeconds));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container restart() {
+        @Phase(DUUIStatus.RESTART)
+        public DUUIFlow<Container> restart() {
             return restart(10);
         }
 
-        public Container restart(int timeoutSeconds) {
-            await(podman.containers().restart(id, timeoutSeconds));
-            return this;
+        @Phase(DUUIStatus.RESTART)
+        public DUUIFlow<Container> restart(int timeoutSeconds) {
+            try {
+                await(podman.containers().restart(id, timeoutSeconds));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container pause() {
-            await(podman.containers().pause(id));
-            return this;
+        @Phase(DUUIStatus.PAUSE)
+        public DUUIFlow<Container> pause() {
+            try {
+                await(podman.containers().pause(id));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container unpause() {
-            await(podman.containers().unpause(id));
-            return this;
+        @Phase(DUUIStatus.UNPAUSE)
+        public DUUIFlow<Container> unpause() {
+            try {
+                await(podman.containers().unpause(id));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container kill() {
-            await(podman.containers().kill(id));
-            return this;
+        @Phase(DUUIStatus.KILL)
+        public DUUIFlow<Container> kill() {
+            try {
+                await(podman.containers().kill(id));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container kill(String signal) {
-            await(podman.containers().kill(id, signal));
-            return this;
+        @Phase(DUUIStatus.KILL)
+        public DUUIFlow<Container> kill(String signal) {
+            try {
+                await(podman.containers().kill(id, signal));
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        JsonArray delete() {
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<JsonArray> delete() {
             return delete(new ContainerDeleteOptions());
         }
 
-        JsonArray delete(ContainerDeleteOptions options) {
-            return await(podman.containers().delete(id, options == null ? new ContainerDeleteOptions() : options));
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<JsonArray> delete(ContainerDeleteOptions options) {
+            try {
+                return DUUIFlow.dispatch(await(podman.containers().delete(id, options == null ? new ContainerDeleteOptions() : options)));
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         @Override

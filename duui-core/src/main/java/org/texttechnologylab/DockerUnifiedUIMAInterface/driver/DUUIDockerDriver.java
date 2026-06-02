@@ -31,6 +31,7 @@ import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
 import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.pipeline.component.DUUIV1Component;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
@@ -601,7 +602,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
         for (DUUIV1Annotator annotator : annotators) {
             int concurrency = annotator.config().concurrency();
             for (int j = 0; j < concurrency; j++) {
-                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+                nodes.add(new DUUINode<>(componentId + "-slot-" + slot++, null, annotator));
             }
         }
 
@@ -621,7 +622,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
         System.out.printf("[DUUIDockerDriver][V2] Component %s instantiated with %d nodes across %d replica(s)%n",
                 componentId, nodes.size(), scale);
 
-        return new DUUIComponent<>(componentId, nodes, closeAction);
+        return new DUUIV1Component(componentId, nodes, closeAction);
     }
 
     /**
@@ -677,17 +678,13 @@ public class DUUIDockerDriver extends DUUIV1Driver {
     // === DUUIDockerClient delegation helpers ===
 
     private void pullDockerImage(String tag, String username, String password, AtomicBoolean shutdown)
-            throws ImagePullException, InterruptedException {
+            throws ImagePullException {
         try {
             if (shutdown != null && shutdown.get()) return;
-            if (username != null && password != null) {
-                _dockerClient.registry(username, password).pull(tag);
-            } else {
-                _dockerClient.registry().pull(tag);
-            }
-        } catch (InterruptedException e) {
-            if (shutdown != null) shutdown.set(true);
-            throw e;
+            var pullFlow = username != null && password != null
+                    ? _dockerClient.registry(username, password).pull(tag)
+                    : _dockerClient.registry().pull(tag);
+            pullFlow.join();
         } catch (Exception e) {
             throw new ImagePullException(tag,
                     format("Could not fetch image %s: %s", tag, e.getMessage()), e);
@@ -716,7 +713,7 @@ public class DUUIDockerDriver extends DUUIV1Driver {
 
     private String runDockerContainer(String imageId, List<String> env, boolean gpu,
             boolean autoRemove, int containerPort, boolean mapDaemon) throws InterruptedException {
-        return _dockerClient.image(imageId).run(cmd -> {
+        var containerFlow = _dockerClient.image(imageId).run(cmd -> {
             HostConfig cfg = new HostConfig().withPublishAllPorts(true);
             if (autoRemove) cfg = cfg.withAutoRemove(true);
             if (gpu) {
@@ -731,7 +728,8 @@ public class DUUIDockerDriver extends DUUIV1Driver {
             cmd.withHostConfig(cfg);
             cmd.withExposedPorts(ExposedPort.tcp(containerPort));
             if (env != null && !env.isEmpty()) cmd.withEnv(env);
-        }).id();
+        });
+        return containerFlow.join().id();
     }
 
     private int extractDockerPortMapping(String containerId) {

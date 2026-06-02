@@ -2,9 +2,11 @@ package org.texttechnologylab.duui.runtime;
 
 import org.apache.uima.analysis_engine.AnalysisEngineDescription;
 import org.apache.uima.jcas.JCas;
+import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.pipeline.DUUIAnalysisEngine;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,7 +58,24 @@ public final class DUUIUimaComponentBuilder implements DUUIStageContribution {
                 for (DUUIAnalysisEngine engine : engines) {
                     engine.shutdown();
                 }
-            }));
+            }) {
+                @Override
+                public DUUIFlow<DUUIArtifact<JCas>> process(DUUIArtifact<JCas> artifact) {
+                    DUUINode<JCas> node;
+                    try {
+                        node = borrowNode();
+                    } catch (InterruptedException error) {
+                        return DUUIFlow.cancel(error);
+                    }
+                    try {
+                        return DUUIFlow.dispatch(node.processor().process(artifact));
+                    } catch (Exception error) {
+                        return DUUIFlow.fail(error);
+                    } finally {
+                        returnNode(node);
+                    }
+                }
+            });
         } catch (Exception e) {
             throw new IllegalStateException("Failed to build DUUI UIMA component: " + id, e);
         }

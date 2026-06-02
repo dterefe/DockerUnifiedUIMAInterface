@@ -2,7 +2,7 @@ package org.texttechnologylab.duui.ems;
 
 public interface DUUIEntity {
     default GID gid() {
-        return GID.of(getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(this)));
+        return DUUIEntityIds.gid(this);
     }
 
     default DUUITraits traits() {

@@ -2,6 +2,7 @@ package org.texttechnologylab.duui.clients.hosts.virtualization;
 
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import org.texttechnologylab.duui.clients.handle.DUUIProxy;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 
 import java.time.Instant;
 import java.util.List;
@@ -36,11 +37,11 @@ public abstract class DUUIContainerImage implements DUUIProxy {
         return createdAt;
     }
 
-    public abstract DUUIContainer run(List<String> command) throws DUUIVirtualizationException;
+    public abstract DUUIFlow<? extends DUUIContainer> run(List<String> command) throws DUUIVirtualizationException;
 
-    public abstract DUUIContainerImage pull() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<DUUIContainerImage> pull() throws DUUIVirtualizationException;
 
-    public abstract DUUIContainerImage push() throws DUUIVirtualizationException;
+    public abstract DUUIFlow<DUUIContainerImage> push() throws DUUIVirtualizationException;
 
-    public abstract DUUIContainerImage build(String context) throws DUUIVirtualizationException;
+    public abstract DUUIFlow<DUUIContainerImage> build(String context) throws DUUIVirtualizationException;
 }

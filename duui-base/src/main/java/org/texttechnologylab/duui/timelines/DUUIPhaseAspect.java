@@ -1,47 +1,55 @@
 package org.texttechnologylab.duui.timelines;
 
 import org.texttechnologylab.duui.ems.DUUIActor;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.reflect.MethodSignature;
 
 import java.lang.reflect.Method;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.Callable;
+import java.util.Arrays;
+import java.util.stream.Stream;
 
-public final class DUUIPhaseAspect {
-    private final DUUIDispatcher dispatcher;
+@Aspect
+public class DUUIPhaseAspect {
+    private static final DUUIDispatcher DISPATCHER = new DUUIDispatcher();
 
-    public DUUIPhaseAspect(DUUIDispatcher dispatcher) {
-        this.dispatcher = dispatcher;
-    }
-
-    public <O, T> T around(O owner, Method method, List<DUUIActor> actors, Callable<T> callable) throws Exception {
-        return dispatcher.dispatch(new DUUIDispatcher.Invocation<>(
-                method.getAnnotation(Phase.class),
+    @Around("execution(org.texttechnologylab.duui.timelines.DUUIFlow+ *(..)) && @annotation(phase)")
+    public Object aroundFlow(ProceedingJoinPoint joinPoint, Phase phase) {
+        Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+        Object owner = joinPoint.getTarget();
+        Object[] arguments = joinPoint.getArgs();
+        DUUIDispatcher dispatcher = DISPATCHER;
+        if (owner != null) {
+            try {
+                Method dispatcherMethod = owner.getClass().getMethod("dispatcher");
+                if (DUUIDispatcher.class.isAssignableFrom(dispatcherMethod.getReturnType())) {
+                    dispatcher = (DUUIDispatcher) dispatcherMethod.invoke(owner);
+                }
+            } catch (ReflectiveOperationException ignored) {
+                dispatcher = DISPATCHER;
+            }
+        }
+        return dispatcher.dispatchFlowResult(new DUUIDispatcher.Invocation<>(
+                phase,
                 method,
                 owner,
-                actors,
-                callable
-        ));
-    }
-
-    public <O, T> CompletableFuture<T> aroundAsync(O owner, Method method, List<DUUIActor> actors, Callable<T> callable) {
-        return dispatcher.dispatchAsync(new DUUIDispatcher.Invocation<>(
-                method.getAnnotation(Phase.class),
-                method,
-                owner,
-                actors,
-                callable
-        ));
-    }
-
-    public <O, T> CompletableFuture<T> aroundCompletion(O owner, Method method, List<DUUIActor> actors, Callable<? extends CompletionStage<T>> callable) {
-        return dispatcher.dispatchCompletion(new DUUIDispatcher.Invocation<>(
-                method.getAnnotation(Phase.class),
-                method,
-                owner,
-                actors,
-                callable
+                Stream.concat(
+                        owner instanceof DUUIActor actor ? Stream.of(actor) : Stream.empty(),
+                        Arrays.stream(arguments == null ? new Object[0] : arguments)
+                                .filter(DUUIActor.class::isInstance)
+                                .map(DUUIActor.class::cast)
+                ).toList(),
+                Arrays.asList(arguments == null ? new Object[0] : arguments),
+                () -> {
+                    try {
+                        return (DUUIFlow<?>) joinPoint.proceed();
+                    } catch (Exception exception) {
+                        throw exception;
+                    } catch (Throwable throwable) {
+                        throw new RuntimeException(throwable);
+                    }
+                }
         ));
     }
 }

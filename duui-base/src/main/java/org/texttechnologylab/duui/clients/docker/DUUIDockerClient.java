@@ -23,6 +23,9 @@ import com.github.dockerjava.transport.DockerHttpClient;
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import org.texttechnologylab.duui.clients.DUUIClient;
 import org.texttechnologylab.duui.clients.handle.DUUIProxy;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -172,34 +175,59 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return image(tag == null || tag.isBlank() ? repository : repository + ":" + tag);
         }
 
-        public Image remove() {
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Image> remove() {
             return remove(false, false);
         }
 
-        public Image remove(boolean force, boolean noPrune) {
-            docker.removeImageCmd(reference).withForce(force).withNoPrune(noPrune).exec();
-            return this;
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Image> remove(boolean force, boolean noPrune) {
+            try {
+                docker.removeImageCmd(reference).withForce(force).withNoPrune(noPrune).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container create() {
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Container> create() {
             return create(command -> { });
         }
 
-        public Container create(Consumer<CreateContainerCmd> configure) {
-            CreateContainerCmd command = docker.createContainerCmd(reference);
-            if (configure != null) {
-                configure.accept(command);
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Container> create(Consumer<CreateContainerCmd> configure) {
+            try {
+                CreateContainerCmd command = docker.createContainerCmd(reference);
+                if (configure != null) {
+                    configure.accept(command);
+                }
+                CreateContainerResponse response = command.exec();
+                return DUUIFlow.dispatch(container(response.getId()));
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
             }
-            CreateContainerResponse response = command.exec();
-            return container(response.getId());
         }
 
-        public Container run() {
+        @Phase(DUUIStatus.RUN)
+        public DUUIFlow<Container> run() {
             return run(command -> { });
         }
 
-        public Container run(Consumer<CreateContainerCmd> configure) {
-            return create(configure).start();
+        @Phase(DUUIStatus.RUN)
+        public DUUIFlow<Container> run(Consumer<CreateContainerCmd> configure) {
+            try {
+                CreateContainerCmd command = docker.createContainerCmd(reference);
+                if (configure != null) {
+                    configure.accept(command);
+                }
+                CreateContainerResponse response = command.exec();
+                Container created = container(response.getId());
+                docker.startContainerCmd(created.id()).exec();
+                return DUUIFlow.dispatch(created);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         @Override
@@ -232,64 +260,85 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return DUUIDockerClient.this.image(reference);
         }
 
-        public Image pull(String reference) throws InterruptedException {
-            var command = docker.pullImageCmd(reference);
-            if (auth != null) {
-                command.withAuthConfig(auth);
+        @Phase(DUUIStatus.PULL)
+        public DUUIFlow<Image> pull(String reference) {
+            try {
+                var command = docker.pullImageCmd(reference);
+                if (auth != null) {
+                    command.withAuthConfig(auth);
+                }
+                command.start().awaitCompletion();
+                return DUUIFlow.dispatch(image(reference));
+            } catch (InterruptedException e) {
+                return DUUIFlow.cancel(e);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
             }
-            command.start().awaitCompletion();
-            return image(reference);
         }
 
-        public Image push(Image image) throws InterruptedException {
-            Objects.requireNonNull(image, "image");
-            var command = docker.pushImageCmd(image.reference());
-            if (auth != null) {
-                command.withAuthConfig(auth);
+        @Phase(DUUIStatus.PUSH)
+        public DUUIFlow<Image> push(Image image) {
+            try {
+                Objects.requireNonNull(image, "image");
+                var command = docker.pushImageCmd(image.reference());
+                if (auth != null) {
+                    command.withAuthConfig(auth);
+                }
+                command.start().awaitCompletion();
+                return DUUIFlow.dispatch(image);
+            } catch (InterruptedException e) {
+                return DUUIFlow.cancel(e);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
             }
-            command.start().awaitCompletion();
-            return image;
         }
 
-        public Image push(String reference) throws InterruptedException {
+        @Phase(DUUIStatus.PUSH)
+        public DUUIFlow<Image> push(String reference) {
             return push(image(reference));
         }
 
-        public Image build(Path context, String tag) throws InterruptedException {
+        @Phase(DUUIStatus.BUILD)
+        public DUUIFlow<Image> build(Path context, String tag) {
             return build(context, context.resolve("Dockerfile"), Set.of(tag), Map.of(), Map.of(), command -> { });
         }
 
-        public Image build(
+        @Phase(DUUIStatus.BUILD)
+        public DUUIFlow<Image> build(
                 Path context,
                 Path dockerfile,
                 Set<String> tags,
                 Map<String, String> buildArgs,
                 Map<String, String> labels,
                 Consumer<BuildImageCmd> configure
-        ) throws InterruptedException {
-            Objects.requireNonNull(context, "context");
-            BuildImageCmd command = docker.buildImageCmd()
-                    .withBaseDirectory(context.toFile())
-                    .withDockerfile(dockerfile == null ? context.resolve("Dockerfile").toFile() : dockerfile.toFile())
-                    .withPull(true)
-                    .withRemove(true);
-            if (tags != null && !tags.isEmpty()) {
-                command.withTags(new LinkedHashSet<>(tags));
+        ) {
+            try {
+                Objects.requireNonNull(context, "context");
+                BuildImageCmd command = docker.buildImageCmd()
+                        .withBaseDirectory(context.toFile())
+                        .withDockerfile(dockerfile == null ? context.resolve("Dockerfile").toFile() : dockerfile.toFile())
+                        .withPull(true)
+                        .withRemove(true);
+                if (tags != null && !tags.isEmpty()) {
+                    command.withTags(new LinkedHashSet<>(tags));
+                }
+                if (buildArgs != null) {
+                    buildArgs.forEach(command::withBuildArg);
+                }
+                if (labels != null && !labels.isEmpty()) {
+                    command.withLabels(labels);
+                }
+                if (configure != null) {
+                    configure.accept(command);
+                }
+                String imageId = command.start().awaitImageId();
+                if (tags != null && !tags.isEmpty()) {
+                    return DUUIFlow.dispatch(image(tags.iterator().next()));
+                }
+                return DUUIFlow.dispatch(image(imageId));
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
             }
-            if (buildArgs != null) {
-                buildArgs.forEach(command::withBuildArg);
-            }
-            if (labels != null && !labels.isEmpty()) {
-                command.withLabels(labels);
-            }
-            if (configure != null) {
-                configure.accept(command);
-            }
-            String imageId = command.start().awaitImageId();
-            if (tags != null && !tags.isEmpty()) {
-                return image(tags.iterator().next());
-            }
-            return image(imageId);
         }
 
         public Stream<Image> images() {
@@ -388,9 +437,14 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return parseInstant(inspect().getCreated()).orElse(null);
         }
 
-        public boolean running() {
-            InspectContainerResponse inspected = inspect();
-            return inspected.getState() != null && Boolean.TRUE.equals(inspected.getState().getRunning());
+        @Phase(DUUIStatus.PING)
+        public DUUIFlow<Boolean> running() {
+            try {
+                InspectContainerResponse inspected = inspect();
+                return DUUIFlow.dispatch(inspected.getState() != null && Boolean.TRUE.equals(inspected.getState().getRunning()));
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         public Integer exitCode() {
@@ -416,49 +470,94 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return Optional.ofNullable(ports.getBindings().get(port));
         }
 
-        public Container start() {
-            docker.startContainerCmd(id).exec();
-            return this;
+        @Phase(DUUIStatus.START)
+        public DUUIFlow<Container> start() {
+            try {
+                docker.startContainerCmd(id).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container stop() {
-            docker.stopContainerCmd(id).exec();
-            return this;
+        @Phase(DUUIStatus.STOP)
+        public DUUIFlow<Container> stop() {
+            try {
+                docker.stopContainerCmd(id).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container stop(int timeoutSeconds) {
-            docker.stopContainerCmd(id).withTimeout(timeoutSeconds).exec();
-            return this;
+        @Phase(DUUIStatus.STOP)
+        public DUUIFlow<Container> stop(int timeoutSeconds) {
+            try {
+                docker.stopContainerCmd(id).withTimeout(timeoutSeconds).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container restart() {
-            docker.restartContainerCmd(id).exec();
-            return this;
+        @Phase(DUUIStatus.RESTART)
+        public DUUIFlow<Container> restart() {
+            try {
+                docker.restartContainerCmd(id).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container restart(int timeoutSeconds) {
-            docker.restartContainerCmd(id).withtTimeout(timeoutSeconds).exec();
-            return this;
+        @Phase(DUUIStatus.RESTART)
+        public DUUIFlow<Container> restart(int timeoutSeconds) {
+            try {
+                docker.restartContainerCmd(id).withtTimeout(timeoutSeconds).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container kill() {
-            docker.killContainerCmd(id).exec();
-            return this;
+        @Phase(DUUIStatus.KILL)
+        public DUUIFlow<Container> kill() {
+            try {
+                docker.killContainerCmd(id).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container kill(String signal) {
-            docker.killContainerCmd(id).withSignal(signal).exec();
-            return this;
+        @Phase(DUUIStatus.KILL)
+        public DUUIFlow<Container> kill(String signal) {
+            try {
+                docker.killContainerCmd(id).withSignal(signal).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container pause() {
-            docker.pauseContainerCmd(id).exec();
-            return this;
+        @Phase(DUUIStatus.PAUSE)
+        public DUUIFlow<Container> pause() {
+            try {
+                docker.pauseContainerCmd(id).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
-        public Container unpause() {
-            docker.unpauseContainerCmd(id).exec();
-            return this;
+        @Phase(DUUIStatus.UNPAUSE)
+        public DUUIFlow<Container> unpause() {
+            try {
+                docker.unpauseContainerCmd(id).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         public Container rename(String name) {
@@ -466,13 +565,19 @@ public final class DUUIDockerClient implements DUUIClient<DUUIProxy> {
             return this;
         }
 
-        public Container remove() {
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Container> remove() {
             return remove(false, false);
         }
 
-        public Container remove(boolean force, boolean removeVolumes) {
-            docker.removeContainerCmd(id).withForce(force).withRemoveVolumes(removeVolumes).exec();
-            return this;
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Container> remove(boolean force, boolean removeVolumes) {
+            try {
+                docker.removeContainerCmd(id).withForce(force).withRemoveVolumes(removeVolumes).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         public Integer waitUntilNotRunning() throws InterruptedException {

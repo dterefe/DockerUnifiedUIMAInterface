@@ -16,8 +16,6 @@
     <description>Foundation primitives: DUUIClient, EMS, telemetry/event/logging/metrics, HTTP channel/relay, client/proxy separation, exception hierarchy, framework utilities.</description>
 
     <dependencies>
-        <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-phase-api</artifactId></dependency>
-        <dependency><groupId>org.texttechnologylab</groupId><artifactId>duui-phase-processor</artifactId><scope>provided</scope></dependency>
         <dependency><groupId>org.apache.uima</groupId><artifactId>uimaj-core</artifactId></dependency>
         <dependency><groupId>org.apache.uima</groupId><artifactId>uimafit-core</artifactId></dependency>
         <dependency><groupId>org.luaj</groupId><artifactId>luaj-jse</artifactId><version>${luaj.version}</version></dependency>
@@ -32,11 +30,46 @@
         <dependency><groupId>org.json</groupId><artifactId>json</artifactId><version>20231013</version></dependency>
         <dependency><groupId>org.javatuples</groupId><artifactId>javatuples</artifactId><version>1.2</version></dependency>
         <dependency><groupId>io.fabric8</groupId><artifactId>kubernetes-client</artifactId><version>${fabric8-kubernetes.version}</version></dependency>
+        <dependency><groupId>org.aspectj</groupId><artifactId>aspectjrt</artifactId><version>${aspectj.version}</version></dependency>
         <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${junit.version}</version><scope>test</scope></dependency>
     </dependencies>
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.1</version>
+                <configuration>
+                    <proc>none</proc>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>dev.aspectj</groupId>
+                <artifactId>aspectj-maven-plugin</artifactId>
+                <version>1.14.1</version>
+                <configuration>
+                    <complianceLevel>21</complianceLevel>
+                    <source>21</source>
+                    <target>21</target>
+                    <showWeaveInfo>true</showWeaveInfo>
+                    <Xlint>ignore</Xlint>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.aspectj</groupId>
+                        <artifactId>aspectjtools</artifactId>
+                        <version>${aspectj.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>

@@ -21,6 +21,7 @@ import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
 import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.pipeline.component.DUUIV1Component;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.xml.sax.SAXException;
@@ -433,7 +434,7 @@ public class DUUIRemoteDriver extends DUUIV1Driver {
         for (DUUIV1Annotator annotator : annotators) {
             int concurrency = annotator.config().concurrency();
             for (int j = 0; j < concurrency; j++) {
-                nodes.add(DUUINode.v1(componentId + "-slot-" + slot++, annotator));
+                nodes.add(new DUUINode<>(componentId + "-slot-" + slot++, null, annotator));
             }
         }
 
@@ -443,6 +444,6 @@ public class DUUIRemoteDriver extends DUUIV1Driver {
         System.out.printf("[RemoteDriver][V2] Component %s instantiated with %d nodes across %d endpoint(s)%n",
                 componentId, nodes.size(), urls.size());
 
-        return new DUUIComponent<>(componentId, nodes, closeAction);
+        return new DUUIV1Component(componentId, nodes, closeAction);
     }
 }

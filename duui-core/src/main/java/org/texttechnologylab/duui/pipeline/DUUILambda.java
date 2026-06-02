@@ -1,21 +1,20 @@
 package org.texttechnologylab.duui.pipeline;
 
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
-import org.texttechnologylab.duui.ems.DUUIActor;
 import org.texttechnologylab.duui.ems.DUUITraits;
 import org.texttechnologylab.duui.ems.GID;
 import org.texttechnologylab.duui.pipeline.component.DUUIAnnotator;
 
 import java.util.Objects;
 
-public final class DUUILambda<T> implements DUUIAnnotator<T> {
+public final class DUUILambda<T> implements DUUIAnnotator<T>, DUUIProcessor<T> {
     private final GID gid;
     private final DUUITraits traits;
     private final String id;
     private final DUUIProcessor<T> processor;
 
     private DUUILambda(String id, DUUIProcessor<T> processor) {
-        this.gid = GID.create();
+        this.gid = GID.create(DUUILambda.class);
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
         this.processor = Objects.requireNonNull(processor, "processor");

@@ -8,6 +8,7 @@ import org.luaj.vm2.LuaTable;
 import org.luaj.vm2.LuaValue;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
@@ -24,11 +25,11 @@ import java.util.Map;
  */
 public interface IDUUICommunicationLayer {
 
-  public void serialize(JCas jc, ByteArrayOutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException;
+  public DUUIFlow<Void> serialize(JCas jc, ByteArrayOutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException;
 
   default void serializeStream(JCas jc, OutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException, IOException {
     ByteArrayOutputStream buffered = new ByteArrayOutputStream();
-    serialize(jc, buffered, parameters, sourceView);
+    serialize(jc, buffered, parameters, sourceView).join();
     buffered.writeTo(out);
   }
 
@@ -44,13 +45,13 @@ public interface IDUUICommunicationLayer {
       serialize(jc, out, parameters, "_InitialView");
   }
 
-  public void deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException;
+  public DUUIFlow<Void> deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException;
 
   default void deserializeStream(JCas jc, InputStream input, String targetView) throws CommunicationLayerException, CASException, IOException {
     ByteArrayInputStream buffered = input instanceof ByteArrayInputStream byteArrayInput
             ? byteArrayInput
             : new ByteArrayInputStream(input.readAllBytes());
-    deserialize(jc, buffered, targetView);
+    deserialize(jc, buffered, targetView).join();
   }
 
   /**

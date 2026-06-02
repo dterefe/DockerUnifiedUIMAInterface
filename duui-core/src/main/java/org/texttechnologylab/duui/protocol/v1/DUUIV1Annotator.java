@@ -74,7 +74,7 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
             DUUIV1Config config
     ) throws Exception {
         long initStart = System.currentTimeMillis();
-        this.gid = GID.create();
+        this.gid = GID.create(DUUIV1Annotator.class);
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
         this.endpointHandle = Objects.requireNonNull(endpoint, "endpoint");

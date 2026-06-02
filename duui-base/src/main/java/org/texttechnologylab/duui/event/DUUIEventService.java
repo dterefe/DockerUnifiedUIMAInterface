@@ -116,12 +116,7 @@ public final class DUUIEventService implements AutoCloseable {
     }
 
     public void log(String name, DUUIEventLevel level, String message) {
-        emit(DUUIEvent.builder(DUUIEventType.LOG)
-                .context(currentContext())
-                .name(name)
-                .level(level)
-                .message(message)
-                .build());
+        emit(new DUUILog(level, message, java.util.Map.of()).event(name, currentContext()));
     }
 
     public void metric(String category, String name, double value, String unit, long intervalMs, java.util.Map<String, String> tags) {

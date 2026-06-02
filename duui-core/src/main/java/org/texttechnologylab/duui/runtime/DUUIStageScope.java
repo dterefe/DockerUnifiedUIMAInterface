@@ -1,6 +1,7 @@
 package org.texttechnologylab.duui.runtime;
 
 import org.apache.uima.jcas.JCas;
+import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
@@ -8,6 +9,8 @@ import org.texttechnologylab.duui.pipeline.DUUIExecutionMode;
 import org.texttechnologylab.duui.pipeline.DUUILambda;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,7 +48,24 @@ public final class DUUIStageScope<T> implements AutoCloseable {
 
     public DUUIStageScope<T> lambda(DUUILambda<T> lambda) {
         Objects.requireNonNull(lambda, "lambda");
-        components.add(DUUIComponent.processor(lambda.id(), lambda));
+        components.add(new DUUIComponent<>(lambda.id(), List.of(new DUUINode<>(lambda.id() + "-slot-0", lambda))) {
+            @Override
+            public DUUIFlow<DUUIArtifact<T>> process(DUUIArtifact<T> artifact) {
+                DUUINode<T> node;
+                try {
+                    node = borrowNode();
+                } catch (InterruptedException error) {
+                    return DUUIFlow.cancel(error);
+                }
+                try {
+                    return DUUIFlow.dispatch(node.processor().process(artifact));
+                } catch (Exception error) {
+                    return DUUIFlow.fail(error);
+                } finally {
+                    returnNode(node);
+                }
+            }
+        });
         return this;
     }
 
@@ -85,7 +105,7 @@ public final class DUUIStageScope<T> implements AutoCloseable {
         for (DUUIStageContribution contribution : contributions) {
             contribution.contribute();
         }
-        DUUICheckpoint<T> output = ownerPipeline().createCheckpoint(id + "-out");
+        DUUICheckpoint<T> output = (flow == null ? checkpoint.pipeline() : flow.pipeline()).createCheckpoint(id + "-out");
         DUUIStage<T> stage = DUUIStage.processor(
                 id,
                 parallel ? DUUIExecutionMode.PARALLEL : DUUIExecutionMode.LINEAR,
@@ -101,7 +121,4 @@ public final class DUUIStageScope<T> implements AutoCloseable {
         }
     }
 
-    private DUUIPipelineScope ownerPipeline() {
-        return flow == null ? checkpoint.pipeline() : flow.pipeline();
-    }
 }

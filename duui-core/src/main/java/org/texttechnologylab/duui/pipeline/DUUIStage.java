@@ -39,7 +39,7 @@ public final class DUUIStage<T> implements DUUIResource {
             DUUIDispatchPolicy dispatchPolicy,
             DUUIFailurePolicy failurePolicy
     ) {
-        this.gid = GID.create();
+        this.gid = GID.create(DUUIStage.class);
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
         this.name = name == null ? id : name;

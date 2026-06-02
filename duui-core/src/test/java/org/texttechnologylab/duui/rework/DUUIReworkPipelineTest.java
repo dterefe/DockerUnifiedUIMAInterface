@@ -1,12 +1,11 @@
 package org.texttechnologylab.duui.rework;
 
-import org.apache.uima.cas.CASException;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import org.apache.uima.fit.factory.TypeSystemDescriptionFactory;
-import org.apache.uima.jcas.JCas;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
-import org.texttechnologylab.duui.communication.DUUICommunicationLayer;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.orchestration.DUUIOrchestrator;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
@@ -15,14 +14,18 @@ import org.texttechnologylab.duui.pipeline.DUUIAdapter;
 import org.texttechnologylab.duui.pipeline.DUUIExecutionMode;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.pipeline.component.DUUIV1Component;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -34,25 +37,49 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class DUUIReworkPipelineTest {
     @Test
     void componentCreatesSlotsFromReplicasAndPreservesAnnotatorIdentity() throws Exception {
-        DUUIV1Annotator first = annotator("first", 2);
-        DUUIV1Annotator second = annotator("second", 1);
-        DUUIComponent<JCas> component = DUUIComponent.v1("component", List.of(first, second));
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        StringWriter writer = new StringWriter();
+        TypeSystemDescriptionFactory.createTypeSystemDescription().toXML(writer);
+        String typeSystem = writer.toString();
+        server.createContext("/v1/documentation", exchange -> respond(exchange, 200, """
+                {"annotator_name":"mock","version":"1","description":"mock","implementation_lang":"java","meta":{},"parameters":{}}
+                """));
+        server.createContext("/v1/typesystem", exchange -> respond(exchange, 200, typeSystem));
+        server.createContext("/v1/communication_layer", exchange -> respond(exchange, 200, """
+                function serialize(view, output, parameters, sourceView)
+                end
 
-        assertEquals(3, component.capacity());
+                function deserialize(view, input)
+                end
+                """));
+        server.start();
+        try {
+            DUUIV1Annotator first = annotator("first", 2, server);
+            DUUIV1Annotator second = annotator("second", 1, server);
+            DUUIComponent<org.apache.uima.jcas.JCas> component = new DUUIV1Component("component", List.of(
+                    new DUUINode<>("component-slot-0", null, first),
+                    new DUUINode<>("component-slot-1", null, first),
+                    new DUUINode<>("component-slot-2", null, second)
+            ));
 
-        DUUINode<JCas> firstSlot = component.borrowNode();
-        DUUINode<JCas> secondSlot = component.borrowNode();
-        DUUINode<JCas> thirdSlot = component.borrowNode();
+            assertEquals(3, component.capacity());
 
-        assertSame(first, firstSlot.annotator());
-        assertSame(first, secondSlot.annotator());
-        assertSame(second, thirdSlot.annotator());
+            DUUINode<org.apache.uima.jcas.JCas> firstSlot = component.borrowNode();
+            DUUINode<org.apache.uima.jcas.JCas> secondSlot = component.borrowNode();
+            DUUINode<org.apache.uima.jcas.JCas> thirdSlot = component.borrowNode();
 
-        component.returnNode(firstSlot);
-        component.returnNode(secondSlot);
-        component.returnNode(thirdSlot);
+            assertSame(first, firstSlot.annotator());
+            assertSame(first, secondSlot.annotator());
+            assertSame(second, thirdSlot.annotator());
 
-        assertEquals(3, component.availableNodes());
+            component.returnNode(firstSlot);
+            component.returnNode(secondSlot);
+            component.returnNode(thirdSlot);
+
+            assertEquals(3, component.availableNodes());
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -63,9 +90,26 @@ class DUUIReworkPipelineTest {
                 return DUUIArtifact.of(artifact.payload().length());
             }
         };
-        DUUIComponent<Integer> increment = DUUIComponent.processor(
-                "increment",
-                artifact -> DUUIArtifact.of(artifact.payload() + 1));
+        DUUIComponent<Integer> increment = new DUUIComponent<>("increment", List.of(new DUUINode<>(
+                "increment-slot-0",
+                artifact -> DUUIArtifact.of(artifact.payload() + 1)))) {
+            @Override
+            public DUUIFlow<DUUIArtifact<Integer>> process(DUUIArtifact<Integer> artifact) {
+                DUUINode<Integer> node;
+                try {
+                    node = borrowNode();
+                } catch (InterruptedException error) {
+                    return DUUIFlow.cancel(error);
+                }
+                try {
+                    return DUUIFlow.dispatch(node.processor().process(artifact));
+                } catch (Exception error) {
+                    return DUUIFlow.fail(error);
+                } finally {
+                    returnNode(node);
+                }
+            }
+        };
 
         DUUICheckpoint<String> strings = new DUUICheckpoint<>("strings");
         DUUICheckpoint<Integer> integers = new DUUICheckpoint<>("integers");
@@ -90,7 +134,24 @@ class DUUIReworkPipelineTest {
     void checkpointRejectsMultipleStages() {
         DUUICheckpoint<String> checkpoint = new DUUICheckpoint<>("single-stage");
         DUUICheckpoint<String> output = new DUUICheckpoint<>("output");
-        DUUIComponent<String> identity = DUUIComponent.processor("identity", artifact -> artifact);
+        DUUIComponent<String> identity = new DUUIComponent<>("identity", List.of(new DUUINode<>("identity-slot-0", artifact -> artifact))) {
+            @Override
+            public DUUIFlow<DUUIArtifact<String>> process(DUUIArtifact<String> artifact) {
+                DUUINode<String> node;
+                try {
+                    node = borrowNode();
+                } catch (InterruptedException error) {
+                    return DUUIFlow.cancel(error);
+                }
+                try {
+                    return DUUIFlow.dispatch(node.processor().process(artifact));
+                } catch (Exception error) {
+                    return DUUIFlow.fail(error);
+                } finally {
+                    returnNode(node);
+                }
+            }
+        };
 
         checkpoint.stage(DUUIStage.processor("first", DUUIExecutionMode.LINEAR, List.of(identity), output, null, null));
 
@@ -111,7 +172,26 @@ class DUUIReworkPipelineTest {
             }
         }, parts, new DUUICheckpoint<>("after-split")));
         parts.stage(DUUIStage.processor("uppercase", DUUIExecutionMode.LINEAR, List.of(
-                DUUIComponent.processor("uppercase", artifact -> DUUIArtifact.of(artifact.payload().toUpperCase()))
+                new DUUIComponent<>("uppercase", List.of(new DUUINode<>(
+                        "uppercase-slot-0",
+                        artifact -> DUUIArtifact.of(artifact.payload().toUpperCase())))) {
+                    @Override
+                    public DUUIFlow<DUUIArtifact<String>> process(DUUIArtifact<String> artifact) {
+                        DUUINode<String> node;
+                        try {
+                            node = borrowNode();
+                        } catch (InterruptedException error) {
+                            return DUUIFlow.cancel(error);
+                        }
+                        try {
+                            return DUUIFlow.dispatch(node.processor().process(artifact));
+                        } catch (Exception error) {
+                            return DUUIFlow.fail(error);
+                        } finally {
+                            returnNode(node);
+                        }
+                    }
+                }
         ), join, null, null));
         join.stage(DUUIStage.join("join", artifacts -> DUUIArtifact.of(artifacts.stream()
                 .map(DUUIArtifact::payload)
@@ -131,30 +211,18 @@ class DUUIReworkPipelineTest {
         assertEquals("ABC", result.results().get(result.results().size() - 1).artifact().payload());
     }
 
-    private static DUUIV1Annotator annotator(String id, int concurrency) throws Exception {
+    private static DUUIV1Annotator annotator(String id, int concurrency, HttpServer server) throws Exception {
         return new DUUIV1Annotator(
                 id,
-                new DUUIHttpEndpoint(URI.create("http://localhost/" + id), HttpClient.newHttpClient()),
-                new DUUIV1Config(concurrency, "_InitialView", "_InitialView", Map.of()),
-                new DUUIV1Annotator.Documentation(id, "test", "test", "java", Map.of(), Map.of()),
-                TypeSystemDescriptionFactory.createTypeSystemDescription(),
-                new NoopCommunicationLayer(),
-                ignored -> { }
+                new DUUIHttpEndpoint(URI.create("http://127.0.0.1:" + server.getAddress().getPort()), HttpClient.newHttpClient()),
+                new DUUIV1Config(concurrency, "_InitialView", "_InitialView", Map.of())
         );
     }
 
-    private static final class NoopCommunicationLayer implements DUUICommunicationLayer {
-        @Override
-        public void serialize(JCas sourceCas, OutputStream output, Map<String, String> parameters, String sourceView) throws CASException {
-        }
-
-        @Override
-        public void deserialize(JCas targetCas, InputStream input, String targetView) throws CASException {
-        }
-
-        @Override
-        public DUUICommunicationLayer copy() {
-            return new NoopCommunicationLayer();
-        }
+    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
     }
 }

@@ -10,6 +10,9 @@ import org.luaj.vm2.lib.jse.CoerceLuaToJava;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.IDUUICommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
@@ -80,8 +83,14 @@ public class DUUILuaCommunicationLayer implements IDUUICommunicationLayer {
         );
     }
 
-    public void serialize(JCas jc, ByteArrayOutputStream out, Map<String, String> parameters, String sourceView) throws CommunicationLayerException, CASException {
-        serializeStream(jc, out, parameters, sourceView);
+    @Phase(DUUIStatus.SERIALIZE)
+    public DUUIFlow<Void> serialize(JCas jc, ByteArrayOutputStream out, Map<String, String> parameters, String sourceView) throws CommunicationLayerException, CASException {
+        try {
+            serializeStream(jc, out, parameters, sourceView);
+            return DUUIFlow.dispatch();
+        } catch (CommunicationLayerException | CASException error) {
+            throw error;
+        }
     }
 
     public void serializeStream(JCas jc, OutputStream out, Map<String, String> parameters, String sourceView) throws CommunicationLayerException, CASException {
@@ -98,8 +107,14 @@ public class DUUILuaCommunicationLayer implements IDUUICommunicationLayer {
         deserialize(jc, input, "_InitialView");
     }
 
-    public void deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException {
-        deserializeStream(jc, input, targetView);
+    @Phase(DUUIStatus.DESERIALIZE)
+    public DUUIFlow<Void> deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException {
+        try {
+            deserializeStream(jc, input, targetView);
+            return DUUIFlow.dispatch();
+        } catch (CommunicationLayerException | CASException error) {
+            throw error;
+        }
     }
 
     public void deserializeStream(JCas jc, InputStream input, String targetView) throws CommunicationLayerException, CASException {

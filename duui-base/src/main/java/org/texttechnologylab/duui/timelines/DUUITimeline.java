@@ -56,11 +56,31 @@ public final class DUUITimeline {
     }
 
     public DUUIPhase create(DUUIStatus status, DUUIDispatchMode dispatchMode, Method method, List<DUUIActor> actors) {
+        return create(status, dispatchMode, method, null, List.of(), actors);
+    }
+
+    public DUUIPhase create(
+            DUUIStatus status,
+            DUUIDispatchMode dispatchMode,
+            Method method,
+            Object owner,
+            List<?> parameters,
+            List<DUUIActor> actors
+    ) {
         Optional<DUUIPhase> parent = current();
-        DUUIPhase phase = new DUUIPhase(status, dispatchMode, method, parent.map(DUUIPhase::id).orElse(null));
+        List<DUUIActor> phaseActors = List.copyOf(actors == null ? List.of() : actors);
+        DUUIPhase phase = new DUUIPhase(
+                status,
+                dispatchMode,
+                method,
+                parent.map(DUUIPhase::id).orElse(null),
+                owner,
+                parameters,
+                phaseActors
+        );
         phases.put(phase.id(), phase);
         parent.ifPresent(value -> children.add(value.id(), phase.id()));
-        actors.forEach(value -> {
+        phaseActors.forEach(value -> {
             this.actors.add(value.id(), phase.id());
             this.phaseActors.add(phase.id(), value.id());
         });

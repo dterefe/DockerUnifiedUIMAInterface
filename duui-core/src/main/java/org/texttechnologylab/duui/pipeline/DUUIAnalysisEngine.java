@@ -11,7 +11,7 @@ import org.texttechnologylab.duui.pipeline.component.DUUIAnnotator;
 
 import java.util.Objects;
 
-public final class DUUIAnalysisEngine implements DUUIAnnotator<JCas> {
+public final class DUUIAnalysisEngine implements DUUIAnnotator<JCas>, DUUIProcessor<JCas> {
     private final GID gid;
     private final DUUITraits traits;
     private final String id;
@@ -19,7 +19,7 @@ public final class DUUIAnalysisEngine implements DUUIAnnotator<JCas> {
     private final String sourceView;
 
     private DUUIAnalysisEngine(String id, AnalysisEngine engine, String sourceView) {
-        this.gid = GID.create();
+        this.gid = GID.create(DUUIAnalysisEngine.class);
         this.traits = DUUITraits.empty();
         this.id = Objects.requireNonNull(id, "id");
         this.engine = Objects.requireNonNull(engine, "engine");

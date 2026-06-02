@@ -3,6 +3,7 @@ package org.texttechnologylab.duui.orchestration;
 import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 import org.texttechnologylab.duui.timelines.DUUIDispatcher;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
 
@@ -16,6 +17,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
     private final String id;
@@ -23,9 +25,11 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
     private final DUUIExecutionContext context;
     private final Callable<T> work;
     private final CompletableFuture<T> completion = new CompletableFuture<>();
+    private final CompletableFuture<Void> dispatch = new CompletableFuture<>();
+    private final DUUIFlow<T> flow = DUUIFlow.fromCompletionStages(dispatch, completion);
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile Future<?> submittedFuture;
-    private volatile DUUIDispatchMode phaseDispatchOverride;
+    private volatile DUUIDispatchMode dispatchModeOverride;
 
     public DUUITask(String orchestratorId, DUUIExecutionContext context, Callable<T> work) {
         this.id = UUID.randomUUID().toString();
@@ -47,8 +51,36 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
         return this;
     }
 
-    public void phaseDispatchOverride(DUUIDispatchMode mode) {
-        this.phaseDispatchOverride = mode;
+    public void dispatchModeOverride(DUUIDispatchMode mode) {
+        this.dispatchModeOverride = mode;
+    }
+
+    public DUUITask<T> onDispatch(Runnable handler) {
+        if (handler != null) {
+            flow.onDispatch(handler);
+        }
+        return this;
+    }
+
+    public DUUITask<T> onCompleted(Consumer<? super T> handler) {
+        if (handler != null) {
+            flow.onCompleted(handler);
+        }
+        return this;
+    }
+
+    public DUUITask<T> onFailed(Consumer<? super Throwable> handler) {
+        if (handler != null) {
+            flow.onFailed(handler);
+        }
+        return this;
+    }
+
+    public DUUITask<T> onCancelled(Runnable handler) {
+        if (handler != null) {
+            flow.onCancelled(ignored -> handler.run());
+        }
+        return this;
     }
 
     public T await() {
@@ -85,9 +117,10 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
         if (!started.compareAndSet(false, true)) {
             return;
         }
+        dispatch.complete(null);
         DUUIWorker worker = DUUIWorker.current();
         context.eventContext(context.eventContext().toBuilder().workerId(worker.id()).build());
-        try (DUUIDispatcher.DispatchOverride ignoredDispatch = DUUIDispatcher.bindDispatchOverride(phaseDispatchOverride)) {
+        try (DUUIDispatcher.DispatchOverride ignoredDispatch = DUUIDispatcher.bindDispatchOverride(dispatchModeOverride)) {
             if (worker.currentTask() == this) {
                 try {
                     completion.complete(work.call());
@@ -116,6 +149,7 @@ public final class DUUITask<T> implements Runnable, Future<T>, AutoCloseable {
     public String id() { return id; }
     public String orchestratorId() { return orchestratorId; }
     public DUUIExecutionContext context() { return context; }
+    public DUUIFlow<T> flow() { return flow; }
     @Override
     public boolean isDone() { return completion.isDone(); }
     @Override

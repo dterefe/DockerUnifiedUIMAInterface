@@ -5,9 +5,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileWriter;
-import java.io.FilterOutputStream;
 import java.io.IOException;
-import java.io.InvalidObjectException;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -18,7 +16,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.uima.cas.CASException;
@@ -36,11 +33,6 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationL
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.PipelineComponentException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.pipeline_storage.DUUIPipelineDocumentPerformance;
 import org.texttechnologylab.duui.ReproducibleAnnotation;
-import org.texttechnologylab.duui.clients.http.DUUIChannel;
-import org.texttechnologylab.duui.clients.http.DUUIHttpEndpoint;
-import org.texttechnologylab.duui.clients.http.DUUIHttpMethod;
-import org.texttechnologylab.duui.clients.http.IDUUIEndpoint;
-import org.texttechnologylab.duui.event.DUUIEventService;
 
 import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 
@@ -54,30 +46,6 @@ public interface IDUUIInstantiatedPipelineComponent {
             .followRedirects(HttpClient.Redirect.ALWAYS)
             .proxy(ProxySelector.getDefault())
             .connectTimeout(Duration.ofSeconds(1000)).build();
-
-    final class CountingOutputStream extends FilterOutputStream {
-        private long bytesWritten;
-
-        CountingOutputStream(java.io.OutputStream output) {
-            super(output);
-        }
-
-        @Override
-        public void write(int b) throws IOException {
-            out.write(b);
-            bytesWritten++;
-        }
-
-        @Override
-        public void write(byte[] b, int off, int len) throws IOException {
-            out.write(b, off, len);
-            bytesWritten += len;
-        }
-
-        long bytesWritten() {
-            return bytesWritten;
-        }
-    }
 
     /**
      * @return the non-null {@link DUUIPipelineComponent} configuration backing this instantiated component.
@@ -201,44 +169,6 @@ public interface IDUUIInstantiatedPipelineComponent {
      * @throws PipelineComponentException
      */
 
-    /**
-     * Isolated Lua-only alternative process path.
-     * Branched from {@link #process} based on {@link IDUUICommunicationLayer#supportsProcess()}.
-     * Uses the communication layer's native {@code process()} method instead of
-     * serialize → HTTP POST → deserialize.
-     */
-    private static void processLuaAlternative(
-            JCas jc,
-            IDUUIInstantiatedPipelineComponent comp,
-            DUUIPipelineDocumentPerformance perf,
-            IDUUICommunicationLayer layer,
-            Triplet<IDUUIUrlAccessible, Long, Long> queue,
-            DUUIPipelineComponent pipelineComponent,
-            JCas viewJc
-    ) throws CASException, CommunicationLayerException {
-        JCas sourceCas = viewJc.getView(comp.getSourceView());
-        JCas targetCas;
-        try {
-            targetCas = viewJc.getView(comp.getTargetView());
-        } catch (CASException e) {
-            targetCas = viewJc.createView(comp.getTargetView());
-        }
-
-        layer.process(
-                sourceCas,
-                new DUUIHttpRequestHandler(_client, queue.getValue0().generateURL(), pipelineComponent.getTimeout()),
-                comp.getParameters(),
-                targetCas
-        );
-
-        ReproducibleAnnotation ann = new ReproducibleAnnotation(jc);
-        ann.setDescription(comp.getPipelineComponent().getFinalizedRepresentation());
-        ann.setCompression(DUUIPipelineComponent.compressionMethod);
-        ann.setTimestamp(System.nanoTime());
-        ann.setPipelineName(perf.getRunKey());
-        ann.addToIndexes();
-    }
-
     public static void process(JCas jc, IDUUIInstantiatedPipelineComponent comp, DUUIPipelineDocumentPerformance perf) throws CASException, PipelineComponentException {
         Triplet<IDUUIUrlAccessible,Long,Long> queue = comp.getComponent();
 
@@ -276,66 +206,36 @@ public interface IDUUIInstantiatedPipelineComponent {
                 }
             }
 
-            // Branch: Lua alternative process — isolated per spec
-            if (layer.supportsProcess()) {
-                processLuaAlternative(jc, comp, perf, layer, queue, pipelineComponent, viewJc);
-                return;
-            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            layer.serialize(viewJc, out, comp.getParameters(), comp.getSourceView());
+            byte[] ok = out.toByteArray();
+            long sizeArray = ok.length;
 
-            AtomicLong serializeNanos = new AtomicLong();
-            AtomicLong deserializeNanos = new AtomicLong();
-            AtomicLong requestBytes = new AtomicLong();
-
-            // Build DUUIChannel for async V1 processing
-            IDUUIEndpoint endpoint = new DUUIHttpEndpoint(
-                    URI.create(queue.getValue0().generateURL()), _client);
-            DUUIChannel<JCas> channel = new DUUIChannel<>(
-                    endpoint,
-                    DUUIHttpMethod.POST,
-                    DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS,
-                    (jcVal, out) -> {
-                        long phaseStart = System.nanoTime();
-                        CountingOutputStream counting = new CountingOutputStream(out);
-                        try {
-                            layer.serializeStream(jcVal, counting, comp.getParameters(), comp.getSourceView());
-                        } finally {
-                            serializeNanos.addAndGet(System.nanoTime() - phaseStart);
-                            requestBytes.addAndGet(counting.bytesWritten());
-                        }
-                    },
-                    (jcVal, in) -> {
-                        long phaseStart = System.nanoTime();
-                        try {
-                            layer.deserializeStream(jcVal, in, comp.getTargetView());
-                        } finally {
-                            deserializeNanos.addAndGet(System.nanoTime() - phaseStart);
-                        }
-                        return jcVal;
-                    },
-                    new DUUIChannel.RequestCustomizer<>() {},
-                    pipelineComponent.getV1StreamingTransport(false),
-                    pipelineComponent.getV1ContentType("application/octet-stream")
-            );
-
-            long sizeArray = 0;
             long serializeEnd = System.nanoTime();
             long annotatorStart = serializeEnd;
 
             int tries = 0;
             boolean bRunning = true;
             long annotatorEnd = 0;
-            long deserializeStart = 0;
             long deserializeEnd = 0;
             String errorMsg = null;
 
             while (bRunning) {
                 try {
                     tries++;
-                    channel.post(viewJc);
+                    HttpRequest request = HttpRequest.newBuilder()
+                            .uri(URI.create(queue.getValue0().generateURL() + DUUIComposer.V1_COMPONENT_ENDPOINT_PROCESS))
+                            .version(HttpClient.Version.HTTP_1_1)
+                            .header("Content-Type", pipelineComponent.getV1ContentType("application/octet-stream"))
+                            .POST(HttpRequest.BodyPublishers.ofByteArray(ok))
+                            .build();
+                    HttpResponse<byte[]> response = _client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray()).join();
+                    if (response.statusCode() != 200 && !pipelineComponent.getIgnoringHTTP200Error()) {
+                        throw new IOException("Endpoint returned HTTP " + response.statusCode());
+                    }
                     annotatorEnd = System.nanoTime();
-                    deserializeStart = annotatorEnd - deserializeNanos.get();
-                    deserializeEnd = annotatorEnd;
-                    sizeArray = requestBytes.get();
+                    layer.deserialize(viewJc, new ByteArrayInputStream(response.body()), comp.getTargetView());
+                    deserializeEnd = System.nanoTime();
                     break;
                 } catch (Exception e) {
                     System.out.printf(
@@ -391,9 +291,9 @@ public interface IDUUIInstantiatedPipelineComponent {
                 ann.setTimestamp(System.nanoTime());
                 ann.setPipelineName(perf.getRunKey());
                 ann.addToIndexes();
-                long serializeDuration = serializeNanos.get() == 0 ? serializeEnd - serializeStart : serializeNanos.get();
-                long deserializeDuration = deserializeNanos.get();
-                long requestDuration = Math.max(0, annotatorEnd - annotatorStart - serializeDuration - deserializeDuration);
+                long serializeDuration = serializeEnd - serializeStart;
+                long deserializeDuration = deserializeEnd - annotatorEnd;
+                long requestDuration = annotatorEnd - annotatorStart;
                 perf.addData(serializeDuration, deserializeDuration,
                         requestDuration, queue.getValue2() - queue.getValue1(),
                         deserializeEnd - queue.getValue1(),

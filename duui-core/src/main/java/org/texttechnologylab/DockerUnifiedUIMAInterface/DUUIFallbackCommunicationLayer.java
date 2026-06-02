@@ -10,6 +10,9 @@ import org.json.JSONObject;
 import org.luaj.vm2.LuaValue;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIHttpRequestHandler;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 import org.xml.sax.SAXException;
 
 import java.io.*;
@@ -19,7 +22,8 @@ import java.util.List;
 import java.util.Map;
 
 public class DUUIFallbackCommunicationLayer implements IDUUICommunicationLayer {
-    public void serialize(JCas jc, ByteArrayOutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException {
+    @Phase(DUUIStatus.SERIALIZE)
+    public DUUIFlow<Void> serialize(JCas jc, ByteArrayOutputStream out, Map<String,String> parameters, String sourceView) throws CommunicationLayerException, CASException {
         try {
             JSONObject obj = new JSONObject();
             ByteArrayOutputStream arr = new ByteArrayOutputStream();
@@ -37,6 +41,7 @@ public class DUUIFallbackCommunicationLayer implements IDUUICommunicationLayer {
             obj.put("compression", "none");
             obj.put("params", parameters);
             out.write(obj.toString().getBytes(StandardCharsets.UTF_8));
+            return DUUIFlow.dispatch();
         } catch (SAXException e) {
             throw new CommunicationLayerException("Failed to serialize CAS to XMI!", e);
         } catch (IOException e) {
@@ -44,7 +49,8 @@ public class DUUIFallbackCommunicationLayer implements IDUUICommunicationLayer {
         }
     }
 
-    public void deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException {
+    @Phase(DUUIStatus.DESERIALIZE)
+    public DUUIFlow<Void> deserialize(JCas jc, ByteArrayInputStream input, String targetView) throws CommunicationLayerException, CASException {
         try {
             String body = new String(input.readAllBytes(), Charset.defaultCharset());
             JSONObject response = new JSONObject(body);
@@ -55,6 +61,7 @@ public class DUUIFallbackCommunicationLayer implements IDUUICommunicationLayer {
             } else {
                 throw new InvalidObjectException("Response is not in the right format!");
             }
+            return DUUIFlow.dispatch();
         } catch (SAXException | IOException e) {
             throw new CommunicationLayerException("Failed to deserialize CAS from XMI!", e);
         }

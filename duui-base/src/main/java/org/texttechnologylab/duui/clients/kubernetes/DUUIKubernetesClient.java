@@ -17,6 +17,9 @@ import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import org.texttechnologylab.duui.clients.DUUIClient;
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
 import org.texttechnologylab.duui.clients.handle.DUUIProxy;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -200,73 +203,84 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
          * Creates a deployment with the given image, replicas, container port, and node selector labels.
          * Labels should be in {@code "key=value"} format.
          */
-        public Deployment create(String image, int replicas, int containerPort, List<String> nodeLabels) {
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Deployment> create(String image, int replicas, int containerPort, List<String> nodeLabels) {
             return create(image, replicas, containerPort, nodeLabels, Map.of());
         }
 
         /**
          * Creates a deployment with additional pod labels.
          */
-        public Deployment create(
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Deployment> create(
                 String image,
                 int replicas,
                 int containerPort,
                 List<String> nodeLabels,
                 Map<String, String> podLabels
         ) {
-            Objects.requireNonNull(image, "image");
+            try {
+                Objects.requireNonNull(image, "image");
 
-            List<NodeSelectorTerm> terms = nodeSelectorTerms(nodeLabels);
+                List<NodeSelectorTerm> terms = nodeSelectorTerms(nodeLabels);
 
-            Map<String, String> allPodLabels = new java.util.LinkedHashMap<>();
-            allPodLabels.put("pipeline-uid", name);
-            if (podLabels != null) {
-                allPodLabels.putAll(podLabels);
+                Map<String, String> allPodLabels = new java.util.LinkedHashMap<>();
+                allPodLabels.put("pipeline-uid", name);
+                if (podLabels != null) {
+                    allPodLabels.putAll(podLabels);
+                }
+
+                io.fabric8.kubernetes.api.model.apps.Deployment deployment = new DeploymentBuilder()
+                        .withNewMetadata()
+                        .withName(name)
+                        .endMetadata()
+                        .withNewSpec()
+                        .withReplicas(replicas)
+                        .withNewTemplate()
+                        .withNewMetadata()
+                        .withLabels(allPodLabels)
+                        .endMetadata()
+                        .withNewSpec()
+                        .addNewContainer()
+                        .withName(name)
+                        .withImage(image)
+                        .addNewPort()
+                        .withContainerPort(containerPort)
+                        .endPort()
+                        .endContainer()
+                        .withNewAffinity()
+                        .withNewNodeAffinity()
+                        .withNewRequiredDuringSchedulingIgnoredDuringExecution()
+                        .addAllToNodeSelectorTerms(terms)
+                        .endRequiredDuringSchedulingIgnoredDuringExecution()
+                        .endNodeAffinity()
+                        .endAffinity()
+                        .endSpec()
+                        .endTemplate()
+                        .withNewSelector()
+                        .addToMatchLabels("pipeline-uid", name)
+                        .endSelector()
+                        .endSpec()
+                        .build();
+
+                k8s.apps().deployments().inNamespace(namespace).resource(deployment).create();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
             }
-
-            io.fabric8.kubernetes.api.model.apps.Deployment deployment = new DeploymentBuilder()
-                    .withNewMetadata()
-                    .withName(name)
-                    .endMetadata()
-                    .withNewSpec()
-                    .withReplicas(replicas)
-                    .withNewTemplate()
-                    .withNewMetadata()
-                    .withLabels(allPodLabels)
-                    .endMetadata()
-                    .withNewSpec()
-                    .addNewContainer()
-                    .withName(name)
-                    .withImage(image)
-                    .addNewPort()
-                    .withContainerPort(containerPort)
-                    .endPort()
-                    .endContainer()
-                    .withNewAffinity()
-                    .withNewNodeAffinity()
-                    .withNewRequiredDuringSchedulingIgnoredDuringExecution()
-                    .addAllToNodeSelectorTerms(terms)
-                    .endRequiredDuringSchedulingIgnoredDuringExecution()
-                    .endNodeAffinity()
-                    .endAffinity()
-                    .endSpec()
-                    .endTemplate()
-                    .withNewSelector()
-                    .addToMatchLabels("pipeline-uid", name)
-                    .endSelector()
-                    .endSpec()
-                    .build();
-
-            k8s.apps().deployments().inNamespace(namespace).resource(deployment).create();
-            return this;
         }
 
         /**
          * Scales the deployment to the given number of replicas.
          */
-        public Deployment scale(int replicas) {
-            k8s.apps().deployments().inNamespace(namespace).withName(name).scale(replicas);
-            return this;
+        @Phase(DUUIStatus.SCALE)
+        public DUUIFlow<Deployment> scale(int replicas) {
+            try {
+                k8s.apps().deployments().inNamespace(namespace).withName(name).scale(replicas);
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         /**
@@ -297,9 +311,14 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
         /**
          * Deletes the deployment from the cluster.
          */
-        public Deployment delete() {
-            k8s.apps().deployments().inNamespace(namespace).withName(name).delete();
-            return this;
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Deployment> delete() {
+            try {
+                k8s.apps().deployments().inNamespace(namespace).withName(name).delete();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         @Override
@@ -360,7 +379,8 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
          * @param port          service port
          * @param targetPort    container target port
          */
-        public Service createClusterIP(
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Service> createClusterIP(
                 Map<String, String> selector,
                 String portName,
                 int port,
@@ -377,7 +397,8 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
          * @param port          service port
          * @param targetPort    container target port
          */
-        public Service createNodePort(
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Service> createNodePort(
                 Map<String, String> selector,
                 String portName,
                 int port,
@@ -394,7 +415,8 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
          * @param port          service port
          * @param targetPort    container target port
          */
-        public Service createLoadBalancer(
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Service> createLoadBalancer(
                 Map<String, String> selector,
                 String portName,
                 int port,
@@ -403,31 +425,35 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
             return create(selector, portName, port, targetPort, "LoadBalancer");
         }
 
-        private Service create(
+        private DUUIFlow<Service> create(
                 Map<String, String> selector,
                 String portName,
                 int port,
                 int targetPort,
                 String type
         ) {
-            io.fabric8.kubernetes.api.model.Service service = new ServiceBuilder()
-                    .withNewMetadata()
-                    .withName(name)
-                    .endMetadata()
-                    .withNewSpec()
-                    .withSelector(selector == null ? Collections.singletonMap("pipeline-uid", name) : selector)
-                    .addNewPort()
-                    .withName(portName == null ? "k-port" : portName)
-                    .withProtocol("TCP")
-                    .withPort(port)
-                    .withTargetPort(new IntOrString(targetPort))
-                    .endPort()
-                    .withType(type)
-                    .endSpec()
-                    .build();
+            try {
+                io.fabric8.kubernetes.api.model.Service service = new ServiceBuilder()
+                        .withNewMetadata()
+                        .withName(name)
+                        .endMetadata()
+                        .withNewSpec()
+                        .withSelector(selector == null ? Collections.singletonMap("pipeline-uid", name) : selector)
+                        .addNewPort()
+                        .withName(portName == null ? "k-port" : portName)
+                        .withProtocol("TCP")
+                        .withPort(port)
+                        .withTargetPort(new IntOrString(targetPort))
+                        .endPort()
+                        .withType(type)
+                        .endSpec()
+                        .build();
 
-            k8s.services().inNamespace(namespace).resource(service).create();
-            return this;
+                k8s.services().inNamespace(namespace).resource(service).create();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         /**
@@ -454,9 +480,14 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
         /**
          * Deletes the service from the cluster.
          */
-        public Service delete() {
-            k8s.services().inNamespace(namespace).withName(name).delete();
-            return this;
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Service> delete() {
+            try {
+                k8s.services().inNamespace(namespace).withName(name).delete();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         @Override
@@ -511,18 +542,23 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
         /**
          * Returns the pod status phase (e.g., Running, Pending, Succeeded, Failed).
          */
-        public String status() {
-            io.fabric8.kubernetes.api.model.Pod p = inspect();
-            return p == null || p.getStatus() == null || p.getStatus().getPhase() == null
-                    ? "Unknown"
-                    : p.getStatus().getPhase();
+        @Phase(DUUIStatus.PING)
+        public DUUIFlow<String> status() {
+            try {
+                io.fabric8.kubernetes.api.model.Pod p = inspect();
+                return DUUIFlow.dispatch(p == null || p.getStatus() == null || p.getStatus().getPhase() == null
+                        ? "Unknown"
+                        : p.getStatus().getPhase());
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         /**
          * Returns {@code true} if the pod is in the Running phase.
          */
         public boolean running() {
-            return "Running".equalsIgnoreCase(status());
+            return "Running".equalsIgnoreCase(status().join());
         }
 
         /**
@@ -565,9 +601,14 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
         /**
          * Deletes the pod from the cluster.
          */
-        public Pod delete() {
-            k8s.pods().inNamespace(namespace).withName(name).delete();
-            return this;
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Pod> delete() {
+            try {
+                k8s.pods().inNamespace(namespace).withName(name).delete();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         @Override
@@ -616,19 +657,29 @@ public final class DUUIKubernetesClient implements DUUIClient<DUUIProxy> {
         /**
          * Creates the namespace.
          */
-        public Namespace create() {
-            k8s.namespaces().resource(
-                    new NamespaceBuilder().withNewMetadata().withName(name).endMetadata().build()
-            ).create();
-            return this;
+        @Phase(DUUIStatus.CREATE)
+        public DUUIFlow<Namespace> create() {
+            try {
+                k8s.namespaces().resource(
+                        new NamespaceBuilder().withNewMetadata().withName(name).endMetadata().build()
+                ).create();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         /**
          * Deletes the namespace (and all resources within it).
          */
-        public Namespace delete() {
-            k8s.namespaces().withName(name).delete();
-            return this;
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Namespace> delete() {
+            try {
+                k8s.namespaces().withName(name).delete();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(e);
+            }
         }
 
         /**

@@ -4,6 +4,9 @@ import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.core.DockerClientImpl;
 import org.texttechnologylab.duui.clients.handle.DUUIAddress;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
+import org.texttechnologylab.duui.timelines.DUUIStatus;
+import org.texttechnologylab.duui.timelines.Phase;
 
 import java.io.File;
 import java.time.Instant;
@@ -82,49 +85,49 @@ public class DUUIDockerClient extends DUUIVirtualizationClient<DUUIDockerClient.
             super(address, reference, size, createdAt);
         }
 
-        @Override
-        public Container run(List<String> command) throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.RUN)
+        public DUUIFlow<Container> run(List<String> command) {
             try {
                 String id = docker.createContainerCmd(reference())
                     .withCmd(command)
                     .exec()
                     .getId();
                 docker.startContainerCmd(id).exec();
-                return container(id);
-            } catch (RuntimeException e) {
-                throw new DUUIContainerRunException("Failed to run Docker image " + reference(), e);
+                return DUUIFlow.dispatch(container(id));
+            } catch (RuntimeException | DUUIVirtualizationException e) {
+                return DUUIFlow.fail(new DUUIContainerRunException("Failed to run Docker image " + reference(), e));
             }
         }
 
-        @Override
-        public DUUIContainerImage pull() throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.PULL)
+        public DUUIFlow<DUUIContainerImage> pull() {
             try {
                 docker.pullImageCmd(reference()).start().awaitCompletion();
-                return this;
+                return DUUIFlow.dispatch(this);
             } catch (RuntimeException | InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new DUUIContainerImageException("Failed to pull Docker image " + reference(), e);
+                return DUUIFlow.fail(new DUUIContainerImageException("Failed to pull Docker image " + reference(), e));
             }
         }
 
-        @Override
-        public DUUIContainerImage push() throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.PUSH)
+        public DUUIFlow<DUUIContainerImage> push() {
             try {
                 docker.pushImageCmd(reference()).start().awaitCompletion();
-                return this;
+                return DUUIFlow.dispatch(this);
             } catch (RuntimeException | InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new DUUIContainerImageException("Failed to push Docker image " + reference(), e);
+                return DUUIFlow.fail(new DUUIContainerImageException("Failed to push Docker image " + reference(), e));
             }
         }
 
-        @Override
-        public DUUIContainerImage build(String context) throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.BUILD)
+        public DUUIFlow<DUUIContainerImage> build(String context) {
             try {
                 String imageId = docker.buildImageCmd(new File(context)).start().awaitImageId();
-                return image(imageId);
+                return DUUIFlow.dispatch(image(imageId));
             } catch (RuntimeException e) {
-                throw new DUUIContainerBuildException("Failed to build Docker image from " + context, e);
+                return DUUIFlow.fail(new DUUIContainerBuildException("Failed to build Docker image from " + context, e));
             }
         }
     }
@@ -134,48 +137,54 @@ public class DUUIDockerClient extends DUUIVirtualizationClient<DUUIDockerClient.
             super(address, id, image, createdAt);
         }
 
-        @Override
-        public boolean running() throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.PING)
+        public DUUIFlow<Boolean> running() {
             try {
                 Boolean running = docker.inspectContainerCmd(id()).exec().getState().getRunning();
-                return Boolean.TRUE.equals(running);
+                return DUUIFlow.dispatch(Boolean.TRUE.equals(running));
             } catch (RuntimeException e) {
-                throw new DUUIContainerInspectException("Failed to inspect Docker container " + id(), e);
+                return DUUIFlow.fail(new DUUIContainerInspectException("Failed to inspect Docker container " + id(), e));
             }
         }
 
-        @Override
-        public DUUIContainer start() throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.START)
+        public DUUIFlow<DUUIContainer> start() {
             try {
                 docker.startContainerCmd(id()).exec();
-                return this;
+                return DUUIFlow.dispatch(this);
             } catch (RuntimeException e) {
-                throw new DUUIContainerStartException("Failed to start Docker container " + id(), e);
+                return DUUIFlow.fail(new DUUIContainerStartException("Failed to start Docker container " + id(), e));
             }
         }
 
-        @Override
-        public DUUIContainer stop() throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.STOP)
+        public DUUIFlow<DUUIContainer> stop() {
             try {
                 docker.stopContainerCmd(id()).exec();
-                return this;
+                return DUUIFlow.dispatch(this);
             } catch (RuntimeException e) {
-                throw new DUUIContainerStopException("Failed to stop Docker container " + id(), e);
+                return DUUIFlow.fail(new DUUIContainerStopException("Failed to stop Docker container " + id(), e));
             }
         }
 
-        @Override
-        public DUUIContainer restart() throws DUUIVirtualizationException {
-            stop();
-            return start();
+        @Phase(DUUIStatus.RESTART)
+        public DUUIFlow<DUUIContainer> restart() {
+            try {
+                docker.stopContainerCmd(id()).exec();
+                docker.startContainerCmd(id()).exec();
+                return DUUIFlow.dispatch(this);
+            } catch (RuntimeException e) {
+                return DUUIFlow.fail(new DUUIContainerStopException("Failed to restart Docker container " + id(), e));
+            }
         }
 
-        @Override
-        public void delete() throws DUUIVirtualizationException {
+        @Phase(DUUIStatus.DELETE)
+        public DUUIFlow<Void> delete() {
             try {
                 docker.removeContainerCmd(id()).withForce(true).exec();
+                return DUUIFlow.dispatch();
             } catch (RuntimeException e) {
-                throw new DUUIContainerDeleteException("Failed to delete Docker container " + id(), e);
+                return DUUIFlow.fail(new DUUIContainerDeleteException("Failed to delete Docker container " + id(), e));
             }
         }
     }

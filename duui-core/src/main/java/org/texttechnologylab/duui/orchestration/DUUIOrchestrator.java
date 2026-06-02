@@ -24,6 +24,7 @@ import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.DUUIStageType;
 import org.texttechnologylab.duui.pipeline.DUUIJoin;
 import org.texttechnologylab.duui.timelines.DUUIDispatcher;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 import org.texttechnologylab.duui.timelines.DUUIStatus;
 import org.texttechnologylab.duui.timelines.Phase;
 
@@ -37,6 +38,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class DUUIOrchestrator {
     private final String orchestratorId;
@@ -96,7 +100,11 @@ public final class DUUIOrchestrator {
         Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues = initializeQueues();
         Map<String, DUUIExecutionContext> contexts = new LinkedHashMap<>();
         for (DUUIPipeline.SourceBinding<?> binding : pipeline.sources()) {
-            generateUnchecked(binding, queues, contexts, effectiveRootContext);
+            try {
+                source(binding, queues, contexts, effectiveRootContext).join();
+            } catch (Exception e) {
+                throw new DUUIFrameworkStateException("DUUI source failed before task scheduling.", e);
+            }
         }
         DUUIOrchestrationResult completed = runQueues(queues, contexts, result, effectiveRootContext);
         logRunCompleted(started, completed);
@@ -129,20 +137,6 @@ public final class DUUIOrchestrator {
         return completed;
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private void generateUnchecked(
-            DUUIPipeline.SourceBinding binding,
-            Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues,
-            Map<String, DUUIExecutionContext> contexts,
-            DUUIExecutionContext rootContext
-    ) {
-        try {
-            DUUIOrchestratorPhaseDispatch.source(this, binding, queues, contexts, rootContext);
-        } catch (Exception e) {
-            throw new DUUIFrameworkStateException("DUUI source failed before task scheduling.", e);
-        }
-    }
-
     private DUUIOrchestrationResult runQueues(
             Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues,
             Map<String, DUUIExecutionContext> contexts,
@@ -152,7 +146,7 @@ public final class DUUIOrchestrator {
         Map<String, ParentJoin> parents = new LinkedHashMap<>();
         Map<String, String> childToParent = new LinkedHashMap<>();
         List<ScheduledArtifact> inFlight = new ArrayList<>();
-        while (hasQueuedArtifacts(queues) || !inFlight.isEmpty()) {
+        while (queues.values().stream().anyMatch(queue -> !queue.isEmpty()) || !inFlight.isEmpty()) {
             DUUIScheduler.Selection selection = scheduler.select(queues, inFlight.size(), executor);
             boolean dispatched = false;
             if (selection != null) {
@@ -161,11 +155,17 @@ public final class DUUIOrchestrator {
                 if (executionContext == null) {
                     executionContext = initialContext.copyValues();
                 }
-                DUUITask<DUUIExecutionResult<?>> task = taskUnchecked(selection.checkpoint(), artifact, executionContext);
+                @SuppressWarnings("rawtypes")
+                DUUICheckpoint checkpoint = selection.checkpoint();
+                @SuppressWarnings("rawtypes")
+                DUUIArtifact rawArtifact = artifact;
+                DUUITask<DUUIExecutionResult<?>> task = executor.task(executionContext, () -> executor.execute(checkpoint, rawArtifact));
+                ScheduledArtifact scheduled = new ScheduledArtifact(selection.checkpoint(), artifact, executionContext, task);
+                attachDUUIFlowRouting(scheduled);
                 DUUIEventService.current().logger("duui.orchestrator").debug("Scheduling artifact artifact=" + artifact.id() + " checkpoint=" + selection.checkpoint().id() + " task=" + task.id() + " in_flight=" + inFlight.size());
                 scheduler.dispatch(task, executor, executor.dispatchPolicyFor(selection.checkpoint(), artifact));
                 governor.onTaskScheduled(orchestratorId(), pipeline, artifact, selection.checkpoint(), task, Map.of("inFlight", inFlight.size()));
-                inFlight.add(new ScheduledArtifact(selection.checkpoint(), artifact, executionContext, task));
+                inFlight.add(scheduled);
                 dispatched = true;
             }
 
@@ -216,13 +216,24 @@ public final class DUUIOrchestrator {
             Map<String, ParentJoin> parents,
             Map<String, String> childToParent
     ) {
-        DUUIExecutionResult<?> result = scheduled.task().await();
+        DUUIExecutionResult<?> result = scheduled.routedResult();
+        if (result == null) {
+            Throwable routedFailure = scheduled.routedFailure();
+            if (scheduled.routedCancelled()) {
+                Throwable cancellation = scheduled.routedCancellation();
+                result = frameworkFailure(scheduled, cancellation == null
+                        ? new CancellationException("Task " + scheduled.task().id() + " was cancelled.")
+                        : cancellation, true);
+            } else if (routedFailure != null) {
+                result = frameworkFailure(scheduled, routedFailure, false);
+            } else {
+                result = scheduled.task().await();
+            }
+        }
         DUUIExecutionContext executionContext = scheduled.context();
         orchestrationResult.addResult(result);
         DUUIEventService.current().logger("duui.orchestrator").debug("Completed scheduled artifact artifact=" + scheduled.artifact().id() + " checkpoint=" + scheduled.checkpoint().id() + " task=" + scheduled.task().id() + " status=" + result.status());
         governor.onTaskCompleted(orchestratorId(), pipeline, scheduled.artifact(), scheduled.checkpoint(), result, Map.of("task", scheduled.task().id()));
-        DUUIEventService.current().metric("orchestrator", "duui.orchestrator.completed_results", orchestrationResult.results().size(), "count", 0L,
-                Map.of("pipeline", pipeline.id(), "status", result.status().name()));
         List<DUUIArtifact<?>> emittedArtifacts = executionContext.drainEmittedArtifacts();
         DUUIStage<?> stage = scheduled.checkpoint().stage();
 
@@ -275,6 +286,56 @@ public final class DUUIOrchestrator {
             }
         }
         return true;
+    }
+
+    private void attachDUUIFlowRouting(ScheduledArtifact scheduled) {
+        scheduled.task().flow()
+                .onDispatch(() -> DUUIEventService.current().logger("duui.orchestrator").debug(
+                        "Dispatched task artifact=" + scheduled.artifact().id()
+                                + " checkpoint=" + scheduled.checkpoint().id()
+                                + " task=" + scheduled.task().id()))
+                .onCompleted(result -> {
+                    scheduled.complete(result);
+                    DUUIEventService.current().logger("duui.orchestrator").debug(
+                            "Task completion event artifact=" + scheduled.artifact().id()
+                                    + " checkpoint=" + scheduled.checkpoint().id()
+                                    + " task=" + scheduled.task().id());
+                })
+                .onFailed(error -> {
+                    scheduled.fail(error);
+                    DUUIEventService.current().logger("duui.orchestrator").error(
+                            "Task failure event artifact=" + scheduled.artifact().id()
+                                    + " checkpoint=" + scheduled.checkpoint().id()
+                                    + " task=" + scheduled.task().id(), error);
+                })
+                .onCancelled(error -> {
+                    scheduled.cancel(error);
+                    DUUIEventService.current().logger("duui.orchestrator").warning(
+                            "Task cancellation event artifact=" + scheduled.artifact().id()
+                                    + " checkpoint=" + scheduled.checkpoint().id()
+                                    + " task=" + scheduled.task().id());
+                });
+    }
+
+    private DUUIExecutionResult<?> frameworkFailure(ScheduledArtifact scheduled, Throwable error, boolean cancelled) {
+        DUUIArtifact<?> artifact = scheduled.artifact();
+        DUUIStage<?> stage = scheduled.checkpoint().stage();
+        DUUIFailure failure = new DUUIFailure(
+                cancelled ? DUUIFailureCategory.CANCELLATION : DUUIFailureCategory.PROGRAMMING_BUG,
+                cancelled ? DUUIFailureSeverity.WARNING : DUUIFailureSeverity.ERROR,
+                DUUIRecoverability.NON_RETRYABLE,
+                cancelled ? DUUIFailureAction.CANCEL_IMPORT : DUUIFailureAction.FAIL_FAST,
+                artifact.id(),
+                artifact.payload() == null ? null : artifact.payload().getClass().getName(),
+                scheduled.checkpoint().id(),
+                stage == null ? null : stage.id(),
+                stage == null ? null : stage.componentId(),
+                null,
+                1,
+                error == null ? null : error.getMessage(),
+                error
+        );
+        return DUUIExecutionResult.failure(artifact, failure, System.currentTimeMillis() - scheduled.startedAt(), 1);
     }
 
     private boolean completeJoinStage(
@@ -381,8 +442,6 @@ public final class DUUIOrchestrator {
 
     private void logRunCompleted(long started, DUUIOrchestrationResult result) {
         long durationMs = System.currentTimeMillis() - started;
-        DUUIEventService.current().metric("orchestrator", "duui.orchestrator.run_duration_ms", durationMs, "milliseconds", durationMs,
-                Map.of("pipeline", pipeline.id(), "status", result.hasFailures() ? "failed" : "completed"));
         DUUIEventService.current().logger("duui.orchestrator").info("Pipeline run completed pipeline=" + pipeline.id() + " duration_ms=" + durationMs + " results=" + result.results().size() + " failed=" + result.hasFailures());
     }
 
@@ -394,21 +453,52 @@ public final class DUUIOrchestrator {
         return queues;
     }
 
-    private boolean hasQueuedArtifacts(Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues) {
-        return queues.values().stream().anyMatch(queue -> !queue.isEmpty());
-    }
+    private static final class ScheduledArtifact {
+        private final DUUICheckpoint<?> checkpoint;
+        private final DUUIArtifact<?> artifact;
+        private final DUUIExecutionContext context;
+        private final DUUITask<DUUIExecutionResult<?>> task;
+        private final long startedAt;
+        private final AtomicReference<DUUIExecutionResult<?>> routedResult = new AtomicReference<>();
+        private final AtomicReference<Throwable> routedFailure = new AtomicReference<>();
+        private final AtomicReference<Throwable> routedCancellation = new AtomicReference<>();
+        private final AtomicBoolean routedCancelled = new AtomicBoolean(false);
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private DUUITask<DUUIExecutionResult<?>> taskUnchecked(DUUICheckpoint checkpoint, DUUIArtifact artifact, DUUIExecutionContext context) {
-        return executor.task(context, () -> executor.execute(checkpoint, artifact));
-    }
+        private ScheduledArtifact(
+                DUUICheckpoint<?> checkpoint,
+                DUUIArtifact<?> artifact,
+                DUUIExecutionContext context,
+                DUUITask<DUUIExecutionResult<?>> task
+        ) {
+            this.checkpoint = checkpoint;
+            this.artifact = artifact;
+            this.context = context;
+            this.task = task;
+            this.startedAt = System.currentTimeMillis();
+        }
 
-    private record ScheduledArtifact(
-            DUUICheckpoint<?> checkpoint,
-            DUUIArtifact<?> artifact,
-            DUUIExecutionContext context,
-            DUUITask<DUUIExecutionResult<?>> task
-    ) {
+        void complete(DUUIExecutionResult<?> result) {
+            routedResult.compareAndSet(null, result);
+        }
+
+        void fail(Throwable error) {
+            routedFailure.compareAndSet(null, error);
+        }
+
+        void cancel(Throwable error) {
+            routedCancellation.compareAndSet(null, error);
+            routedCancelled.set(true);
+        }
+
+        DUUIExecutionResult<?> routedResult() { return routedResult.get(); }
+        Throwable routedFailure() { return routedFailure.get(); }
+        Throwable routedCancellation() { return routedCancellation.get(); }
+        boolean routedCancelled() { return routedCancelled.get(); }
+        DUUICheckpoint<?> checkpoint() { return checkpoint; }
+        DUUIArtifact<?> artifact() { return artifact; }
+        DUUIExecutionContext context() { return context; }
+        DUUITask<DUUIExecutionResult<?>> task() { return task; }
+        long startedAt() { return startedAt; }
     }
 
     private static final class ParentJoin {
@@ -451,7 +541,7 @@ public final class DUUIOrchestrator {
     public DUUIDispatcher dispatcher() { return executor.dispatcher(); }
 
     @Phase(DUUIStatus.SOURCE)
-    public void source(
+    public DUUIFlow<Void> source(
             DUUIPipeline.SourceBinding binding,
             Map<DUUICheckpoint<?>, Queue<DUUIArtifact<?>>> queues,
             Map<String, DUUIExecutionContext> contexts,
@@ -463,5 +553,6 @@ public final class DUUIOrchestrator {
             contexts.put(artifact.id(), rootContext.copyValues());
             governor.onArtifactQueued(orchestratorId(), pipeline, artifact, binding.output(), Map.of("source", "pipeline-source"));
         });
+        return DUUIFlow.dispatch();
     }
 }

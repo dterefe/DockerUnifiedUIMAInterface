@@ -4,7 +4,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.fit.factory.TypeSystemDescriptionFactory;
-import org.apache.uima.cas.CASException;
 import org.apache.uima.jcas.JCas;
 import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.artifact.DUUIArtifact;
@@ -17,13 +16,17 @@ import org.texttechnologylab.duui.clients.hosts.virtualization.DUUIVirtualizatio
 import org.texttechnologylab.duui.clients.hosts.virtualization.DUUIVirtualizationException;
 import org.texttechnologylab.duui.clients.http.DUUIChannel;
 import org.texttechnologylab.duui.clients.http.DUUIHttpMethod;
-import org.texttechnologylab.duui.communication.DUUICommunicationLayer;
+import org.texttechnologylab.duui.clients.http.DUUIHttpResponse;
+import org.texttechnologylab.duui.clients.http.DUUIRelay;
+import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
+import org.texttechnologylab.duui.pipeline.component.DUUINode;
+import org.texttechnologylab.duui.pipeline.component.DUUIV1Component;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Annotator;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1Config;
 import org.texttechnologylab.duui.protocol.v1.DUUIV1TelemetryConfig;
+import org.texttechnologylab.duui.timelines.DUUIFlow;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.StringWriter;
 import java.net.InetSocketAddress;
@@ -31,7 +34,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -57,30 +59,31 @@ class DUUIReworkProtocolEnvironmentTest {
         try {
             DUUIRemoteEnvironment environment = new DUUIRemoteEnvironment();
             DUUIRemoteEndpoint endpoint = environment.endpoint("http://127.0.0.1:" + server.getAddress().getPort());
-            SimpleCommunicationLayer communicationLayer = new SimpleCommunicationLayer();
             DUUIV1Annotator annotator = new DUUIV1Annotator(
                     "mock",
                     endpoint,
-                    new DUUIV1Config(1, "_InitialView", "_InitialView", Map.of()),
-                    new DUUIV1Annotator.Documentation("mock", "1", "mock", "java", Map.of(), Map.of()),
-                    TypeSystemDescriptionFactory.createTypeSystemDescription(),
-                    communicationLayer,
-                    cas -> cas.setDocumentText("processed"));
+                    new DUUIV1Config(1, "_InitialView", "_InitialView", Map.of()));
+            DUUIComponent<JCas> component = new DUUIV1Component("mock-component", List.of(
+                    new DUUINode<>("mock-component-slot-0", null, annotator)
+            ));
             JCas cas = JCasFactory.createJCas();
+            cas.setDocumentText("input");
 
-            annotator.process(DUUIArtifact.of(cas));
+            component.process(DUUIArtifact.of(cas)).join();
 
-            assertEquals("processed", cas.getDocumentText());
+            assertEquals("processed:input", cas.getDocumentText());
             assertEquals(endpoint, annotator.endpoint());
 
-            DUUIChannel<String> process = new DUUIChannel<>(
-                    endpoint,
-                    DUUIHttpMethod.POST,
-                    "/v1/process",
-                    (value, output) -> output.write(value.getBytes(StandardCharsets.UTF_8)),
-                    (value, input) -> new String(input.readAllBytes(), StandardCharsets.UTF_8));
+            DUUIChannel<String> process = new DUUIChannel<>(endpoint, DUUIHttpMethod.POST, "/v1/process");
+            DUUIRelay<String> inputRelay = new DUUIRelay<>();
+            DUUIRelay<DUUIHttpResponse> outputRelay = new DUUIRelay<>();
+            try (OutputStream output = inputRelay.outputStream()) {
+                output.write("input".getBytes(StandardCharsets.UTF_8));
+            }
+            DUUIHttpResponse response = process.request(inputRelay, outputRelay);
 
-            assertEquals("processed:input", process.post("input"));
+            assertEquals(200, response.statusCode());
+            assertEquals("processed:input", new String(outputRelay.inputStream().readAllBytes(), StandardCharsets.UTF_8));
         } finally {
             server.stop(0);
         }
@@ -103,40 +106,10 @@ class DUUIReworkProtocolEnvironmentTest {
                     endpoint,
                     new DUUIV1Config(1, "_InitialView", "_InitialView", Map.of()));
 
-            assertEquals("optional-docs", annotator.documentation().annotator_name());
-            assertEquals("unknown", annotator.documentation().version());
-            assertNotNull(annotator.typesystem());
-            assertNotNull(annotator.communicationLayer());
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void v1AnnotatorUsesLuaProcessCapabilityWithoutProcessEndpoint() throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        AtomicBoolean processEndpointCalled = new AtomicBoolean(false);
-        String typeSystem = typeSystemXml();
-        server.createContext("/v1/typesystem", exchange -> respond(exchange, 200, typeSystem));
-        server.createContext("/v1/communication_layer", exchange -> respond(exchange, 200, luaProcessCommunicationLayer()));
-        server.createContext("/v1/process", exchange -> {
-            processEndpointCalled.set(true);
-            respond(exchange, 500, "process endpoint should not be called");
-        });
-        server.start();
-        try {
-            DUUIRemoteEnvironment environment = new DUUIRemoteEnvironment();
-            DUUIRemoteEndpoint endpoint = environment.endpoint("http://127.0.0.1:" + server.getAddress().getPort());
-            DUUIV1Annotator annotator = new DUUIV1Annotator(
-                    "lua-process",
-                    endpoint,
-                    new DUUIV1Config(1, "_InitialView", "_InitialView", Map.of()));
-            JCas cas = JCasFactory.createJCas();
-
-            annotator.process(DUUIArtifact.of(cas));
-
-            assertEquals("lua-process-ok", cas.getDocumentText());
-            assertFalse(processEndpointCalled.get());
+            assertEquals("optional-docs", annotator.documentation().join().annotator_name());
+            assertEquals("unknown", annotator.documentation().join().version());
+            assertNotNull(annotator.typesystemDescription().join());
+            assertNotNull(annotator.communicationLayer().join());
         } finally {
             server.stop(0);
         }
@@ -144,11 +117,13 @@ class DUUIReworkProtocolEnvironmentTest {
 
     @Test
     void v1DriverUsesConfiguredTransportAndTelemetryForV2Config() {
-        TestV1Driver driver = new TestV1Driver();
-        driver.withV1Transport(false, "application/x-duui-test");
-        driver.withV1Telemetry(new DUUIV1TelemetryConfig(true, 10, null, 250));
+        TestV1Driver driver = new TestV1Driver(
+                4,
+                false,
+                "application/x-duui-test",
+                new DUUIV1TelemetryConfig(true, 10, null, 250));
 
-        DUUIV1Config config = driver.config(4);
+        DUUIV1Config config = driver.config;
 
         assertEquals(4, config.concurrency());
         assertFalse(config.streamingTransport());
@@ -162,7 +137,7 @@ class DUUIReworkProtocolEnvironmentTest {
     void dockerStyleEnvironmentHandlesAreProxiesNotComponents() throws Exception {
         FakeVirtualizationClient client = new FakeVirtualizationClient();
         DUUIContainerImage image = client.image("duui/mock:latest");
-        DUUIContainer container = image.run(List.of("serve"));
+        DUUIContainer container = image.run(List.of("serve")).join();
 
         assertTrue(image instanceof DUUIProxy);
         assertTrue(container instanceof DUUIProxy);
@@ -200,50 +175,6 @@ class DUUIReworkProtocolEnvironmentTest {
                 """;
     }
 
-    private static String luaProcessCommunicationLayer() {
-        return """
-                SUPPORTS_PROCESS = true
-
-                function serialize(view, output, parameters, sourceView)
-                  error("serialize should not be called")
-                end
-
-                function deserialize(view, input)
-                  error("deserialize should not be called")
-                end
-
-                function process(source, handler, parameters, target)
-                  target:setDocumentText("lua-process-ok")
-                end
-                """;
-    }
-
-    private static final class SimpleCommunicationLayer implements DUUICommunicationLayer {
-        @Override
-        public void serialize(JCas sourceCas, OutputStream output, Map<String, String> parameters, String sourceView)
-                throws CASException {
-            try {
-                output.write(sourceCas.getDocumentText().getBytes(StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                throw new IllegalStateException(e);
-            }
-        }
-
-        @Override
-        public void deserialize(JCas targetCas, InputStream input, String targetView) throws CASException {
-            try {
-                targetCas.setDocumentText(new String(input.readAllBytes(), StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                throw new IllegalStateException(e);
-            }
-        }
-
-        @Override
-        public DUUICommunicationLayer copy() {
-            return new SimpleCommunicationLayer();
-        }
-    }
-
     private static final class FakeVirtualizationClient extends DUUIVirtualizationClient<FakeContainer, FakeImage> {
         private FakeVirtualizationClient() {
             super(org.texttechnologylab.duui.clients.handle.DUUIAddress.parse("docker://local"));
@@ -267,8 +198,16 @@ class DUUIReworkProtocolEnvironmentTest {
 
     private static final class TestV1Driver
             extends org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIV1Driver {
-        private DUUIV1Config config(int concurrency) {
-            return v1Config(concurrency, "_InitialView", "_InitialView", Map.of("k", "v"));
+        private final DUUIV1Config config;
+
+        private TestV1Driver() {
+            this.config = null;
+        }
+
+        private TestV1Driver(int concurrency, boolean streamingTransport, String contentType, DUUIV1TelemetryConfig telemetry) {
+            withV1Transport(streamingTransport, contentType);
+            withV1Telemetry(telemetry);
+            this.config = v1Config(concurrency, "_InitialView", "_InitialView", Map.of("k", "v"));
         }
 
         @Override
@@ -305,23 +244,23 @@ class DUUIReworkProtocolEnvironmentTest {
         }
 
         @Override
-        public DUUIContainer run(List<String> command) {
-            return new FakeContainer("container-1", this);
+        public DUUIFlow<? extends DUUIContainer> run(List<String> command) {
+            return DUUIFlow.dispatch(new FakeContainer("container-1", this));
         }
 
         @Override
-        public DUUIContainerImage pull() {
-            return this;
+        public DUUIFlow<DUUIContainerImage> pull() {
+            return DUUIFlow.dispatch(this);
         }
 
         @Override
-        public DUUIContainerImage push() {
-            return this;
+        public DUUIFlow<DUUIContainerImage> push() {
+            return DUUIFlow.dispatch(this);
         }
 
         @Override
-        public DUUIContainerImage build(String context) {
-            return this;
+        public DUUIFlow<DUUIContainerImage> build(String context) {
+            return DUUIFlow.dispatch(this);
         }
     }
 
@@ -331,27 +270,28 @@ class DUUIReworkProtocolEnvironmentTest {
         }
 
         @Override
-        public boolean running() {
-            return true;
+        public DUUIFlow<Boolean> running() {
+            return DUUIFlow.dispatch(true);
         }
 
         @Override
-        public DUUIContainer start() throws DUUIVirtualizationException {
-            return this;
+        public DUUIFlow<DUUIContainer> start() throws DUUIVirtualizationException {
+            return DUUIFlow.dispatch(this);
         }
 
         @Override
-        public DUUIContainer stop() throws DUUIVirtualizationException {
-            return this;
+        public DUUIFlow<DUUIContainer> stop() throws DUUIVirtualizationException {
+            return DUUIFlow.dispatch(this);
         }
 
         @Override
-        public DUUIContainer restart() throws DUUIVirtualizationException {
-            return this;
+        public DUUIFlow<DUUIContainer> restart() throws DUUIVirtualizationException {
+            return DUUIFlow.dispatch(this);
         }
 
         @Override
-        public void delete() throws DUUIVirtualizationException {
+        public DUUIFlow<Void> delete() throws DUUIVirtualizationException {
+            return DUUIFlow.dispatch(null);
         }
     }
 }

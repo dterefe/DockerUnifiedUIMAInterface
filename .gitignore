@@ -45,3 +45,5 @@ docs/javadoc/
 *~
 duui-core/target/*
 duui-dua/target/*
+duui-base/target/*
+duui-phase-processor/target/*

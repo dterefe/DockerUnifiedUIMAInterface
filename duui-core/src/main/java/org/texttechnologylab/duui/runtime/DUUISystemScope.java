@@ -81,7 +81,7 @@ public final class DUUISystemScope implements AutoCloseable {
     }
 
     public DUUIOrchestrationResult run(String pipelineId, Collection<DUUIArtifact<?>> artifacts) {
-        DUUIExecutor effectiveExecutor = executor == null ? new DUUIExecutor(id) : executor;
+        DUUIExecutor effectiveExecutor = executor == null ? DUUIExecutor.getInstance(id) : executor;
         if (executor == null) {
             executor = effectiveExecutor;
         }
@@ -102,7 +102,7 @@ public final class DUUISystemScope implements AutoCloseable {
     }
 
     public DUUIOrchestrationResult run(String pipelineId) {
-        DUUIExecutor effectiveExecutor = executor == null ? new DUUIExecutor(id) : executor;
+        DUUIExecutor effectiveExecutor = executor == null ? DUUIExecutor.getInstance(id) : executor;
         if (executor == null) {
             executor = effectiveExecutor;
         }

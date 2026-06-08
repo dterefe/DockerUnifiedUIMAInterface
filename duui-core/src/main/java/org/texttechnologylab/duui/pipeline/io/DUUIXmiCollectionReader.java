@@ -25,6 +25,7 @@ import java.util.stream.Stream;
 public final class DUUIXmiCollectionReader implements DUUIGenerator<JCas> {
     private final List<Path> sources;
     private final TypeSystemDescription typeSystemDescription;
+    private final java.util.function.Supplier<JCas> casSupplier;
 
     private DUUIXmiCollectionReader(Builder builder) {
         this.sources = List.copyOf(builder.sources);
@@ -32,6 +33,7 @@ public final class DUUIXmiCollectionReader implements DUUIGenerator<JCas> {
             throw new IllegalArgumentException("DUUI XMI collection reader requires at least one XMI source.");
         }
         this.typeSystemDescription = builder.typeSystemDescription;
+        this.casSupplier = builder.casSupplier;
     }
 
     public static Builder builder() {
@@ -41,7 +43,7 @@ public final class DUUIXmiCollectionReader implements DUUIGenerator<JCas> {
     @Override
     public void generate(DUUIArtifactEmitter<JCas> emitter) throws Exception {
         for (Path source : sources) {
-            JCas cas = createCas();
+            JCas cas = casSupplier != null ? casSupplier.get() : createCas();
             try (InputStream raw = Files.newInputStream(source)) {
                 InputStream input = raw;
                 String fileName = source.getFileName().toString();
@@ -63,21 +65,28 @@ public final class DUUIXmiCollectionReader implements DUUIGenerator<JCas> {
     }
 
     private JCas createCas() throws ResourceInitializationException, CASException {
-        if (typeSystemDescription == null) {
-            return JCasFactory.createJCas();
+        java.util.function.Supplier<JCas> mergedSupplier = org.texttechnologylab.duui.orchestration.DUUIOrchestrator.MERGED_CAS_SUPPLIER.get();
+        if (mergedSupplier != null) {
+            return mergedSupplier.get();
         }
-        return JCasFactory.createJCas(typeSystemDescription);
+        return JCasFactory.createJCas();
     }
 
     public static final class Builder {
         private final List<Path> sources = new ArrayList<>();
         private TypeSystemDescription typeSystemDescription;
+        private java.util.function.Supplier<JCas> casSupplier;
 
         private Builder() {
         }
 
         public Builder typeSystem(TypeSystemDescription typeSystemDescription) {
             this.typeSystemDescription = typeSystemDescription;
+            return this;
+        }
+
+        public Builder casSupplier(java.util.function.Supplier<JCas> casSupplier) {
+            this.casSupplier = casSupplier;
             return this;
         }
 

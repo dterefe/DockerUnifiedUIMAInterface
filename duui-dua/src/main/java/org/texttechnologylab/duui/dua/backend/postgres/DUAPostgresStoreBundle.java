@@ -18,10 +18,12 @@ public final class DUAPostgresStoreBundle {
                                       DUAPostgresConnectionProvider connections,
                                       DUAPostgresRangeType rangeType) {
         Objects.requireNonNull(connections, "connections");
-        return DUAStoreBundle.of(
+        return new DUAStoreBundle(
                 casStorage,
                 new DUAPostgresAnnotationIndex(connections, DUAPostgresAnnotationIndex.DEFAULT_TABLE, rangeType),
                 new DUAPostgresTypesystemIndex(connections),
+                new DUAPostgresValueQueryStore(connections),
+                new DUAPostgresTextQueryStore(connections),
                 DUABackendLayout.postgres());
     }
 }

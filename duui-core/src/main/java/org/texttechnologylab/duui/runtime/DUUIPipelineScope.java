@@ -3,6 +3,8 @@ package org.texttechnologylab.duui.runtime;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
 import org.texttechnologylab.duui.pipeline.DUUIPipeline;
+import org.texttechnologylab.duui.pipeline.DUUIStage;
+import org.texttechnologylab.duui.pipeline.DUUIStageType;
 import org.texttechnologylab.duui.pipeline.DUUISource;
 
 import java.util.ArrayList;
@@ -12,7 +14,7 @@ import java.util.Objects;
 public final class DUUIPipelineScope implements AutoCloseable {
     private final DUUISystemScope system;
     private final String id;
-    private final List<DUUIPipeline.SourceBinding<?>> sources = new ArrayList<>();
+    private final List<SourceEntry<?>> sources = new ArrayList<>();
     private final List<DUUICheckpoint<?>> checkpoints = new ArrayList<>();
     private DUUIFailurePolicy failurePolicy;
     private boolean closed;
@@ -40,6 +42,10 @@ public final class DUUIPipelineScope implements AutoCloseable {
         return new DUUIForkScope<>(parent, fork);
     }
 
+    /**
+     * Creates a split scope backed by a FORK stage type.
+     * SPLIT is not a distinct stage type per [DESIGN: lines 76-92].
+     */
     public <I, O> DUUISplitScope<I, O> split(DUUIFlowScope<I> parent, org.texttechnologylab.duui.pipeline.DUUISplit<I, O> split) {
         return new DUUISplitScope<>(parent, split);
     }
@@ -70,7 +76,7 @@ public final class DUUIPipelineScope implements AutoCloseable {
     }
 
     <T> void registerSource(DUUISource<T> source, DUUICheckpoint<T> output) {
-        sources.add(new DUUIPipeline.SourceBinding<>(source, output));
+        sources.add(new SourceEntry<>(source, output));
         checkpoint(output);
     }
 
@@ -81,17 +87,25 @@ public final class DUUIPipelineScope implements AutoCloseable {
         }
         closed = true;
         DUUIPipeline.Builder pipeline = DUUIPipeline.builder(id).failurePolicy(failurePolicy);
-        for (DUUIPipeline.SourceBinding<?> source : sources) {
-            sourceUnchecked(pipeline, source);
+        for (SourceEntry<?> source : sources) {
+            DUUIStage<?> sourceStage = DUUIStage.source(id + "-source", source.source);
+            pipeline.stage(sourceStage);
         }
         for (DUUICheckpoint<?> checkpoint : checkpoints) {
-            pipeline.checkpoint(checkpoint);
+            if (checkpoint.stage() != null) {
+                pipeline.stage(checkpoint.stage());
+            }
         }
         system.pipeline(pipeline.build());
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private static void sourceUnchecked(DUUIPipeline.Builder pipeline, DUUIPipeline.SourceBinding source) {
-        pipeline.source(source.source(), source.output());
+    private static final class SourceEntry<T> {
+        final DUUISource<T> source;
+        final DUUICheckpoint<T> output;
+
+        SourceEntry(DUUISource<T> source, DUUICheckpoint<T> output) {
+            this.source = source;
+            this.output = output;
+        }
     }
 }

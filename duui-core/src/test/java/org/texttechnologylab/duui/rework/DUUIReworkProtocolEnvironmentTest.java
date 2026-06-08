@@ -119,14 +119,12 @@ class DUUIReworkProtocolEnvironmentTest {
     void v1DriverUsesConfiguredTransportAndTelemetryForV2Config() {
         TestV1Driver driver = new TestV1Driver(
                 4,
-                false,
                 "application/x-duui-test",
                 new DUUIV1TelemetryConfig(true, 10, null, 250));
 
         DUUIV1Config config = driver.config;
 
         assertEquals(4, config.concurrency());
-        assertFalse(config.streamingTransport());
         assertEquals("application/x-duui-test", config.contentType());
         assertTrue(config.telemetry().enabled());
         assertEquals(10, config.telemetry().ttlMinutes());
@@ -204,8 +202,8 @@ class DUUIReworkProtocolEnvironmentTest {
             this.config = null;
         }
 
-        private TestV1Driver(int concurrency, boolean streamingTransport, String contentType, DUUIV1TelemetryConfig telemetry) {
-            withV1Transport(streamingTransport, contentType);
+        private TestV1Driver(int concurrency, String contentType, DUUIV1TelemetryConfig telemetry) {
+            withV1Transport(true, contentType);
             withV1Telemetry(telemetry);
             this.config = v1Config(concurrency, "_InitialView", "_InitialView", Map.of("k", "v"));
         }

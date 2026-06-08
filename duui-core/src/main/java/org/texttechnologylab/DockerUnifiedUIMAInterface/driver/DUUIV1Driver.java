@@ -51,8 +51,7 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
     /** When true, serde phases use virtual threads; when false, platform threads. */
     protected boolean _useVirtualThreads = false;
 
-    /** V1 HTTP protocol settings used by V2 driver instantiation. */
-    protected boolean _v1StreamingTransport = true;
+    /** V1 HTTP protocol settings used by V2 driver instantiation. Always uses streaming (DUUIAsyncBodyHandler). */
     protected String _v1ContentType = "application/octet-stream";
     protected DUUIV1TelemetryConfig _v1Telemetry = DUUIV1TelemetryConfig.disabled();
 
@@ -79,7 +78,6 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
     }
 
     public DUUIV1Driver withV1Transport(boolean streamingTransport, String contentType) {
-        this._v1StreamingTransport = streamingTransport;
         this._v1ContentType = contentType == null || contentType.isBlank()
                 ? "application/octet-stream"
                 : contentType;
@@ -103,7 +101,6 @@ public abstract class DUUIV1Driver implements IDUUIDriverInterface {
                 targetView,
                 parameters,
                 _v1Telemetry,
-                _v1StreamingTransport,
                 _v1ContentType);
     }
 

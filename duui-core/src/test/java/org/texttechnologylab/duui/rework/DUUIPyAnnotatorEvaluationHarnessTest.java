@@ -8,7 +8,6 @@ import org.apache.uima.cas.SerialFormat;
 import org.apache.uima.cas.Type;
 import org.apache.uima.cas.impl.XmiCasDeserializer;
 import org.apache.uima.fit.factory.JCasFactory;
-import org.apache.uima.fit.factory.TypeSystemDescriptionFactory;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.resource.metadata.TypeSystemDescription;
 import org.apache.uima.util.CasCreationUtils;
@@ -34,11 +33,13 @@ import org.texttechnologylab.duui.orchestration.DUUIOrchestrationResult;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
 import org.texttechnologylab.duui.pipeline.io.DUUIXmiCollectionReader;
+import org.texttechnologylab.duui.pipeline.io.DUUIXmiTarget;
 import org.texttechnologylab.duui.runtime.DUUI;
 import org.texttechnologylab.duui.runtime.DUUIGeneratorScope;
 import org.texttechnologylab.duui.runtime.DUUIPipelineScope;
 import org.texttechnologylab.duui.runtime.DUUIStageScope;
 import org.texttechnologylab.duui.runtime.DUUISystemScope;
+import org.texttechnologylab.duui.runtime.DUUITargetScope;
 import org.texttechnologylab.duui.runtime.DUUIV1ComponentBuilder;
 
 import java.io.IOException;
@@ -58,6 +59,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.jar.JarFile;
 import java.util.zip.GZIPInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -122,6 +124,13 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
             try (DUUIPipelineScope pipeline = system.pipeline("duui-py-eval-v2")) {
                 try (DUUIGeneratorScope<JCas> source = DUUIXmiCollectionReader.builder()
                         .typeSystem(typeSystem)
+                        .casSupplier(() -> {
+                            try {
+                                return JCasFactory.createJCas(typeSystem);
+                            } catch (Exception e) {
+                                throw new IllegalStateException("Failed to create evaluation CAS from classpath type system", e);
+                            }
+                        })
                         .source(input)
                         .open(pipeline)) {
                     try (DUUIStageScope<JCas> stage = source.linear("annotate-" + config.annotator())) {
@@ -139,10 +148,12 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                                 .scale(config.replicas())
                                 .concurrency(config.concurrency())
                                 .virtualThreads(config.scheduling() == SchedulingMode.VIRTUAL);
-                        component.streamingTransport(config.streaming());
-                        if (!config.streaming() && !config.contentType().isBlank()) {
-                            component.contentType(config.contentType());
-                        }
+                        component.contentType(config.contentType());
+                    }
+                    try (DUUITargetScope<JCas> target = DUUIXmiTarget.builder()
+                            .output(config.outputDir().resolve("xmi"))
+                            .open(source)) {
+                        // target collects annotated XMI artifacts to complete the pipeline
                     }
                 }
             }
@@ -190,7 +201,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                     .withStorageBackend(storage);
             composer.addDriver(driver);
 
-            DUUIPodmanDriver.Component component = new DUUIPodmanDriver.Component(config.image())
+            DUUIPodmanDriver.Component component = new DUUIPodmanDriver.Component(config.oldImage())
                     .withName(config.annotator())
                     .withSourceView(INITIAL_VIEW)
                     .withTargetView(INITIAL_VIEW)
@@ -249,7 +260,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                 engine,
                 config.scheduling().propertyValue,
                 config.mode().propertyValue,
-                config.image(),
+                imageFor(config, engine),
                 config.replicas(),
                 config.concurrency(),
                 "__collection__/" + documents.size() + "-documents",
@@ -329,6 +340,10 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
         return DUUIDispatchPolicy.of(mode, config.concurrency());
     }
 
+    private static String imageFor(EvalConfig config, String engine) {
+        return "legacy".equals(engine) ? config.oldImage() : config.image();
+    }
+
     private static ReportRow row(
             EvalConfig config,
             String engine,
@@ -347,7 +362,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                 engine,
                 config.scheduling().propertyValue,
                 config.mode().propertyValue,
-                config.image(),
+                imageFor(config, engine),
                 config.replicas(),
                 config.concurrency(),
                 document.toString(),
@@ -379,7 +394,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
                 engine,
                 config.scheduling().propertyValue,
                 config.mode().propertyValue,
-                config.image(),
+                imageFor(config, engine),
                 config.replicas(),
                 config.concurrency(),
                 document.toString(),
@@ -548,29 +563,51 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
 
     private static TypeSystemDescription typeSystemFor(String annotator) throws Exception {
         return switch (annotator) {
-            case "spacy" -> localExampleTypeSystem(
-                    "spacy-async/TypeSystemSpacy.xml");
-            case "taxonerd" -> localExampleTypeSystem(
-                    "taxonerd-async/TypeSystemTaxoNERD.xml");
-            case "gazetteer" -> localExampleTypeSystem(
-                    "gazetteer-async/TypeSystemGazetteer.xml");
-            case "gnfinder" -> localExampleTypeSystem(
-                    "gnfinder-async/TypeSystemGNFinder.xml");
+            case "spacy", "taxonerd", "gazetteer", "gnfinder" -> autoDetectedUimaTypeSystem();
             default -> throw new IllegalArgumentException("Unsupported annotator: " + annotator);
         };
     }
 
-    private static TypeSystemDescription localExampleTypeSystem(String... relativePaths) throws Exception {
+    private static TypeSystemDescription autoDetectedUimaTypeSystem() throws Exception {
         List<TypeSystemDescription> descriptions = new ArrayList<>();
-        descriptions.add(TypeSystemDescriptionFactory.createTypeSystemDescription());
-        for (String relative : relativePaths) {
-            Path file = Path.of(EXAMPLES, relative);
-            if (!Files.exists(file)) {
-                continue;
+        for (String entry : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
+            Path path = Path.of(entry);
+            if (Files.isDirectory(path)) {
+                addDirectoryTypeSystems(descriptions, path, "desc/type");
+                addDirectoryTypeSystems(descriptions, path, "org/texttechnologylab/types");
+            } else if (Files.isRegularFile(path) && entry.endsWith(".jar")) {
+                try (JarFile jar = new JarFile(path.toFile())) {
+                    jar.stream()
+                            .map(java.util.jar.JarEntry::getName)
+                            .filter(name -> (name.startsWith("desc/type/") || name.startsWith("org/texttechnologylab/types/")) && name.endsWith(".xml"))
+                            .sorted()
+                            .forEach(name -> {
+                                try {
+                                    descriptions.add(UIMAFramework.getXMLParser().parseTypeSystemDescription(
+                                            new XMLInputSource("jar:" + path.toUri() + "!/" + name)));
+                                } catch (Exception e) {
+                                    throw new IllegalStateException("Failed to parse classpath type system " + name + " from " + path, e);
+                                }
+                            });
+                }
             }
-            descriptions.add(UIMAFramework.getXMLParser().parseTypeSystemDescription(new XMLInputSource(file.toFile())));
+        }
+        if (descriptions.isEmpty()) {
+            throw new IllegalStateException("No DUUI/UIMATypeSystem descriptors found on the test classpath");
         }
         return CasCreationUtils.mergeTypeSystems(descriptions);
+    }
+
+    private static void addDirectoryTypeSystems(List<TypeSystemDescription> descriptions, Path root, String relative) throws Exception {
+        Path dir = root.resolve(relative);
+        if (!Files.isDirectory(dir)) {
+            return;
+        }
+        try (var stream = Files.walk(dir)) {
+            for (Path file : stream.filter(path -> Files.isRegularFile(path) && path.toString().endsWith(".xml")).sorted().toList()) {
+                descriptions.add(UIMAFramework.getXMLParser().parseTypeSystemDescription(new XMLInputSource(file.toFile())));
+            }
+        }
     }
 
     private static List<String> countTypesFor(String annotator) {
@@ -680,6 +717,16 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
         };
     }
 
+    private static String defaultOldImage(String annotator) {
+        return switch (annotator) {
+            case "spacy" -> "localhost/duui-py-spacy-legacy-lua:latest";
+            case "taxonerd" -> "localhost/duui-py-taxonerd-legacy-lua:latest";
+            case "gazetteer" -> "localhost/duui-py-gazetteer-legacy-lua:latest";
+            case "gnfinder" -> "localhost/duui-py-gnfinder-legacy-lua:latest";
+            default -> "";
+        };
+    }
+
     private static Map<String, String> defaultParameters(String annotator) {
         return switch (annotator) {
             case "spacy" -> Map.of(
@@ -773,6 +820,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
     private record EvalConfig(
             String annotator,
             String image,
+            String oldImage,
             SchedulingMode scheduling,
             int replicas,
             int concurrency,
@@ -790,6 +838,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
         static EvalConfig fromProperties() {
             String annotator = System.getProperty("duui.py.eval.annotator", "gnfinder").trim().toLowerCase(Locale.ROOT);
             String image = System.getProperty("duui.py.eval.image", defaultImage(annotator)).trim();
+            String oldImage = System.getProperty("duui.py.eval.old.image", defaultOldImage(annotator)).trim();
             String output = System.getProperty("duui.py.eval.output.dir", "").trim();
             if (output.isBlank()) {
                 throw new IllegalArgumentException("Set -Dduui.py.eval.output.dir to a directory outside committed reports.");
@@ -798,6 +847,7 @@ class DUUIPyAnnotatorEvaluationHarnessTest {
             return new EvalConfig(
                     annotator,
                     image,
+                    oldImage,
                     SchedulingMode.parse(System.getProperty("duui.py.eval.scheduling", "mixed")),
                     Math.max(1, Integer.getInteger("duui.py.eval.replicas", 1)),
                     Math.max(1, Integer.getInteger("duui.py.eval.concurrency", 1)),

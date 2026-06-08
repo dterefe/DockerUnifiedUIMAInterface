@@ -291,7 +291,7 @@ public class DUUIPodmanDriver extends DUUIV1Driver {
         }
 
 
-        component.withV1Transport(_v1StreamingTransport, _v1ContentType);
+        component.withV1Transport(true, _v1ContentType);
         DUUIDockerDriver.InstantiatedComponent comp = new DUUIDockerDriver.InstantiatedComponent(component, uuid);
 
         // Inverted if check because images will never be pulled if !comp.getImageFetching() is checked.

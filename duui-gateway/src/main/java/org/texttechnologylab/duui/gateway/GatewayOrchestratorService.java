@@ -190,7 +190,7 @@ public final class GatewayOrchestratorService implements AutoCloseable {
                     built.pipeline(),
                     new DUUIScheduler(),
                     new DUUITraitDirector(),
-                    new DUUIExecutor(runId),
+                    DUUIExecutor.getInstance(runId),
                     new DUUIOrchestratorConfig(effective.failFast(), effective.stopOnUnroutableArtifact(), governor)
             );
             if ("artifacts".equals(effective.runMode())) {
@@ -492,7 +492,6 @@ public final class GatewayOrchestratorService implements AutoCloseable {
                 stringValue(Map.of("targetView", component.targetView()), "targetView", "_InitialView"),
                 parameters,
                 telemetryConfig,
-                boolValue(deployment, "streamingTransport", component.tags().stream().anyMatch(tag -> !"legacy".equalsIgnoreCase(tag))),
                 stringValue(deployment, "contentType", "application/octet-stream")
         );
     }

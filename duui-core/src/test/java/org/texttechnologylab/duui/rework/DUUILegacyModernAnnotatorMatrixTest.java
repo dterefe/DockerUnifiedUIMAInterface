@@ -540,8 +540,7 @@ class DUUILegacyModernAnnotatorMatrixTest {
                                 .scale(Integer.getInteger("duui.py.matrix.scale", 1))
                                 .concurrency(Integer.getInteger("duui.py.matrix.concurrency", 1));
                         component.gpu(gpu);
-                        component.streamingTransport(streaming);
-                        if (!streaming && contentType != null) {
+                        if (contentType != null) {
                             component.contentType(contentType);
                         }
                     }
@@ -559,7 +558,7 @@ class DUUILegacyModernAnnotatorMatrixTest {
                 continue;
             }
             String artifactId = execution.artifact().gid().toString();
-            List<DUUIEvent> observed = waitForMetrics(sink, artifactId, expectedHttpMetrics(streaming));
+            List<DUUIEvent> observed = waitForMetrics(sink, artifactId, expectedHttpMetrics());
             ResultArtifact artifact = new ResultArtifact(
                     artifactId,
                     execution.durationMs(),
@@ -605,8 +604,7 @@ class DUUILegacyModernAnnotatorMatrixTest {
                                 .telemetrySink(sink)
                                 .parameters(parameters)
                                 .timeoutSeconds(Long.getLong("duui.py.matrix.timeout.seconds", 7200L));
-                        component.streamingTransport(streaming);
-                        if (!streaming && contentType != null) {
+                        if (contentType != null) {
                             component.contentType(contentType);
                         }
                     }
@@ -624,7 +622,7 @@ class DUUILegacyModernAnnotatorMatrixTest {
                 continue;
             }
             String artifactId = execution.artifact().gid().toString();
-            List<DUUIEvent> observed = waitForMetrics(sink, artifactId, expectedHttpMetrics(streaming));
+            List<DUUIEvent> observed = waitForMetrics(sink, artifactId, expectedHttpMetrics());
             ResultArtifact artifact = new ResultArtifact(
                     artifactId,
                     execution.durationMs(),
@@ -1207,20 +1205,10 @@ class DUUILegacyModernAnnotatorMatrixTest {
     // Metrics helpers
     // -----------------------------------------------------------------------
 
-    private static List<String> expectedHttpMetrics(boolean streaming) {
-        if (streaming) {
-            return List.of(
-                    "duui.http.serialize_ms",
-                    "duui.http.request_bytes",
-                    "duui.http.response_decode_ms",
-                    "duui.http.request_duration_ms",
-                    "duui.http.response_bytes"
-            );
-        }
+    private static List<String> expectedHttpMetrics() {
         return List.of(
                 "duui.http.serialize_ms",
                 "duui.http.request_bytes",
-                "duui.http.response_receive_ms",
                 "duui.http.response_decode_ms",
                 "duui.http.request_duration_ms",
                 "duui.http.response_bytes"

@@ -5,7 +5,6 @@ import org.texttechnologylab.duui.artifact.DUUIArtifact;
 import org.texttechnologylab.duui.exception.DUUIFailurePolicy;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
 import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
-import org.texttechnologylab.duui.pipeline.DUUIExecutionMode;
 import org.texttechnologylab.duui.pipeline.DUUILambda;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
@@ -106,14 +105,9 @@ public final class DUUIStageScope<T> implements AutoCloseable {
             contribution.contribute();
         }
         DUUICheckpoint<T> output = (flow == null ? checkpoint.pipeline() : flow.pipeline()).createCheckpoint(id + "-out");
-        DUUIStage<T> stage = DUUIStage.processor(
-                id,
-                parallel ? DUUIExecutionMode.PARALLEL : DUUIExecutionMode.LINEAR,
-                components,
-                output,
-                dispatchPolicy,
-                failurePolicy
-        );
+        DUUIStage<T> stage = parallel
+                ? DUUIStage.parallelProcessor(id, components, output, dispatchPolicy, failurePolicy)
+                : DUUIStage.linearProcessor(id, components, output, dispatchPolicy, failurePolicy);
         if (flow == null) {
             checkpoint.addStage(stage);
         } else {

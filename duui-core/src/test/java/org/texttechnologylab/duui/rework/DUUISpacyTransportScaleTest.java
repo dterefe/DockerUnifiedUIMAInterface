@@ -209,7 +209,6 @@ class DUUISpacyTransportScaleTest {
                                         "model_name", System.getProperty("duui.py.spacy.model", "de_core_news_sm"),
                                         "spacy_language", "de"
                                 ));
-                        component.streamingTransport(streaming);
                         if (id.startsWith("legacy-")) {
                             component.contentType("application/json");
                         }

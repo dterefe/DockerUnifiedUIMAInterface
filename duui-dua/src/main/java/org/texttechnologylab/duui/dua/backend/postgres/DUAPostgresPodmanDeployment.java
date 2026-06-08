@@ -33,7 +33,7 @@ public final class DUAPostgresPodmanDeployment {
             deployment.dataDirectory().ifPresent(directory ->
                     hostConfig.withBinds(Bind.parse(directory.toAbsolutePath() + ":/var/lib/postgresql/data:Z")));
             command.withHostConfig(hostConfig);
-        });
+        }).join();
     }
 
     public DUAPostgresDeployment deployment() {

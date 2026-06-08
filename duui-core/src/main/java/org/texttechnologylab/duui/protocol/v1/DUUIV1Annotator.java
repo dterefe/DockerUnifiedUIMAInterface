@@ -194,6 +194,10 @@ public final class DUUIV1Annotator implements DUUIAnnotator<JCas> {
         return DUUIFlow.dispatch(typesystem);
     }
 
+    public TypeSystemDescription typesystem() {
+        return typesystem;
+    }
+
     @Phase(value = DUUIStatus.READ, dispatch = DUUIDispatchMode.IO)
     public DUUIFlow<DUUICommunicationLayer> communicationLayer() {
         return DUUIFlow.dispatch(communicationLayer);

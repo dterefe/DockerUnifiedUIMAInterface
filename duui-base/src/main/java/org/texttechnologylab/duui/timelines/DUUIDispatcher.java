@@ -1,5 +1,6 @@
 package org.texttechnologylab.duui.timelines;
 
+import org.texttechnologylab.duui.DUUIWorkerContext;
 import org.texttechnologylab.duui.ems.DUUIActor;
 import org.texttechnologylab.duui.event.DUUIEventContext;
 import org.texttechnologylab.duui.event.DUUIEventService;
@@ -19,7 +20,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.Callable;
 
 public final class DUUIDispatcher {
-    private static final ThreadLocal<DUUIDispatchMode> DISPATCH_OVERRIDE = new ThreadLocal<>();
+    private static final String KEY_DISPATCH_OVERRIDE = "dispatcher.override";
 
     private final DUUITimeline runtimeTimeline;
     private final DUUIRegistry<String, DUUITimeline> timelines;
@@ -127,17 +128,18 @@ public final class DUUIDispatcher {
     }
 
     public static DispatchOverride bindDispatchOverride(DUUIDispatchMode mode) {
-        DUUIDispatchMode previous = DISPATCH_OVERRIDE.get();
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        DUUIDispatchMode previous = ctx.get(KEY_DISPATCH_OVERRIDE);
         if (mode == DUUIDispatchMode.CPU || mode == DUUIDispatchMode.IO) {
-            DISPATCH_OVERRIDE.set(mode);
+            ctx.set(KEY_DISPATCH_OVERRIDE, mode);
         } else {
-            DISPATCH_OVERRIDE.remove();
+            ctx.remove(KEY_DISPATCH_OVERRIDE);
         }
         return () -> {
             if (previous == null) {
-                DISPATCH_OVERRIDE.remove();
+                ctx.remove(KEY_DISPATCH_OVERRIDE);
             } else {
-                DISPATCH_OVERRIDE.set(previous);
+                ctx.set(KEY_DISPATCH_OVERRIDE, previous);
             }
         };
     }

@@ -9,7 +9,7 @@ public final class DUUIWorkerRegistry {
 
     private DUUIWorkerRegistry() {}
 
-    public static DUUIWorker registerCurrentThread(String orchestratorId, DUUIWorkerKind kind, boolean originThread) {
+    public static DUUIWorker registerCurrentThread(String orchestratorId, DUUIWorker.Environment environment, DUUIWorker.Type type) {
         long threadId = Thread.currentThread().threadId();
         return WORKERS_BY_THREAD_ID.compute(threadId, (ignored, existing) -> {
             if (existing != null && !existing.orchestratorId().equals(orchestratorId)) {
@@ -17,7 +17,7 @@ public final class DUUIWorkerRegistry {
                 return existing;
             }
             if (existing != null) return existing;
-            return new DUUIWorker(orchestratorId, threadId, kind, originThread);
+            return new DUUIWorker(orchestratorId, threadId, environment, type);
         });
     }
 

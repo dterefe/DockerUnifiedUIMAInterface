@@ -23,6 +23,6 @@ public final class DUUIExecutorScope implements AutoCloseable {
             return;
         }
         closed = true;
-        system.executor(new DUUIExecutor(system.id(), failureClassifier));
+        system.executor(DUUIExecutor.getInstance(system.id(), failureClassifier, null));
     }
 }

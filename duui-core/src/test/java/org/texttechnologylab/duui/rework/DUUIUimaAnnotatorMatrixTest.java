@@ -55,8 +55,7 @@ class DUUIUimaAnnotatorMatrixTest {
                                 .podman().image(IMAGE)
                                 .sourceView("_InitialView").targetView("_InitialView")
                                 .telemetrySink(sink)
-                                .timeoutSeconds(120L).scale(1).concurrency(1)
-                                .streamingTransport();
+                                .timeoutSeconds(120L).scale(1).concurrency(1);
                     }
                 }
             }

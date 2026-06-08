@@ -17,10 +17,8 @@ import org.texttechnologylab.duui.pipeline.DUUICheckpoint;
 import org.texttechnologylab.duui.pipeline.component.DUUIComponent;
 import org.texttechnologylab.duui.pipeline.DUUIAdapter;
 import org.texttechnologylab.duui.pipeline.DUUIFork;
-import org.texttechnologylab.duui.pipeline.DUUISplit;
 import org.texttechnologylab.duui.pipeline.DUUITarget;
 import org.texttechnologylab.duui.pipeline.DUUIStage;
-import org.texttechnologylab.duui.pipeline.DUUIExecutionMode;
 import org.texttechnologylab.duui.timelines.DUUIDispatcher;
 import org.texttechnologylab.duui.timelines.DUUIFlow;
 import org.texttechnologylab.duui.timelines.DUUIStatus;
@@ -32,37 +30,39 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionException;
 
 public final class DUUIExecutor implements AutoCloseable {
+    private static final ConcurrentHashMap<String, DUUIExecutor> INSTANCES = new ConcurrentHashMap<>();
+
     private final String orchestratorId;
     private final DUUIFailureClassifier failureClassifier;
     private final DUUIDispatcher dispatcher;
-    private final Map<Integer, DUUIPlatformExecutorService> platformExecutors = new ConcurrentHashMap<>();
-    private final DUUIVirtualExecutorService virtualExecutor;
+    private final Map<Integer, DUUIPlatformExecutor> platformPipelineExecutors = new ConcurrentHashMap<>();
+    private final Map<Integer, DUUIPlatformExecutor> platformServiceExecutors = new ConcurrentHashMap<>();
+    private final ExecutorService virtualPipelineExecutor;
+    private final ExecutorService virtualServiceExecutor;
 
-    public DUUIExecutor() {
-        this(UUID.randomUUID().toString(), new DUUIFailureClassifier());
+    public static DUUIExecutor getInstance(String orchestratorId) {
+        return INSTANCES.computeIfAbsent(orchestratorId, id -> new DUUIExecutor(id));
     }
 
-    public DUUIExecutor(DUUIFailureClassifier failureClassifier) {
-        this(UUID.randomUUID().toString(), failureClassifier);
+    public static DUUIExecutor getInstance(String orchestratorId, DUUIFailureClassifier failureClassifier, DUUIDispatcher dispatcher) {
+        return INSTANCES.computeIfAbsent(orchestratorId, id -> new DUUIExecutor(id, failureClassifier, dispatcher));
     }
 
-    public DUUIExecutor(String orchestratorId) {
-        this(orchestratorId, new DUUIFailureClassifier());
+    private DUUIExecutor(String orchestratorId) {
+        this(orchestratorId, new DUUIFailureClassifier(), null);
     }
 
-    public DUUIExecutor(String orchestratorId, DUUIFailureClassifier failureClassifier) {
-        this(orchestratorId, failureClassifier, null);
-    }
-
-    public DUUIExecutor(String orchestratorId, DUUIFailureClassifier failureClassifier, DUUIDispatcher dispatcher) {
+    private DUUIExecutor(String orchestratorId, DUUIFailureClassifier failureClassifier, DUUIDispatcher dispatcher) {
         this.orchestratorId = orchestratorId == null ? UUID.randomUUID().toString() : orchestratorId;
         this.failureClassifier = failureClassifier == null ? new DUUIFailureClassifier() : failureClassifier;
-        this.virtualExecutor = new DUUIVirtualExecutorService(this.orchestratorId);
+        this.virtualPipelineExecutor = Executors.newThreadPerTaskExecutor(DUUIWorker.Factory.virtual(this.orchestratorId, DUUIWorker.Type.PIPELINE));
+        this.virtualServiceExecutor = Executors.newThreadPerTaskExecutor(DUUIWorker.Factory.virtual(this.orchestratorId, DUUIWorker.Type.SERVICE));
         this.dispatcher = dispatcher == null ? new DUUIDispatcher() : dispatcher;
     }
 
@@ -79,10 +79,10 @@ public final class DUUIExecutor implements AutoCloseable {
         task.dispatchModeOverride(policy.mode() == DUUIDispatchMode.CPU || policy.mode() == DUUIDispatchMode.IO ? policy.mode() : null);
         ExecutorService executor;
         if (policy.mode() == DUUIDispatchMode.IO) {
-            executor = virtualExecutor;
+            executor = virtualPipelineExecutor;
         } else {
             int parallelism = policy.parallelism() == null ? Runtime.getRuntime().availableProcessors() : Math.max(1, policy.parallelism());
-            executor = platformExecutors.computeIfAbsent(parallelism, key -> new DUUIPlatformExecutorService(orchestratorId, key));
+            executor = platformPipelineExecutors.computeIfAbsent(parallelism, key -> new DUUIPlatformExecutor(orchestratorId, DUUIWorker.Type.PIPELINE, key));
         }
         executor.execute(task);
         return task;
@@ -175,10 +175,10 @@ public final class DUUIExecutor implements AutoCloseable {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private <T> DUUIArtifact<T> processStage(DUUIStage<T> stage, DUUIArtifact<T> artifact) throws Exception {
         DUUIFlow<? extends DUUIArtifact<?>> flow = switch (stage.type()) {
-            case PROCESSOR -> processor(stage, artifact);
+            case SOURCE -> sourceFlow(stage, artifact);
+            case LINEAR_PROCESSOR, PARALLEL_PROCESSOR -> processor(stage, artifact);
             case ADAPTER -> adapter(stage, artifact);
             case FORK -> fork(stage, artifact);
-            case SPLIT -> split(stage, artifact);
             case TARGET -> target(stage, artifact);
             case JOIN -> join(stage, artifact);
         };
@@ -266,11 +266,17 @@ public final class DUUIExecutor implements AutoCloseable {
 
     @Override
     public void close() {
-        virtualExecutor.shutdown();
-        for (DUUIPlatformExecutorService executor : platformExecutors.values()) {
+        INSTANCES.remove(orchestratorId);
+        virtualPipelineExecutor.shutdown();
+        virtualServiceExecutor.shutdown();
+        for (DUUIPlatformExecutor executor : platformPipelineExecutors.values()) {
             executor.shutdown();
         }
-        platformExecutors.clear();
+        platformPipelineExecutors.clear();
+        for (DUUIPlatformExecutor executor : platformServiceExecutors.values()) {
+            executor.shutdown();
+        }
+        platformServiceExecutors.clear();
     }
 
     @Phase(DUUIStatus.PROCESSOR)
@@ -278,7 +284,7 @@ public final class DUUIExecutor implements AutoCloseable {
         try {
             DUUIStage<?> stage = (DUUIStage<?>) stageValue;
             DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-            DUUIArtifact<?> processed = stage.executionMode() == DUUIExecutionMode.PARALLEL
+            DUUIArtifact<?> processed = stage.isParallel()
                     ? processParallel((DUUIStage) stage, (DUUIArtifact) artifact)
                     : processLinear((DUUIStage) stage, (DUUIArtifact) artifact);
             return DUUIFlow.dispatch(processed);
@@ -318,18 +324,9 @@ public final class DUUIExecutor implements AutoCloseable {
         }
     }
 
-    @Phase(DUUIStatus.SPLIT)
-    public DUUIFlow<DUUIArtifact<?>> split(Object stageValue, Object artifactValue) {
-        try {
-            DUUIStage<?> stage = (DUUIStage<?>) stageValue;
-            DUUIArtifact<?> artifact = (DUUIArtifact<?>) artifactValue;
-            ((DUUISplit) stage.operation()).split(artifact, emitted -> DUUIWorker.current().requireCurrentTask().context().emit(emitted));
-            return DUUIFlow.dispatch(artifact);
-        } catch (InterruptedException error) {
-            return DUUIFlow.cancel(error);
-        } catch (Exception error) {
-            return DUUIFlow.fail(error);
-        }
+    @Phase(DUUIStatus.SOURCE)
+    public DUUIFlow<DUUIArtifact<?>> sourceFlow(Object stageValue, Object artifactValue) {
+        return DUUIFlow.dispatch((DUUIArtifact<?>) artifactValue);
     }
 
     @Phase(DUUIStatus.JOIN)

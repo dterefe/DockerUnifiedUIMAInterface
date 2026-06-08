@@ -71,6 +71,53 @@ public final class DUAPostgresAnnotationIndex implements DUAAnnotationIndex {
         }
     }
 
+    /**
+     * Batch index multiple annotation spans in one transaction.
+     * Uses JDBC batch with addBatch() + executeBatch() for the GiST range index.
+     *
+     * @param spans the annotation spans to index
+     * @return list of write results in the same order as the input spans
+     */
+    public List<DUAWriteResult> batchIndex(List<DUAAnnotationSpan> spans) {
+        if (spans == null || spans.isEmpty()) return List.of();
+        String sql = """
+                insert into %s (sofa_fs_ref, fs_ref, type_id, begin_offset, end_offset, covered_text)
+                values (?, ?, ?, ?, ?, ?)
+                on conflict (fs_ref) do update set
+                    sofa_fs_ref = excluded.sofa_fs_ref,
+                    type_id = excluded.type_id,
+                    begin_offset = excluded.begin_offset,
+                    end_offset = excluded.end_offset,
+                    covered_text = excluded.covered_text
+                """.formatted(table);
+        try (Connection connection = connections.openConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (DUAAnnotationSpan span : spans) {
+                statement.setLong(1, span.sofaFsRef());
+                statement.setLong(2, span.fsRef());
+                statement.setInt(3, span.typeId());
+                statement.setInt(4, span.begin());
+                statement.setInt(5, span.end());
+                if (span.coveredText().isPresent()) {
+                    statement.setString(6, span.coveredText().get());
+                } else {
+                    statement.setNull(6, Types.VARCHAR);
+                }
+                statement.addBatch();
+            }
+            statement.executeBatch();
+            List<DUAWriteResult> results = new ArrayList<>(spans.size());
+            for (DUAAnnotationSpan span : spans) {
+                results.add(new DUAWriteResult(
+                        DUAId.of("sofa-" + span.sofaFsRef() + "#ann-" + span.fsRef()),
+                        new DUARevision(1)));
+            }
+            return results;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Could not batch-index DUA annotation spans in PostgreSQL", e);
+        }
+    }
+
     @Override
     public Stream<DUAAnnotationSpan> find(DUAAnnotationSpanQuery query) {
         Objects.requireNonNull(query, "query");

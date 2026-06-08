@@ -1,5 +1,6 @@
 package org.texttechnologylab.duui.timelines;
 
+import org.texttechnologylab.duui.DUUIWorkerContext;
 import org.texttechnologylab.duui.ems.DUUIActor;
 import org.texttechnologylab.duui.storage.DUUIInMemoryIndex;
 import org.texttechnologylab.duui.storage.DUUIInMemoryRegistry;
@@ -17,12 +18,13 @@ import java.util.stream.Stream;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode;
 
 public final class DUUITimeline {
+    private static final String KEY_PHASE_STACK = "timeline.phase.stack";
+
     private final DUUIActor actor;
     private final DUUIRegistry<String, DUUIPhase> phases;
     private final DUUIIndex<String, String> children;
     private final DUUIIndex<String, String> actors;
     private final DUUIIndex<String, String> phaseActors;
-    private final ThreadLocal<Deque<String>> context = ThreadLocal.withInitial(ArrayDeque::new);
 
     public DUUITimeline(DUUIActor actor) {
         this(actor, new DUUIInMemoryRegistry<>(), new DUUIInMemoryIndex<>(), new DUUIInMemoryIndex<>(), new DUUIInMemoryIndex<>());
@@ -47,7 +49,8 @@ public final class DUUITimeline {
     }
 
     public Optional<DUUIPhase> current() {
-        String id = context.get().peek();
+        Deque<String> stack = phaseStack();
+        String id = stack.peek();
         return id == null ? Optional.empty() : phases.get(id);
     }
 
@@ -89,7 +92,7 @@ public final class DUUITimeline {
 
     public DUUIPhase start(DUUIPhase phase) {
         phase.start();
-        context.get().push(phase.id());
+        phaseStack().push(phase.id());
         return phase;
     }
 
@@ -146,8 +149,19 @@ public final class DUUITimeline {
         return lineage.stream();
     }
 
+    @SuppressWarnings("unchecked")
+    private Deque<String> phaseStack() {
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        Deque<String> stack = ctx.get(KEY_PHASE_STACK);
+        if (stack == null) {
+            stack = new ArrayDeque<>();
+            ctx.set(KEY_PHASE_STACK, stack);
+        }
+        return stack;
+    }
+
     private void leave(DUUIPhase phase) {
-        Deque<String> stack = context.get();
+        Deque<String> stack = phaseStack();
         if (Objects.equals(stack.peek(), phase.id())) {
             stack.pop();
             return;

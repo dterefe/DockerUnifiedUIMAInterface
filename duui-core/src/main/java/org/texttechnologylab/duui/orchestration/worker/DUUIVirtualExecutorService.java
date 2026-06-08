@@ -1,18 +1,20 @@
 package org.texttechnologylab.duui.orchestration.worker;
 
-import java.util.List;
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 public final class DUUIVirtualExecutorService extends AbstractExecutorService {
     private final String orchestratorId;
+    private final DUUIWorker.Factory factory;
     private final Collection<Thread> threads = ConcurrentHashMap.newKeySet();
     private volatile boolean shutdown;
 
-    public DUUIVirtualExecutorService(String orchestratorId) {
+    public DUUIVirtualExecutorService(String orchestratorId, DUUIWorker.Type type) {
         this.orchestratorId = orchestratorId;
+        this.factory = DUUIWorker.Factory.virtual(orchestratorId, type);
     }
 
     @Override
@@ -51,7 +53,7 @@ public final class DUUIVirtualExecutorService extends AbstractExecutorService {
     @Override
     public void execute(Runnable command) {
         if (shutdown) throw new IllegalStateException("DUUI virtual executor is shut down.");
-        Thread thread = DUUIFactory.virtualThreadFactory(orchestratorId).newThread(() -> {
+        Thread thread = factory.newThread(() -> {
             try {
                 command.run();
             } finally {

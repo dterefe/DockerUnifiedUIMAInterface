@@ -41,14 +41,6 @@ public final class DUUIChannel<T> {
     }
 
     public DUUIHttpResponse request(DUUIRelay<T> serializationRelay, DUUIRelay<DUUIHttpResponse> deserializationRelay) throws Exception {
-        return request(serializationRelay, deserializationRelay, new DUUIAsyncBodyHandler(deserializationRelay));
-    }
-
-    public <R> R request(
-            DUUIRelay<T> serializationRelay,
-            DUUIRelay<?> deserializationRelay,
-            HttpResponse.BodyHandler<R> bodyHandler
-    ) throws Exception {
         Objects.requireNonNull(serializationRelay, "serializationRelay");
         Objects.requireNonNull(deserializationRelay, "deserializationRelay");
         HttpRequest.Builder builder = HttpRequest.newBuilder()
@@ -57,7 +49,8 @@ public final class DUUIChannel<T> {
                 .method(method.name(), HttpRequest.BodyPublishers.ofInputStream(serializationRelay::inputStream));
         builder.header("Content-Type", contentType);
         customizer.customize(builder, null);
-        HttpResponse<R> response = endpoint.client().send(builder.build(), bodyHandler);
+        DUUIAsyncBodyHandler bodyHandler = new DUUIAsyncBodyHandler(deserializationRelay);
+        HttpResponse<DUUIHttpResponse> response = endpoint.client().send(builder.build(), bodyHandler);
         return response.body();
     }
 }

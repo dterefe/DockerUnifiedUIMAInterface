@@ -1,13 +1,20 @@
 package org.texttechnologylab.duui.dua.uima.storage;
 
 import java.util.Objects;
+
 import org.apache.uima.cas.Feature;
 import org.apache.uima.cas.impl.Backend;
 import org.apache.uima.cas.impl.FeatureImpl;
+import org.texttechnologylab.duui.dua.store.DUAAnnotationIndex;
+import org.texttechnologylab.duui.dua.store.DUAStoreBundle;
+import org.texttechnologylab.duui.dua.store.DUATextQueryStore;
+import org.texttechnologylab.duui.dua.store.DUATypesystemIndex;
+import org.texttechnologylab.duui.dua.store.DUAValueQueryStore;
 
 public final class DUAStorageBackend implements Backend {
     private final DUACasStorage storage;
     private final DUAFastCasStorage fastStorage;
+    private final DUAStoreBundle stores;
     private final SlotBackend slots = new Slots();
     private final ArrayBackend arrays = new Arrays();
     private final StringBackend strings = new Strings();
@@ -17,11 +24,54 @@ public final class DUAStorageBackend implements Backend {
     public DUAStorageBackend(DUACasStorage storage) {
         this.storage = Objects.requireNonNull(storage, "storage");
         this.fastStorage = storage instanceof DUAFastCasStorage fast ? fast : null;
+        this.stores = null;
+    }
+
+    public DUAStorageBackend(DUACasStorage storage, DUAStoreBundle stores) {
+        this.storage = Objects.requireNonNull(storage, "storage");
+        this.fastStorage = storage instanceof DUAFastCasStorage fast ? fast : null;
+        this.stores = Objects.requireNonNull(stores, "stores");
     }
 
     public DUACasStorage storage() {
         return storage;
     }
+
+    public DUAStoreBundle stores() {
+        return stores;
+    }
+
+    // ── Store accessors ─────────────────────────────────────────────────────
+
+    public DUAAnnotationIndex annotationIndex() {
+        if (stores == null) {
+            throw new IllegalStateException("No DUAStoreBundle available");
+        }
+        return stores.annotationIndex();
+    }
+
+    public DUATypesystemIndex typesystemIndex() {
+        if (stores == null) {
+            throw new IllegalStateException("No DUAStoreBundle available");
+        }
+        return stores.typesystemIndex();
+    }
+
+    public DUAValueQueryStore values() {
+        if (stores == null) {
+            throw new IllegalStateException("No DUAStoreBundle available");
+        }
+        return stores.values();
+    }
+
+    public DUATextQueryStore texts() {
+        if (stores == null) {
+            throw new IllegalStateException("No DUAStoreBundle available");
+        }
+        return stores.texts();
+    }
+
+    // ── Backend interface sub-backend accessors ─────────────────────────────
 
     @Override
     public SlotBackend slots() {

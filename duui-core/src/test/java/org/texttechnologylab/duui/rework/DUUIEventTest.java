@@ -30,7 +30,7 @@ class DUUIEventTest {
         DUUIEventService service = new DUUIEventService(List.of(sink));
         DUUIExecutionContext context = new DUUIExecutionContext().eventService(service);
 
-        try (DUUIExecutor executor = new DUUIExecutor("event-orchestrator")) {
+        try (DUUIExecutor executor = DUUIExecutor.getInstance("event-orchestrator")) {
             DUUITask<Void> task = executor.task(context, () -> {
                 context.eventContext(context.eventContext().toBuilder()
                         .artifactId("artifact-1")

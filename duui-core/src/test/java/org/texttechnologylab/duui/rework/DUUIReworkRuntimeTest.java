@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchPolicy;
 import org.texttechnologylab.duui.orchestration.worker.DUUIExecutionContext;
 import org.texttechnologylab.duui.orchestration.DUUIFrameworkStateException;
-import org.texttechnologylab.duui.orchestration.worker.DUUIPlatformExecutorService;
+import org.texttechnologylab.duui.orchestration.worker.DUUIPlatformExecutor;
 import org.texttechnologylab.duui.orchestration.DUUITask;
 import org.texttechnologylab.duui.orchestration.worker.DUUIVirtualExecutorService;
 import org.texttechnologylab.duui.orchestration.worker.DUUIWorker;
@@ -26,11 +26,11 @@ class DUUIReworkRuntimeTest {
 
     @Test
     void currentWorkerWorksInsideManagedPlatformTask() {
-        try (DUUIExecutor executor = new DUUIExecutor("runtime-platform")) {
+        try (DUUIExecutor executor = DUUIExecutor.getInstance("runtime-platform")) {
             DUUITask<String> task = executor.task(new DUUIExecutionContext(), () -> {
                 DUUIWorker worker = DUUIWorker.current();
                 assertNotNull(worker.requireCurrentTask());
-                return worker.kind().name() + ":" + worker.orchestratorId();
+                return worker.environment().name() + ":" + worker.orchestratorId();
             });
 
             executor.submit(task, DUUIDispatchPolicy.of(org.texttechnologylab.duui.orchestration.scheduling.DUUIDispatchMode.CPU, 1));
@@ -41,7 +41,7 @@ class DUUIReworkRuntimeTest {
 
     @Test
     void platformWorkerPersistsWhileTaskBindingChanges() {
-        DUUIPlatformExecutorService service = new DUUIPlatformExecutorService("runtime-persistent", 1);
+        DUUIPlatformExecutor service = new DUUIPlatformExecutor("runtime-persistent", DUUIWorker.Type.PIPELINE, 1);
         try {
             AtomicReference<String> firstTaskId = new AtomicReference<>();
             AtomicReference<String> secondTaskId = new AtomicReference<>();
@@ -69,7 +69,7 @@ class DUUIReworkRuntimeTest {
 
     @Test
     void currentWorkerWorksInsideManagedVirtualTaskAndUnregisters() throws Exception {
-        DUUIVirtualExecutorService service = new DUUIVirtualExecutorService("runtime-virtual");
+        DUUIVirtualExecutorService service = new DUUIVirtualExecutorService("runtime-virtual", DUUIWorker.Type.PIPELINE);
         try {
             DUUITask<Long> task = new DUUITask<>("runtime-virtual", new DUUIExecutionContext(), () -> {
                 DUUIWorker worker = DUUIWorker.current();

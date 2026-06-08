@@ -3,6 +3,7 @@ package org.texttechnologylab.duui.event;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import org.texttechnologylab.duui.DUUIWorkerContext;
 import org.texttechnologylab.duui.timelines.DUUIPhase;
 
 public record DUUIEventContext(
@@ -20,9 +21,9 @@ public record DUUIEventContext(
         String phaseStatus,
         String phaseLifecycle
 ) {
-    private static final ThreadLocal<String> CURRENT_PHASE_ID = new ThreadLocal<>();
-    private static final ThreadLocal<String> CURRENT_PHASE_STATUS = new ThreadLocal<>();
-    private static final ThreadLocal<String> CURRENT_PHASE_LIFECYCLE = new ThreadLocal<>();
+    private static final String KEY_PHASE_ID = "event.phase.id";
+    private static final String KEY_PHASE_STATUS = "event.phase.status";
+    private static final String KEY_PHASE_LIFECYCLE = "event.phase.lifecycle";
 
     public DUUIEventContext {
         trace = trace == null ? DUUITraceContext.root() : trace;
@@ -48,33 +49,37 @@ public record DUUIEventContext(
     }
 
     public static void setCurrentPhaseId(String id) {
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
         if (id == null) {
-            CURRENT_PHASE_ID.remove();
+            ctx.remove(KEY_PHASE_ID);
         } else {
-            CURRENT_PHASE_ID.set(id);
+            ctx.set(KEY_PHASE_ID, id);
         }
     }
 
     public static void setCurrentPhaseStatus(String status) {
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
         if (status == null) {
-            CURRENT_PHASE_STATUS.remove();
+            ctx.remove(KEY_PHASE_STATUS);
         } else {
-            CURRENT_PHASE_STATUS.set(status);
+            ctx.set(KEY_PHASE_STATUS, status);
         }
     }
 
     public static void setCurrentPhaseLifecycle(String lifecycle) {
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
         if (lifecycle == null) {
-            CURRENT_PHASE_LIFECYCLE.remove();
+            ctx.remove(KEY_PHASE_LIFECYCLE);
         } else {
-            CURRENT_PHASE_LIFECYCLE.set(lifecycle);
+            ctx.set(KEY_PHASE_LIFECYCLE, lifecycle);
         }
     }
 
     public static void clearPhase() {
-        CURRENT_PHASE_ID.remove();
-        CURRENT_PHASE_STATUS.remove();
-        CURRENT_PHASE_LIFECYCLE.remove();
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        ctx.remove(KEY_PHASE_ID);
+        ctx.remove(KEY_PHASE_STATUS);
+        ctx.remove(KEY_PHASE_LIFECYCLE);
     }
 
     public static void setCurrentPhase(DUUIPhase phase) {
@@ -88,15 +93,15 @@ public record DUUIEventContext(
     }
 
     public static Optional<String> currentPhaseId() {
-        return Optional.ofNullable(CURRENT_PHASE_ID.get());
+        return Optional.ofNullable(DUUIWorkerContext.current().get(KEY_PHASE_ID));
     }
 
     public static Optional<String> currentPhaseStatus() {
-        return Optional.ofNullable(CURRENT_PHASE_STATUS.get());
+        return Optional.ofNullable(DUUIWorkerContext.current().get(KEY_PHASE_STATUS));
     }
 
     public static Optional<String> currentPhaseLifecycle() {
-        return Optional.ofNullable(CURRENT_PHASE_LIFECYCLE.get());
+        return Optional.ofNullable(DUUIWorkerContext.current().get(KEY_PHASE_LIFECYCLE));
     }
 
     public Builder toBuilder() {

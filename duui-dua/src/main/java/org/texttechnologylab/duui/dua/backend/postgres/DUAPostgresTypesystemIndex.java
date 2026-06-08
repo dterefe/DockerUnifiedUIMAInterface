@@ -95,7 +95,10 @@ public final class DUAPostgresTypesystemIndex implements DUATypesystemIndex {
             case DUATypeQuery.ExactType q -> exact(q.typeName()).stream();
             case DUATypeQuery.Subtypes q -> byTypeIds(ageTypeIds(subtypeCypher(q.typeName(), q.transitive()))).stream();
             case DUATypeQuery.Supertypes q -> byTypeIds(ageTypeIds(supertypeCypher(q.typeName(), q.transitive()))).stream();
-            case DUATypeQuery.ReferenceTraversal q -> byTypeIds(ageTypeIds(referenceCypher(q))).stream();
+            // Instance-level reference traversal is not supported via PostgreSQL AGE;
+            // the in-memory index handles these queries through reverse/forward reference maps.
+            case DUATypeQuery.ReferenceTraversal q -> Stream.empty();
+            case DUATypeQuery.OutgoingReferences q -> Stream.empty();
         };
     }
 
@@ -196,13 +199,6 @@ public final class DUAPostgresTypesystemIndex implements DUATypesystemIndex {
         String edge = transitive ? "[:SUBTYPE_OF*1..]" : "[:SUBTYPE_OF]";
         return "MATCH (leaf:Type {type_name: " + cypherString(typeName) + "})-"
                 + edge + "->(parent:Type) RETURN parent.type_id";
-    }
-
-    private String referenceCypher(DUATypeQuery.ReferenceTraversal query) {
-        return "MATCH (source:Type {type_name: " + cypherString(query.sourceTypeName()) + "})"
-                + "-[ref:FEATURE_REF {feature_name: " + cypherString(query.featureName()) + "}]->"
-                + "(target:Type {type_name: " + cypherString(query.targetTypeName()) + "}) "
-                + "RETURN target.type_id";
     }
 
     private ResultSet executeCypher(Connection connection, String cypher, String columns) throws SQLException {

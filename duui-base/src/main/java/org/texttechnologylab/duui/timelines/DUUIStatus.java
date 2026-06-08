@@ -41,5 +41,10 @@ public enum DUUIStatus {
     DESERIALIZE,
     ENCODE,
     UPLOAD,
-    WRITE
+    WRITE,
+    /**
+     * Component dispatches by polling a DUUINode from its DUUIPool.
+     * [DESIGN: line 336]
+     */
+    DISPATCH
 }

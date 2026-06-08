@@ -1,5 +1,7 @@
 package org.texttechnologylab.duui.event;
 
+import org.texttechnologylab.duui.DUUIWorkerContext;
+
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
@@ -9,9 +11,10 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class DUUIEventService implements AutoCloseable {
+    private static final String KEY_SERVICE = "event.service";
+    private static final String KEY_CONTEXT = "event.context";
+
     private static final DUUIEventService GLOBAL = new DUUIEventService(List.of(DUUIEventSinks.noOp()));
-    private static final ThreadLocal<DUUIEventService> CURRENT_SERVICE = new ThreadLocal<>();
-    private static final ThreadLocal<DUUIEventContext> CURRENT_CONTEXT = new ThreadLocal<>();
 
     private final CopyOnWriteArrayList<DUUIEventSink> sinks = new CopyOnWriteArrayList<>();
 
@@ -25,30 +28,34 @@ public final class DUUIEventService implements AutoCloseable {
     }
 
     public static DUUIEventService current() {
-        DUUIEventService service = CURRENT_SERVICE.get();
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        DUUIEventService service = ctx.get(KEY_SERVICE);
         return service == null ? GLOBAL : service;
     }
 
     public static void bindCurrent(DUUIEventService service, DUUIEventContext context) {
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
         if (service == null) {
-            CURRENT_SERVICE.remove();
+            ctx.remove(KEY_SERVICE);
         } else {
-            CURRENT_SERVICE.set(service);
+            ctx.set(KEY_SERVICE, service);
         }
         bindCurrentContext(context);
     }
 
     public static void bindCurrentContext(DUUIEventContext context) {
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
         if (context == null) {
-            CURRENT_CONTEXT.remove();
+            ctx.remove(KEY_CONTEXT);
         } else {
-            CURRENT_CONTEXT.set(context);
+            ctx.set(KEY_CONTEXT, context);
         }
     }
 
     public static void clearCurrent() {
-        CURRENT_SERVICE.remove();
-        CURRENT_CONTEXT.remove();
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        ctx.remove(KEY_SERVICE);
+        ctx.remove(KEY_CONTEXT);
     }
 
     public static void runWithCurrent(DUUIEventService service, DUUIEventContext context, Runnable work) {
@@ -65,8 +72,9 @@ public final class DUUIEventService implements AutoCloseable {
     }
 
     public static <T> T callWithCurrent(DUUIEventService service, DUUIEventContext context, Callable<T> work) throws Exception {
-        DUUIEventService previousService = CURRENT_SERVICE.get();
-        DUUIEventContext previousContext = CURRENT_CONTEXT.get();
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        DUUIEventService previousService = ctx.get(KEY_SERVICE);
+        DUUIEventContext previousContext = ctx.get(KEY_CONTEXT);
         bindCurrent(service, context);
         try {
             return work.call();
@@ -91,7 +99,6 @@ public final class DUUIEventService implements AutoCloseable {
             try {
                 sink.accept(event);
             } catch (RuntimeException ignored) {
-                // Event sinks must not control DUUI execution.
             }
         }
     }
@@ -143,7 +150,8 @@ public final class DUUIEventService implements AutoCloseable {
     }
 
     public DUUIEventContext currentContext() {
-        DUUIEventContext context = CURRENT_CONTEXT.get();
+        DUUIWorkerContext ctx = DUUIWorkerContext.current();
+        DUUIEventContext context = ctx.get(KEY_CONTEXT);
         DUUIEventContext.Builder builder = context == null ? new DUUIEventContext.Builder() : context.toBuilder();
         DUUIEventContext.currentPhaseId().ifPresent(builder::phaseId);
         DUUIEventContext.currentPhaseStatus().ifPresent(builder::phaseStatus);

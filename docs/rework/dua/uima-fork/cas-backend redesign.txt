@@ -1,0 +1,1226 @@
+
+## Redesign verdict
+
+Do **not** keep tuning the current class shape. Replace it with an **epoch-segmented, sharded FFM CAS store** where allocated memory never moves, reads are snapshot-based, growth is append-only, and mutation is handled through writer lanes plus explicit publish barriers.
+
+The current implementation is structurally fighting FFM: it has five mutable growable single-segment heaps, Java-side `HashMap`/`ArrayList` string state, and synchronized lifecycle/mutation paths.  Creation and string interning are synchronized, and feature slots are allocated from a single feature heap at FS creation.  The core allocator doubles a `MemorySegment`, copies all old bytes, then replaces the segment field.  Array resizing has the same copy-and-repoint pattern.  That is the wrong growth primitive for a backend that stores stable FS addresses.
+
+JDK 21 FFM should be treated as a scoped off-heap memory model, not as “Java array but bigger.” The API’s purpose is safe/efficient access to foreign memory without JNI brittleness, but it is still a preview API in Java 21. ([openjdk.org][1]) Arenas control memory lifetime and access; confined arenas are owner-thread only, while shared arenas permit multi-thread access and safe atomic closing. ([Oracle Docs][2]) Oracle also explicitly notes that stronger multi-threaded safety has costs, and that custom arenas can provide more efficient allocation strategies. ([Oracle Docs][3])
+
+The new design should be:
+
+**EpochSegmentedCasBackend**
+
+A sharded, append-only, mostly lock-free store with RCU/MVCC-style publication.
+
+---
+
+## 1. Core principle: never reallocate live CAS memory
+
+The segment staleness bug disappears if no live object ever depends on a movable base segment.
+
+Replace:
+
+```text
+one growable featureHeap MemorySegment
+one growable arrayHeap MemorySegment
+one growable stringByteHeap MemorySegment
+```
+
+with:
+
+```text
+heap kind -> shard -> chunk table -> immutable MemorySegment chunks
+```
+
+Allocation returns a stable encoded address:
+
+```text
+64-bit address:
+  heap kind
+  shard id
+  chunk id
+  byte offset inside chunk
+```
+
+The address never changes. When a chunk fills, append a new chunk. Do not copy old chunks. Do not update existing object addresses. Do not use “double capacity and copy heap” for any hot heap.
+
+This is the same basic allocator lesson behind Netty’s pooled allocator: memory is organized into arenas/chunks/size classes and reused or extended instead of reallocating everything on each growth boundary. Netty explicitly describes pooled allocation as sharing and reusing chunks of system memory, organized into arenas and chunks similarly to jemalloc. ([Netty][4])
+
+### Heap families
+
+Use separate heap families instead of one generic “feature heap”:
+
+```text
+FsDirectoryHeap
+  fixed-size FS records, append-only
+
+IntSlotHeap
+  int, boolean, byte, short, float bits, string refs, fs refs
+
+LongSlotHeap
+  long, double bits
+
+ArrayPayloadHeap
+  fixed-length UIMA array payloads
+
+StringRecordHeap
+  hash, byte length, byte address, optional decoded cache id
+
+StringByteHeap
+  UTF-8 bytes, append-only
+
+IndexJournalHeap
+  add/remove index events
+
+IndexSnapshotHeap
+  immutable published index structures
+```
+
+The current design uses one 64-bit slot for everything; that wastes bandwidth for the most common UIMA values, especially int refs, int features, string codes, begin/end, and type codes. UIMA’s legacy CAS wins because it uses compact primitive arrays. The FFM backend should beat it by reducing GC pressure and improving bulk/index behavior, not by adding an 8-byte generic slot to every primitive.
+
+---
+
+## 2. FS references stay int; physical addresses become internal
+
+Keep UIMA-visible FS refs as positive `int`.
+
+Internally:
+
+```text
+fsRef -> directory shard + local record index
+```
+
+For example:
+
+```text
+shard = fsRef & (shardCount - 1)
+local = fsRef >>> shardBits
+recordAddress = fsDirectory[shard].record(local)
+```
+
+The FS directory record should be fixed-size and cache-friendly:
+
+```text
+FsRecord, 48 or 64 bytes aligned:
+  int typeCode
+  int viewId
+  int flags
+  int slotPlanId
+  int begin              // inline for annotations
+  int end                // inline for annotations
+  long intSlotAddress
+  long longSlotAddress
+  long auxAddress
+  long indexStateOrEpoch
+```
+
+Inline `begin` and `end` for annotation-like types. Annotation span query is central to UIMA and DUA; forcing every begin/end read through feature-slot indirection is unnecessary. Generic feature access can still resolve through the type plan.
+
+---
+
+## 3. Type plans replace per-access feature arithmetic
+
+Do not resolve `FeatureImpl.getOffset()` on every get/set. Build a frozen `TypePlan` once from the UIMA type system.
+
+```text
+TypePlan:
+  int typeCode
+  int intSlotCount
+  int longSlotCount
+  int refSlotCount
+  SlotPlan[] byFeatureCode
+  SlotPlan[] byAdjustedIntOffset
+  SlotPlan[] byAdjustedRefOffset
+  boolean isAnnotationLike
+  int beginSlot
+  int endSlot
+```
+
+A slot plan is:
+
+```text
+SlotPlan:
+  ValueKind kind
+  SlotArea area        // INLINE_FS, INT_SLOTS, LONG_SLOTS, AUX_ARRAY, STRING
+  int byteOffset
+  int featureCode
+```
+
+Then hot get/set becomes:
+
+```text
+record = fsDirectory.record(fsRef)
+plan = typePlans[record.typeCode]
+slot = plan.byFeatureCode[featureCode]
+segment = chunk(segmentAddress)
+segment.get(layout, localOffset + slot.byteOffset)
+```
+
+No synchronized. No heap growth check. No “if feature index exceeds count then resize slots.” Feature slots are known from the type system. If a feature is not legal for the FS type, fail immediately.
+
+This also fixes a semantic issue: auto-growing feature slots on writes hides invalid type-system access and makes the backend diverge from UIMA behavior.
+
+---
+
+## 4. UIMA arrays should be fixed-length, not auto-growing
+
+The reported implementation auto-grows arrays when an index exceeds capacity. That is a performance trap and a semantic mismatch. UIMA primitive arrays and FS arrays are fixed-length CAS objects.
+
+New rule:
+
+```text
+createArray(kind, length) allocates exactly length payload.
+setArrayValue(index >= length) throws.
+```
+
+For deserialization or builders that need dynamic growth, use a separate builder object:
+
+```text
+ArrayBuilder:
+  chunked vector
+  append values
+  freeze() -> fixed Array FS payload
+```
+
+After freeze, the CAS array payload is immutable in size but mutable in contents, matching UIMA. That eliminates the current resize path where array data is copied and the data pointer is rewritten.
+
+Boolean arrays should be benchmarked both ways:
+
+```text
+FAST mode: int per boolean
+COMPACT mode: byte per boolean
+```
+
+For UIMA throughput, `int` booleans often win because alignment and bulk copy are simpler.
+
+---
+
+## 5. Allocation model: sharded append-only slabs
+
+Use sharded allocators:
+
+```text
+Shard 0
+  FsDirectoryChunk[...]
+  IntSlotChunk[...]
+  LongSlotChunk[...]
+  ArrayChunk[...]
+  StringChunk[...]
+
+Shard 1
+  ...
+
+Shard N
+```
+
+Each shard has:
+
+```text
+AtomicLong currentChunkAndOffset
+AtomicReferenceArray<Chunk> chunks
+ThreadLocal<AllocationLane> lane
+```
+
+Allocation fast path:
+
+```text
+lane has current chunk
+bump local cursor
+return encoded address
+```
+
+Slow path:
+
+```text
+chunk full
+claim/install new chunk with CAS
+retry
+```
+
+No `synchronized`. No `ReentrantReadWriteLock` around every get/set. A rare slow-path `ReentrantLock` is acceptable only for growing the chunk table, not for normal allocation. Unlike `synchronized`, `ReentrantLock` does not pin virtual threads in the same way; Oracle’s Java 21 virtual-thread guidance specifically warns that virtual threads are pinned while executing inside synchronized blocks/methods and recommends avoiding frequent or long-lived pinning. ([Oracle Docs][5])
+
+Use `VarHandle` or `Atomic*` publication for metadata. Java 21 `VarHandle` supports acquire/release/volatile and CAS/exchange access modes, which is exactly what is needed for publishing chunk-table entries and epoch roots. ([Oracle Docs][6])
+
+---
+
+## 6. Threading model: owner-writer with snapshot readers
+
+The fastest coherent model for UIMA CAS is not “every feature set is fully concurrent.” It is:
+
+```text
+one active mutation epoch
+many lock-free read snapshots
+explicit publish barrier between pipeline phases
+```
+
+Most UIMA pipelines mutate a CAS in phase order, then query/select after annotations are added. Optimize for that.
+
+### Modes
+
+#### Mode A: confined builder, shared published snapshot
+
+During XMI load or annotator mutation:
+
+```text
+CAS writer owns mutation epoch.
+Thread-local lanes write chunks.
+Indexes are journaled, not maintained synchronously.
+```
+
+At publish:
+
+```text
+Phaser barrier waits for writer lanes.
+Index builder merges journals.
+Root pointers are published with release semantics.
+Readers enter snapshot with acquire semantics.
+```
+
+#### Mode B: true concurrent mutation
+
+For concurrent annotators writing to the same CAS:
+
+```text
+each worker gets a writer lane
+FS ids allocated in blocks
+each lane writes only to its own chunks
+cross-lane refs are allowed after target FS is published
+index updates go to lane-local journals
+```
+
+Use a `Phaser` for phase boundaries:
+
+```text
+phase 1: deserialize/create FS
+phase 2: resolve refs
+phase 3: build/publish indexes
+phase 4: read/query
+```
+
+A `Phaser` is designed as a reusable synchronization barrier, more flexible than a simple latch/barrier. ([Oracle Docs][7])
+
+### Read snapshots
+
+Readers do:
+
+```text
+ReadEpoch epoch = epochManager.enter();
+IndexRoot root = indexRootAcquire();
+FsDirectoryRoot dir = directoryRootAcquire();
+... read ...
+epoch.close();
+```
+
+Writers never mutate published index roots in place. They append new chunks or create new index roots, then atomically publish a new root.
+
+This is close to LMDB’s mental model: readers do not block readers or writers, and writes publish a new consistent view. LMDB achieves this with MVCC and copy-on-write B+trees, with at most one writer and non-blocking readers. ([GitHub][8]) The CAS backend does not need to copy LMDB literally, but the reader/writer separation is the correct pattern.
+
+---
+
+## 7. Memory reclamation: epochs, not immediate free
+
+Do not close arenas or retire chunks while a reader may still hold a snapshot.
+
+Use epoch-based reclamation:
+
+```text
+globalEpoch: AtomicLong
+activeReaders: striped epoch counters
+retireList: chunks/index roots retired at epoch E
+```
+
+On reset:
+
+```text
+publish empty CAS root at epoch E+1
+old chunks go to retireList
+free only when no reader has epoch <= E
+```
+
+On `close()`:
+
+```text
+reject new readers
+wait for reader phaser/epoch drain
+close shared arenas
+```
+
+This avoids locking every access and avoids use-after-close of `MemorySegment`.
+
+---
+
+## 8. Arena strategy
+
+Use three arena classes:
+
+```text
+BootstrapArena
+  type plans, layouts, immutable metadata
+
+LiveSharedArena
+  long-lived CAS chunks visible to multiple threads
+
+ScratchConfinedArena
+  per-writer temporary decode buffers, builders, sort buffers
+```
+
+In Java 21, confined arenas are only accessible by the owner thread; shared arenas can be accessed by multiple threads and are safe to close atomically. ([Oracle Docs][2]) Therefore:
+
+* Use `Arena.ofConfined()` for temporary thread-local decode/build buffers.
+* Use `Arena.ofShared()` for published CAS chunks.
+* Do not publish confined segments across threads.
+* Do not allocate every FS from `Arena.ofShared()` directly; allocate large chunks from the shared arena, then suballocate manually inside chunks.
+
+This keeps FFM safety checks from dominating hot paths.
+
+---
+
+## 9. String subsystem
+
+The current string subsystem synchronizes `putString`, encodes UTF-8, writes bytes into a growable byte heap, stores records, and updates `HashMap`/`ArrayList`.  Replace it with a sharded string table.
+
+### Design
+
+```text
+StringTableShard:
+  off-heap open-addressed hash table
+  table entries:
+    int hash
+    int byteLength
+    int stringRef
+    long byteAddress
+    int state       // EMPTY, CLAIMED, PUBLISHED
+```
+
+Intern flow:
+
+```text
+hash string
+choose shard
+probe table
+if existing bytes equal -> return ref
+CAS EMPTY -> CLAIMED
+write UTF-8 bytes to StringByteHeap
+write StringRecord
+publish entry with release store
+return ref
+```
+
+For bulk import, faster path:
+
+```text
+thread-local dedup table during document load
+merge into global string table at phase barrier
+```
+
+Reverse lookup should not require a mutable unsynchronized `ArrayList`. Use:
+
+```text
+off-heap string records as source of truth
+optional ConcurrentHashMap<Integer, String> decodedStringCache
+```
+
+Decoded Java `String` caching is a performance optimization, not the storage model.
+
+---
+
+## 10. Index repository: journal first, publish later
+
+Do not update sorted indexes on every `addToIndexes`.
+
+Current implementation adds directly to a simple type-indexed vector.  That is insufficient for UIMA semantics and expensive if made concurrent naively.
+
+Use an event journal:
+
+```text
+IndexEvent:
+  int op          // ADD / REMOVE
+  int viewId
+  int typeCode
+  int fsRef
+  int begin
+  int end
+  long sequence
+```
+
+Each writer lane appends events to its own journal. No shared lock.
+
+At publish barrier:
+
+```text
+collect journals
+group by view/type/indexKind
+sort annotation indexes by begin/end/type/order
+deduplicate set indexes
+append bag indexes
+build immutable IndexRoot
+publish root atomically
+```
+
+Readers query immutable roots:
+
+```text
+BagIndexRoot
+SetIndexRoot
+SortedAnnotationIndexRoot
+```
+
+For large CAS/corpora, use an LSM-like index:
+
+```text
+base sorted run
+delta sorted run
+query merges runs
+background compaction optional
+```
+
+This avoids rebuilding all indexes after small deltas while preserving snapshot consistency.
+
+---
+
+## 11. CAS mark/reset
+
+The current mark/reset stores used byte counters for each growable heap and rewinds them.  That only works safely when memory is single-writer and no reader sees the intermediate state.
+
+New rule:
+
+```text
+mark/reset is writer-epoch local only.
+```
+
+A mark stores per-shard cursors:
+
+```text
+Mark:
+  epoch
+  fsIdCursor
+  shardCursor[]
+  stringCursor[]
+  indexJournalCursor[]
+```
+
+Reset:
+
+```text
+allowed only before publish
+rewind cursors
+discard unpublished index journal tail
+discard unpublished strings if not globally published
+```
+
+After publish, reset becomes:
+
+```text
+new epoch root = old snapshot root
+retire newer chunks when readers drain
+```
+
+No in-place deletion of published memory.
+
+---
+
+## 12. Synchronization primitives
+
+Use these deliberately:
+
+```text
+AtomicInteger / AtomicLong
+  FS id block allocation, chunk cursors, counters
+
+VarHandle acquire/release
+  publish chunk table entries, index roots, directory roots
+
+Phaser
+  bulk load phase boundaries and index publish barrier
+
+StampedLock optimistic read
+  only for rare metadata catalog operations, not feature access
+
+ReentrantLock
+  only slow-path chunk-table expansion, never hot get/set
+
+LongAdder
+  telemetry counters, allocation stats, contention counters
+```
+
+Do **not** use:
+
+```text
+synchronized on hot methods
+ReentrantReadWriteLock around every feature access
+copy-and-replace MemorySegment heaps
+auto-growing UIMA arrays
+auto-growing FS feature slots
+```
+
+LongAdder is suitable for high-contention counters because it is designed to improve throughput under contention at the cost of extra space. ([Oracle Docs][9])
+
+---
+
+## 13. Layout optimization
+
+Use a hybrid layout.
+
+### Directory: AoS
+
+FS records are array-of-structs because most operations start with fsRef and need type/view/aux/slots.
+
+```text
+FsRecord[fsRef]
+```
+
+### Feature values: typed SoA by type plan
+
+Feature payloads are struct-of-arrays where it matters:
+
+```text
+int slots:  int/stringRef/fsRef/floatBits
+long slots: long/doubleBits
+```
+
+This reduces bandwidth compared to 64-bit universal slots.
+
+### Annotation hot path
+
+For annotation-like types:
+
+```text
+begin/end inline in FsRecord
+sofa/view inline or direct int slot
+```
+
+Index building should not call generic `getIntFeature(fsRef, beginFeature)` millions of times.
+
+### Bulk access
+
+Implement bulk methods:
+
+```text
+copyIntArrayFromJava(...)
+copyIntArrayToJava(...)
+writeSlotsBulk(...)
+readSlotsBulk(...)
+```
+
+Use `MemorySegment.copy` for contiguous transfers, not per-element loops where possible. FFM `MemorySegment` access is layout-driven; value layouts define size, byte order, alignment, and carrier type. ([dev.java][10])
+
+---
+
+## 14. API changes needed in the fork Backend
+
+The injected backend interface should not only expose scalar get/set. Add bulk and lifecycle boundaries:
+
+```text
+beginMutationEpoch(viewId, expectedFs, expectedSlots, expectedArrays, expectedStrings)
+allocateFsBlock(typeCode, viewId, count)
+createFs(typeCode, viewId, featurePlanId)
+setFeatureBulk(fsRef, encodedSlots)
+createArrayFromJava(kind, sourceArray)
+beginIndexJournal()
+publishIndexes()
+publishMutationEpoch()
+openReadSnapshot()
+closeReadSnapshot()
+resetToUnpublishedMark(mark)
+```
+
+Keep scalar methods for compatibility, but make CASImpl use bulk paths during deserialization and array initialization.
+
+The performance target should be:
+
+```text
+scalar get/set: close to legacy, not necessarily always faster
+XMI load + CAS build: faster than legacy due to lower GC and bulk writes
+select/index queries: faster due to immutable sorted index snapshots
+large CAS memory footprint: lower and more predictable
+virtual-thread scalability: no synchronized pinning on hot paths
+```
+
+Trying to beat `int[]` on a single `getIntFeature` microbenchmark while using FFM safety checks, locks, and generic slots is the wrong target. Beating the full legacy CAS backend is realistic if the design removes GC pressure, bulk-builds indexes, and avoids copying on growth.
+
+---
+
+## 15. Persistent/distributed heap option
+
+For ordinary in-memory CAS:
+
+```text
+EpochSegmentedCasBackend
+  shared native chunks
+  process-local
+```
+
+For huge corpora or DUA/UCE query surfaces:
+
+```text
+MappedSegmentCasBackend
+  memory-mapped chunk files
+  one file per heap shard
+  immutable segment generations
+  append-only manifests
+```
+
+That gives an LMDB-like option without forcing LMDB semantics into the hot in-memory CAS. LMDB’s model is attractive for large read-heavy stores because it uses memory-mapped files, copy-on-write pages, and readers that do not block writers. ([GitHub][8])
+
+Suggested tiering:
+
+```text
+Tier 0: Scratch writer lanes, confined arena
+Tier 1: Live in-memory shared chunks
+Tier 2: Memory-mapped chunk store for persisted CAS/package snapshots
+Tier 3: DUA query backend indexes, e.g. LMDB/Postgres, not CAS hot path
+```
+
+Do not turn the CAS heap itself into a network-distributed system. Shard locally first. Network distribution belongs at the DUA corpus/query backend layer, not inside UIMA feature access.
+
+---
+
+## 16. Concrete replacement architecture
+
+```text
+EpochSegmentedCasBackend
+├── TypePlanRegistry
+│   ├── TypePlan[]
+│   └── FeatureCode -> SlotPlan
+│
+├── FsDirectoryStore
+│   ├── DirectoryShard[]
+│   └── FsRecord chunks
+│
+├── SlotStore
+│   ├── IntSlotShard[]
+│   └── LongSlotShard[]
+│
+├── ArrayStore
+│   ├── fixed primitive payload chunks
+│   ├── fixed ref payload chunks
+│   └── builder vectors for deserialization only
+│
+├── StringStore
+│   ├── StringRecordStore
+│   ├── StringByteStore
+│   ├── sharded off-heap intern table
+│   └── optional Java decoded cache
+│
+├── IndexStore
+│   ├── per-lane IndexJournal
+│   ├── immutable IndexRoot snapshots
+│   └── LSM-style delta roots for incremental updates
+│
+├── EpochManager
+│   ├── reader epochs
+│   ├── retired chunks
+│   └── close/reset safety
+│
+└── MutationCoordinator
+    ├── writer lanes
+    ├── Phaser publish barrier
+    └── bulk load lifecycle
+```
+
+---
+
+## 17. Fix mapping against the reported issues
+
+| Reported issue                          | New design response                                                                            |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Segment staleness after growth          | No moving/replacing live heaps. Growth appends chunks. Encoded addresses remain valid.         |
+| `synchronized` hurts virtual threads    | No synchronized hot paths. Use acquire/release atomics, phasers, and rare slow-path locks.     |
+| Single-thread benchmark slowed by locks | Scalar access has zero lock acquisition.                                                       |
+| Feature-slot auto-growth copies data    | Removed. Type plan gives exact slot count. Invalid feature access fails.                       |
+| Array auto-growth copies data           | Removed. CAS arrays are fixed-length; builders freeze once.                                    |
+| String interning contention             | Sharded intern table; thread-local bulk dedup; CAS publish.                                    |
+| Index updates costly/incomplete         | Journal during writes, build immutable indexes at publish barrier.                             |
+| CAS reset unsafe with readers           | Epoch reset and retired chunk reclamation.                                                     |
+| FFM safety cost                         | Shared arena only for chunks; confined scratch arenas; fewer segment lookups; bulk operations. |
+
+---
+
+## 18. Implementation order
+
+1. **Delete movable SegmentHeap** and implement `ChunkedHeap` with immutable chunks and encoded addresses.
+2. **Build `TypePlanRegistry`** and remove auto-growing feature slots.
+3. **Make arrays fixed-length** and introduce deserialization-only array builders.
+4. **Implement writer-lane allocation** with block FS id allocation.
+5. **Replace direct index mutation with index journals**.
+6. **Add epoch snapshots** for readers and CAS reset/close.
+7. **Shard string interning**.
+8. **Add bulk deserialization API** to the Backend interface and wire CASImpl to it.
+9. **Run tiny chunks in tests** so every boundary condition triggers: 256-byte chunks, 1 KB chunks, randomized mark/reset, concurrent readers, repeated publish.
+10. **Benchmark separately**:
+
+    * scalar feature get/set
+    * XMI deserialize
+    * string intern
+    * array bulk copy
+    * addToIndexes
+    * select covered/covering/exact
+    * full pipeline document throughput
+
+Also enable JFR pinned-thread diagnostics while running with virtual threads. Oracle documents `jdk.VirtualThreadPinned` events for diagnosing virtual-thread pinning. ([Oracle Docs][5])
+
+---
+
+The essential change is this: **stop pretending a CAS heap is a resizable array.** Model it as immutable published memory generations plus append-only writer lanes. That gives stable addresses, cheap growth, snapshot-safe indexes, virtual-thread-friendly synchronization, and a real chance to beat the legacy backend at full CAS workload throughput rather than only matching individual primitive slot access.
+
+[1]: https://openjdk.org/jeps/442 "JEP 442: Foreign Function & Memory API (Third Preview)"
+[2]: https://docs.oracle.com/en/java/javase/21/core/memory-segments-and-arenas.html "Memory Segments and Arenas"
+[3]: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/foreign/Arena.html "Arena (Java SE 21 & JDK 21)"
+[4]: https://netty.io/wiki/analyzing-memory-allocator-behavior.html "Netty.docs: Analyzing Memory Allocator Behavior"
+[5]: https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html "Virtual Threads"
+[6]: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/invoke/VarHandle.AccessMode.html?utm_source=chatgpt.com "VarHandle.AccessMode (Java SE 21 & JDK 21)"
+[7]: https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/Phaser.html?utm_source=chatgpt.com "Phaser (Java Platform SE 8 )"
+[8]: https://github.com/antimer/lmdb/blob/master/README.md "lmdb/README.md at master · antimer/lmdb · GitHub"
+[9]: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html?utm_source=chatgpt.com "LongAdder (Java SE 21 & JDK 21)"
+[10]: https://dev.java/learn/ffm/access-memory/ "Access Off-Heap or On-Heap Memory with Memory Segments - Dev.java"
+
+USER QUESTIONS: okay but can we reuse the netty implementation of the pooled thing?
+Short answer: **you can reuse ideas from Netty’s pooled allocator, but you should NOT reuse Netty itself directly**. Trying to drop it in will either fight the FFM model or give you worse performance than what you already have.
+
+Now the precise breakdown.
+
+---
+
+# 1. Why your current design is fundamentally incompatible with pooling
+
+Your current backend is:
+
+* **single growing segments** (`SegmentHeap`)
+* **copy-on-grow**
+* **offset-based addressing tied to a mutable segment**
+* **synchronized mutation paths**
+
+You can see it directly in your code:
+
+* FS creation allocates from a single heap and writes offsets into the FS record
+* Arrays resize by allocating new memory and copying existing contents
+* Everything depends on `segment()` returning the *current* segment
+
+This is exactly the opposite of what pooling assumes.
+
+Pooling assumes:
+
+```text
+memory never moves
+allocation is local
+freeing returns memory to pool
+```
+
+Your system:
+
+```text
+memory moves
+allocation is global
+freeing does not exist (CAS lifetime)
+```
+
+So plugging Netty in directly will **not fix your bugs**—it will amplify them.
+
+---
+
+# 2. What from Netty you SHOULD steal
+
+Netty’s allocator is extremely well-designed. The important parts are:
+
+### (A) Arena → Chunk → Page hierarchy
+
+```text
+Arena (per thread / CPU)
+  → Chunk (large segment, e.g. 16MB)
+      → Pages / Subpages (size classes)
+```
+
+**What to reuse conceptually:**
+
+* shard memory into **independent arenas**
+* allocate from **chunks**, not a single growing segment
+* use **thread-local allocation paths**
+
+---
+
+### (B) Thread-local fast path
+
+Netty uses:
+
+```text
+ThreadLocalCache → no locks in fast path
+```
+
+For you:
+
+```text
+WorkerLane / VirtualThreadLane
+```
+
+* each worker gets:
+
+  * current chunk pointer
+  * bump allocator cursor
+* no synchronization for normal FS/slot allocation
+
+---
+
+### (C) Size classes (important but optional)
+
+Netty distinguishes:
+
+```text
+tiny / small / normal / huge
+```
+
+For UIMA backend:
+
+You only really need:
+
+```text
+fixed-size (FS records)
+small fixed (slots)
+variable but bounded (arrays)
+stream (string bytes)
+```
+
+So simplify:
+
+```text
+FS chunks (fixed)
+INT slot chunks
+LONG slot chunks
+ARRAY payload chunks
+STRING byte chunks
+```
+
+No need for full slab allocator complexity.
+
+---
+
+### (D) Never moving memory
+
+This is the **critical part**:
+
+Netty:
+
+```text
+chunks never move
+```
+
+Your fix:
+
+```text
+replace SegmentHeap with ChunkedHeap
+```
+
+---
+
+# 3. What you MUST NOT reuse from Netty
+
+## ❌ 1. ByteBuf abstraction
+
+Netty is built around:
+
+```text
+ByteBuf (mutable view abstraction)
+```
+
+This is:
+
+* GC object heavy
+* not aligned with FFM
+* introduces indirection
+
+For CAS:
+
+```text
+FS access must be raw + layout-based
+```
+
+So:
+
+```text
+DO NOT wrap MemorySegment into ByteBuf-like abstraction
+```
+
+---
+
+## ❌ 2. Reference counting
+
+Netty uses:
+
+```text
+retain() / release()
+```
+
+You do NOT want:
+
+* per-FS lifetime tracking
+* per-array ref counting
+
+CAS semantics are:
+
+```text
+bulk lifetime (CAS reset / drop)
+```
+
+Use:
+
+```text
+epoch-based reclamation
+```
+
+---
+
+## ❌ 3. Free lists / reuse
+
+Netty aggressively reuses memory.
+
+For CAS:
+
+```text
+FS never freed individually
+```
+
+Trying to reuse:
+
+* breaks identity
+* complicates indexing
+* introduces fragmentation bugs
+
+---
+
+# 4. The correct hybrid: “Netty-style allocator + CAS semantics”
+
+This is what you actually want:
+
+---
+
+## 4.1 Replace SegmentHeap with ChunkedHeap
+
+Instead of:
+
+```java
+SegmentHeap {
+  MemorySegment segment;
+  long used;
+}
+```
+
+You build:
+
+```java
+ChunkedHeap {
+  Chunk[] chunks;
+  AtomicInteger currentChunk;
+}
+
+Chunk {
+  MemorySegment segment;
+  long capacity;
+  AtomicLong cursor;
+}
+```
+
+Allocation:
+
+```java
+long allocate(size):
+  chunk = threadLocal.currentChunk
+  offset = chunk.cursor.getAndAdd(size)
+  if overflow → new chunk
+```
+
+No copying.
+No invalidation.
+No staleness bug.
+
+---
+
+## 4.2 Sharded arenas (Netty-style)
+
+```text
+heapKind × shardId → ChunkedHeap
+```
+
+Example:
+
+```text
+fsHeap[0..N]
+intSlotHeap[0..N]
+stringHeap[0..N]
+```
+
+Shard selection:
+
+```java
+shard = Thread.currentThread().hashCode() & (N-1);
+```
+
+This eliminates contention.
+
+---
+
+## 4.3 Thread-local lanes (critical for virtual threads)
+
+Instead of:
+
+```java
+synchronized createFeatureStructure()
+```
+
+You do:
+
+```java
+Lane lane = threadLocalLane.get();
+chunk = lane.currentChunk;
+offset = bump;
+```
+
+No locks.
+No RWLock.
+No synchronized.
+
+This directly fixes your current issue:
+
+```text
+virtual thread pinning + lock contention
+```
+
+---
+
+## 4.4 No resizing — ever
+
+This is where your current design is fundamentally wrong:
+
+```java
+resizeArray(...)
+copy old → new
+```
+
+Replace with:
+
+```text
+arrays are fixed
+builders are dynamic
+```
+
+Builder:
+
+```text
+ChunkedVector → freeze → CAS array
+```
+
+---
+
+## 4.5 Addressing model
+
+Instead of:
+
+```text
+offset into mutable segment
+```
+
+Use:
+
+```text
+(encoded address)
+= shard + chunk + offset
+```
+
+Stable forever.
+
+---
+
+# 5. Why this will outperform your current backend
+
+Your current bottlenecks:
+
+* `MemorySegment.copy()` on resize
+* locks (`synchronized`, RWLock)
+* indirection (`featureOffset` lookup)
+* 64-bit generic slots
+* segment invalidation → cache misses
+
+New system:
+
+* no copying
+* no locks in hot path
+* better locality (chunk + shard)
+* fewer indirections (type plan)
+* fewer bytes (typed slots)
+
+Result:
+
+```text
+FFM backend becomes faster than legacy CAS on:
+- deserialization
+- indexing
+- large CAS workloads
+```
+
+---
+
+# 6. Mapping to your DUUI / scheduler architecture
+
+This is where your system actually shines.
+
+From your DUUI design:
+
+* scheduler = control plane
+* worker = execution context
+* phase = scoped execution
+
+
+
+That aligns perfectly with:
+
+```text
+Worker → allocation lane
+Phase → allocation epoch
+Scheduler → publish barrier
+```
+
+So:
+
+```text
+DUUIWorker == allocator lane
+DUUIPhase == allocation scope
+DUUIScheduler == publish barrier (Phaser)
+```
+
+This is much cleaner than trying to bolt Netty on top.
+
+---
+
+# 7. Final answer
+
+## Can you reuse Netty?
+
+**Yes, but only conceptually.**
+
+## What to reuse:
+
+* arena → chunk → page hierarchy
+* thread-local allocation
+* sharding
+* never-moving memory
+
+## What NOT to reuse:
+
+* ByteBuf
+* reference counting
+* free lists
+* pooling semantics
+
+## What to build instead:
+
+```text
+FFM-native, chunked, sharded, append-only CAS backend
+```
+
+---
+
+If you want next step, I can:
+
+* give you **exact replacement for SegmentHeap → ChunkedHeap**
+* or map this design directly into your `Backend` interface so you can drop it into your fork cleanly
+
+That’s the point where this stops being theoretical and becomes a working replacement.

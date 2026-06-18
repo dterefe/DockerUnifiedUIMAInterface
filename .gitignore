@@ -44,6 +44,6 @@ docs/javadoc/
 *.swp
 *~
 duui-core/target/*
-duui-dua/target/*
 duui-base/target/*
-duui-phase-processor/target/*
+duui-dua/target/*
+/home/stud_homes/s0424382/projects/ttlab/duui-alpha/DockerUnifiedUIMAInterface/logs

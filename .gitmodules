@@ -1,0 +1,20 @@
+[submodule "duui-base"]
+	path = duui-base
+	url = ./duui-base
+	branch = dev-rework
+[submodule "duui-storage"]
+	path = duui-storage
+	url = ./duui-storage
+	branch = dev-rework
+[submodule "duui-core"]
+	path = duui-core
+	url = ./duui-core
+	branch = dev-rework
+[submodule "duui-dua"]
+	path = duui-dua
+	url = ./duui-dua
+	branch = dev-rework
+[submodule "duui-gateway"]
+	path = duui-gateway
+	url = ./duui-gateway
+	branch = dev-rework

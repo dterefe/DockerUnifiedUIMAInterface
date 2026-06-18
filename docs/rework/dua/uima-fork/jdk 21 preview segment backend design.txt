@@ -1,0 +1,1690 @@
+package org.apache.uima.cas.impl.dua;
+
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemoryLayout;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.StructLayout;
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+
+import static java.lang.foreign.MemoryLayout.PathElement.groupElement;
+
+/**
+ * JDK 21 preview FFM-backed FeatureStructure storage.
+ *
+ * <p>FS references and string references are positive 1-based ints. Ref 0 is null.
+ * Feature values are normalized into 64-bit slots. Primitive arrays, StringArray,
+ * FSArray, Sofa, AnnotationBase, Annotation, DocumentAnnotation, and the UIMA
+ * integer/float/string/FS list families are represented as regular FS records
+ * plus off-heap auxiliary data.</p>
+ *
+ * <p>Compile with: javac --release 21 --enable-preview ...</p>
+ */
+public final class FfmFeatureStructureBackend implements AutoCloseable {
+    public static final int NULL_REF = 0;
+
+    public static final int TYPE_TOP = 1;
+    public static final int TYPE_SOFA = 2;
+    public static final int TYPE_ANNOTATION_BASE = 3;
+    public static final int TYPE_ANNOTATION = 4;
+    public static final int TYPE_DOCUMENT_ANNOTATION = 5;
+
+    public static final int TYPE_BOOLEAN_ARRAY = 101;
+    public static final int TYPE_BYTE_ARRAY = 102;
+    public static final int TYPE_SHORT_ARRAY = 103;
+    public static final int TYPE_INT_ARRAY = 104;
+    public static final int TYPE_LONG_ARRAY = 105;
+    public static final int TYPE_FLOAT_ARRAY = 106;
+    public static final int TYPE_DOUBLE_ARRAY = 107;
+    public static final int TYPE_STRING_ARRAY = 108;
+    public static final int TYPE_FS_ARRAY = 109;
+
+    public static final int TYPE_EMPTY_INTEGER_LIST = 201;
+    public static final int TYPE_NON_EMPTY_INTEGER_LIST = 202;
+    public static final int TYPE_EMPTY_FLOAT_LIST = 203;
+    public static final int TYPE_NON_EMPTY_FLOAT_LIST = 204;
+    public static final int TYPE_EMPTY_STRING_LIST = 205;
+    public static final int TYPE_NON_EMPTY_STRING_LIST = 206;
+    public static final int TYPE_EMPTY_FS_LIST = 207;
+    public static final int TYPE_NON_EMPTY_FS_LIST = 208;
+
+    public static final int SOFA_FEAT_NUM = 0;
+    public static final int SOFA_FEAT_ID = 1;
+    public static final int SOFA_FEAT_MIME_TYPE = 2;
+    public static final int SOFA_FEAT_STRING = 3;
+    public static final int SOFA_FEAT_URI = 4;
+
+    public static final int ANNOTATION_FEAT_SOFA = 0;
+    public static final int ANNOTATION_FEAT_BEGIN = 1;
+    public static final int ANNOTATION_FEAT_END = 2;
+    public static final int DOCUMENT_ANNOTATION_FEAT_LANGUAGE = 3;
+
+    public static final int LIST_FEAT_HEAD = 0;
+    public static final int LIST_FEAT_TAIL = 1;
+
+    private static final long NULL_OFFSET = -1L;
+
+    private final Arena arena;
+    private final boolean ownsArena;
+    private final SegmentHeap fsHeap;
+    private final SegmentHeap featureHeap;
+    private final SegmentHeap arrayHeap;
+    private final SegmentHeap stringRecordHeap;
+    private final SegmentHeap stringByteHeap;
+    private final Map<String, Integer> internedStrings = new HashMap<>();
+    private final ArrayList<String> stringsByRef = new ArrayList<>();
+    private final IndexRepository indexes;
+
+    private int fsCount;
+    private int stringCount;
+    private boolean closed;
+
+    public FfmFeatureStructureBackend() {
+        this(Arena.ofShared(), true, 1 << 20, 1 << 20, 1 << 20, 1 << 16, 1 << 20);
+    }
+
+    public FfmFeatureStructureBackend(long fsHeapBytes,
+                                      long featureHeapBytes,
+                                      long arrayHeapBytes,
+                                      long stringRecordHeapBytes,
+                                      long stringByteHeapBytes) {
+        this(Arena.ofShared(), true, fsHeapBytes, featureHeapBytes, arrayHeapBytes,
+                stringRecordHeapBytes, stringByteHeapBytes);
+    }
+
+    public FfmFeatureStructureBackend(Arena arena,
+                                      long fsHeapBytes,
+                                      long featureHeapBytes,
+                                      long arrayHeapBytes,
+                                      long stringRecordHeapBytes,
+                                      long stringByteHeapBytes) {
+        this(arena, false, fsHeapBytes, featureHeapBytes, arrayHeapBytes,
+                stringRecordHeapBytes, stringByteHeapBytes);
+    }
+
+    private FfmFeatureStructureBackend(Arena arena,
+                                       boolean ownsArena,
+                                       long fsHeapBytes,
+                                       long featureHeapBytes,
+                                       long arrayHeapBytes,
+                                       long stringRecordHeapBytes,
+                                       long stringByteHeapBytes) {
+        this.arena = Objects.requireNonNull(arena, "arena");
+        this.ownsArena = ownsArena;
+        this.fsHeap = new SegmentHeap(arena, "fs", Math.max(fsHeapBytes, Layouts.FS_RECORD_SIZE), 8);
+        this.featureHeap = new SegmentHeap(arena, "features", Math.max(featureHeapBytes, Layouts.SLOT_WIDTH), 8);
+        this.arrayHeap = new SegmentHeap(arena, "arrays", Math.max(arrayHeapBytes, Layouts.ARRAY_HEADER_SIZE), 8);
+        this.stringRecordHeap = new SegmentHeap(arena, "string-records", Math.max(stringRecordHeapBytes, Layouts.STRING_RECORD_SIZE), 8);
+        this.stringByteHeap = new SegmentHeap(arena, "string-bytes", Math.max(stringByteHeapBytes, 1), 1);
+        this.indexes = new IndexRepository(arena);
+        this.stringsByRef.add(null);
+    }
+
+    public Arena arena() {
+        return arena;
+    }
+
+    public int fsCount() {
+        return fsCount;
+    }
+
+    public int stringCount() {
+        return stringCount;
+    }
+
+    public long fsHeapUsedBytes() {
+        return fsHeap.used();
+    }
+
+    public long featureHeapUsedBytes() {
+        return featureHeap.used();
+    }
+
+    public long arrayHeapUsedBytes() {
+        return arrayHeap.used();
+    }
+
+    public long stringRecordHeapUsedBytes() {
+        return stringRecordHeap.used();
+    }
+
+    public long stringByteHeapUsedBytes() {
+        return stringByteHeap.used();
+    }
+
+    public synchronized int createFeatureStructure(int typeCode, int featureCount) {
+        requireOpen();
+
+        if (typeCode <= 0) {
+            throw new IllegalArgumentException("typeCode must be positive");
+        }
+        if (featureCount < 0) {
+            throw new IllegalArgumentException("featureCount must be non-negative");
+        }
+
+        long recordOffset = fsHeap.allocate(Layouts.FS_RECORD_SIZE, 8);
+        int fsRef = Math.toIntExact(recordOffset / Layouts.FS_RECORD_SIZE) + 1;
+        fsCount = Math.max(fsCount, fsRef);
+
+        long featureOffset = featureCount == 0
+                ? NULL_OFFSET
+                : featureHeap.allocate(featureCount * (long) Layouts.SLOT_WIDTH, 8);
+
+        if (featureOffset != NULL_OFFSET) {
+            for (int i = 0; i < featureCount; i++) {
+                featureHeap.segment().set(Layouts.I64, featureOffset + i * (long) Layouts.SLOT_WIDTH, 0L);
+            }
+        }
+
+        MemorySegment fs = fsHeap.segment();
+        fs.set(Layouts.I32, recordOffset + Layouts.FS_TYPE_CODE, typeCode);
+        fs.set(Layouts.I32, recordOffset + Layouts.FS_FLAGS, 0);
+        fs.set(Layouts.I32, recordOffset + Layouts.FS_FEATURE_COUNT, featureCount);
+        fs.set(Layouts.I32, recordOffset + Layouts.FS_RESERVED, 0);
+        fs.set(Layouts.I64, recordOffset + Layouts.FS_FEATURE_OFFSET, featureOffset);
+        fs.set(Layouts.I64, recordOffset + Layouts.FS_AUX_OFFSET, NULL_OFFSET);
+
+        return fsRef;
+    }
+
+    public int createTop() {
+        return createFeatureStructure(TYPE_TOP, 0);
+    }
+
+    public int createSofa(int sofaNum, String sofaId, String mimeType, String sofaString, String sofaUri) {
+        int fsRef = createFeatureStructure(TYPE_SOFA, 5);
+        setIntFeature(fsRef, SOFA_FEAT_NUM, sofaNum);
+        setStringFeature(fsRef, SOFA_FEAT_ID, sofaId);
+        setStringFeature(fsRef, SOFA_FEAT_MIME_TYPE, mimeType);
+        setStringFeature(fsRef, SOFA_FEAT_STRING, sofaString);
+        setStringFeature(fsRef, SOFA_FEAT_URI, sofaUri);
+        return fsRef;
+    }
+
+    public int createAnnotationBase(int sofaRef) {
+        int fsRef = createFeatureStructure(TYPE_ANNOTATION_BASE, 1);
+        setFsRefFeature(fsRef, ANNOTATION_FEAT_SOFA, sofaRef);
+        return fsRef;
+    }
+
+    public int createAnnotation(int sofaRef, int begin, int end) {
+        return createAnnotationOfType(TYPE_ANNOTATION, sofaRef, begin, end, 0);
+    }
+
+    public int createAnnotationOfType(int typeCode, int sofaRef, int begin, int end, int extraFeatureCount) {
+        if (extraFeatureCount < 0) {
+            throw new IllegalArgumentException("extraFeatureCount must be non-negative");
+        }
+
+        int fsRef = createFeatureStructure(typeCode, 3 + extraFeatureCount);
+        setFsRefFeature(fsRef, ANNOTATION_FEAT_SOFA, sofaRef);
+        setIntFeature(fsRef, ANNOTATION_FEAT_BEGIN, begin);
+        setIntFeature(fsRef, ANNOTATION_FEAT_END, end);
+        return fsRef;
+    }
+
+    public int createDocumentAnnotation(int sofaRef, int begin, int end, String language) {
+        int fsRef = createFeatureStructure(TYPE_DOCUMENT_ANNOTATION, 4);
+        setFsRefFeature(fsRef, ANNOTATION_FEAT_SOFA, sofaRef);
+        setIntFeature(fsRef, ANNOTATION_FEAT_BEGIN, begin);
+        setIntFeature(fsRef, ANNOTATION_FEAT_END, end);
+        setStringFeature(fsRef, DOCUMENT_ANNOTATION_FEAT_LANGUAGE, language);
+        return fsRef;
+    }
+
+    public int getTypeCode(int fsRef) {
+        return fsHeap.segment().get(Layouts.I32, recordOffset(fsRef) + Layouts.FS_TYPE_CODE);
+    }
+
+    public int getFeatureCount(int fsRef) {
+        return fsHeap.segment().get(Layouts.I32, recordOffset(fsRef) + Layouts.FS_FEATURE_COUNT);
+    }
+
+    public int getFlags(int fsRef) {
+        return fsHeap.segment().get(Layouts.I32, recordOffset(fsRef) + Layouts.FS_FLAGS);
+    }
+
+    public void setFlags(int fsRef, int flags) {
+        fsHeap.segment().set(Layouts.I32, recordOffset(fsRef) + Layouts.FS_FLAGS, flags);
+    }
+
+    public long getAuxOffset(int fsRef) {
+        return fsHeap.segment().get(Layouts.I64, recordOffset(fsRef) + Layouts.FS_AUX_OFFSET);
+    }
+
+    public void setAuxOffset(int fsRef, long auxOffset) {
+        fsHeap.segment().set(Layouts.I64, recordOffset(fsRef) + Layouts.FS_AUX_OFFSET, auxOffset);
+    }
+
+    public long getRawFeatureSlot(int fsRef, int featureIndex) {
+        return featureHeap.segment().get(Layouts.I64, featureSlotOffset(fsRef, featureIndex));
+    }
+
+    public void setRawFeatureSlot(int fsRef, int featureIndex, long encodedSlot) {
+        featureHeap.segment().set(Layouts.I64, featureSlotOffset(fsRef, featureIndex), encodedSlot);
+    }
+
+    public boolean getBooleanFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeBoolean(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setBooleanFeature(int fsRef, int featureIndex, boolean value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeBoolean(value));
+    }
+
+    public byte getByteFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeByte(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setByteFeature(int fsRef, int featureIndex, byte value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeByte(value));
+    }
+
+    public short getShortFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeShort(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setShortFeature(int fsRef, int featureIndex, short value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeShort(value));
+    }
+
+    public int getIntFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeInt(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setIntFeature(int fsRef, int featureIndex, int value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeInt(value));
+    }
+
+    public long getLongFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeLong(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setLongFeature(int fsRef, int featureIndex, long value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeLong(value));
+    }
+
+    public float getFloatFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeFloat(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setFloatFeature(int fsRef, int featureIndex, float value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeFloat(value));
+    }
+
+    public double getDoubleFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeDouble(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setDoubleFeature(int fsRef, int featureIndex, double value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeDouble(value));
+    }
+
+    public String getStringFeature(int fsRef, int featureIndex) {
+        return getString(ValueKind.decodeStringRef(getRawFeatureSlot(fsRef, featureIndex)));
+    }
+
+    public int getStringRefFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeStringRef(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setStringFeature(int fsRef, int featureIndex, String value) {
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeStringRef(putString(value)));
+    }
+
+    public void setStringRefFeature(int fsRef, int featureIndex, int stringRef) {
+        validateStringRef(stringRef);
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeStringRef(stringRef));
+    }
+
+    public int getFsRefFeature(int fsRef, int featureIndex) {
+        return ValueKind.decodeFsRef(getRawFeatureSlot(fsRef, featureIndex));
+    }
+
+    public void setFsRefFeature(int fsRef, int featureIndex, int targetFsRef) {
+        if (targetFsRef != 0) {
+            validateFsRef(targetFsRef);
+        }
+        setRawFeatureSlot(fsRef, featureIndex, ValueKind.encodeFsRef(targetFsRef));
+    }
+
+    public synchronized int putString(String value) {
+        requireOpen();
+
+        if (value == null) {
+            return 0;
+        }
+
+        Integer existing = internedStrings.get(value);
+        if (existing != null) {
+            return existing;
+        }
+
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        long byteOffset = stringByteHeap.allocate(bytes.length, 1);
+        MemorySegment bytesSegment = stringByteHeap.segment();
+
+        for (int i = 0; i < bytes.length; i++) {
+            bytesSegment.set(Layouts.I8, byteOffset + i, bytes[i]);
+        }
+
+        long recordOffset = stringRecordHeap.allocate(Layouts.STRING_RECORD_SIZE, 8);
+        int stringRef = Math.toIntExact(recordOffset / Layouts.STRING_RECORD_SIZE) + 1;
+
+        MemorySegment record = stringRecordHeap.segment();
+        record.set(Layouts.I64, recordOffset + Layouts.STRING_BYTE_OFFSET, byteOffset);
+        record.set(Layouts.I32, recordOffset + Layouts.STRING_BYTE_LENGTH, bytes.length);
+        record.set(Layouts.I32, recordOffset + Layouts.STRING_HASH, value.hashCode());
+
+        stringCount = Math.max(stringCount, stringRef);
+        internedStrings.put(value, stringRef);
+
+        while (stringsByRef.size() <= stringRef) {
+            stringsByRef.add(null);
+        }
+        stringsByRef.set(stringRef, value);
+
+        return stringRef;
+    }
+
+    public String getString(int stringRef) {
+        if (stringRef == 0) {
+            return null;
+        }
+
+        validateStringRef(stringRef);
+
+        String cached = stringRef < stringsByRef.size() ? stringsByRef.get(stringRef) : null;
+        if (cached != null) {
+            return cached;
+        }
+
+        long recordOffset = stringRecordOffset(stringRef);
+        MemorySegment record = stringRecordHeap.segment();
+
+        long byteOffset = record.get(Layouts.I64, recordOffset + Layouts.STRING_BYTE_OFFSET);
+        int byteLength = record.get(Layouts.I32, recordOffset + Layouts.STRING_BYTE_LENGTH);
+
+        byte[] bytes = new byte[byteLength];
+        MemorySegment data = stringByteHeap.segment();
+
+        for (int i = 0; i < byteLength; i++) {
+            bytes[i] = data.get(Layouts.I8, byteOffset + i);
+        }
+
+        String value = new String(bytes, StandardCharsets.UTF_8);
+
+        while (stringsByRef.size() <= stringRef) {
+            stringsByRef.add(null);
+        }
+        stringsByRef.set(stringRef, value);
+
+        return value;
+    }
+
+    public int getStringHash(int stringRef) {
+        if (stringRef == 0) {
+            return 0;
+        }
+
+        validateStringRef(stringRef);
+
+        return stringRecordHeap.segment().get(
+                Layouts.I32,
+                stringRecordOffset(stringRef) + Layouts.STRING_HASH
+        );
+    }
+
+    public int createArray(ValueKind kind, int length) {
+        requireOpen();
+        Objects.requireNonNull(kind, "kind");
+
+        if (length < 0) {
+            throw new IllegalArgumentException("length must be non-negative");
+        }
+
+        int typeCode = arrayTypeFor(kind);
+        int fsRef = createFeatureStructure(typeCode, 0);
+
+        long headerOffset = arrayHeap.allocate(Layouts.ARRAY_HEADER_SIZE, 8);
+        long dataOffset = length == 0
+                ? NULL_OFFSET
+                : arrayHeap.allocate(length * (long) kind.byteWidth(), alignmentFor(kind));
+
+        writeArrayHeader(headerOffset, typeCode, kind, length, length, dataOffset);
+        setAuxOffset(fsRef, headerOffset);
+
+        return fsRef;
+    }
+
+    public int createBooleanArray(int length) {
+        return createArray(ValueKind.BOOLEAN, length);
+    }
+
+    public int createByteArray(int length) {
+        return createArray(ValueKind.BYTE, length);
+    }
+
+    public int createShortArray(int length) {
+        return createArray(ValueKind.SHORT, length);
+    }
+
+    public int createIntArray(int length) {
+        return createArray(ValueKind.INT, length);
+    }
+
+    public int createLongArray(int length) {
+        return createArray(ValueKind.LONG, length);
+    }
+
+    public int createFloatArray(int length) {
+        return createArray(ValueKind.FLOAT, length);
+    }
+
+    public int createDoubleArray(int length) {
+        return createArray(ValueKind.DOUBLE, length);
+    }
+
+    public int createStringArray(int length) {
+        return createArray(ValueKind.STRING, length);
+    }
+
+    public int createFsArray(int length) {
+        return createArray(ValueKind.FS_REF, length);
+    }
+
+    public int arrayLength(int arrayFsRef) {
+        return arrayHeap.segment().get(
+                Layouts.I32,
+                arrayHeaderOffset(arrayFsRef) + Layouts.ARRAY_LENGTH
+        );
+    }
+
+    public int arrayCapacity(int arrayFsRef) {
+        return arrayHeap.segment().get(
+                Layouts.I32,
+                arrayHeaderOffset(arrayFsRef) + Layouts.ARRAY_CAPACITY
+        );
+    }
+
+    public ValueKind arrayKind(int arrayFsRef) {
+        return ValueKind.fromCode(arrayHeap.segment().get(
+                Layouts.I32,
+                arrayHeaderOffset(arrayFsRef) + Layouts.ARRAY_VALUE_KIND
+        ));
+    }
+
+    public void resizeArray(int arrayFsRef, int newLength) {
+        if (newLength < 0) {
+            throw new IllegalArgumentException("newLength must be non-negative");
+        }
+
+        long header = arrayHeaderOffset(arrayFsRef);
+        ValueKind kind = arrayKind(arrayFsRef);
+
+        int oldLength = arrayLength(arrayFsRef);
+        int capacity = arrayCapacity(arrayFsRef);
+
+        long dataOffset = arrayHeap.segment().get(
+                Layouts.I64,
+                header + Layouts.ARRAY_DATA_OFFSET
+        );
+
+        if (newLength > capacity) {
+            int newCapacity = Math.max(1, capacity);
+            while (newCapacity < newLength) {
+                newCapacity = Math.multiplyExact(newCapacity, 2);
+            }
+
+            long newDataOffset = arrayHeap.allocate(
+                    newCapacity * (long) kind.byteWidth(),
+                    alignmentFor(kind)
+            );
+
+            if (dataOffset != NULL_OFFSET && oldLength > 0) {
+                MemorySegment.copy(
+                        arrayHeap.segment(),
+                        dataOffset,
+                        arrayHeap.segment(),
+                        newDataOffset,
+                        oldLength * (long) kind.byteWidth()
+                );
+            }
+
+            dataOffset = newDataOffset;
+            arrayHeap.segment().set(Layouts.I64, header + Layouts.ARRAY_DATA_OFFSET, dataOffset);
+            arrayHeap.segment().set(Layouts.I32, header + Layouts.ARRAY_CAPACITY, newCapacity);
+        }
+
+        if (newLength > oldLength) {
+            zeroArrayRange(dataOffset, kind, oldLength, newLength - oldLength);
+        }
+
+        arrayHeap.segment().set(Layouts.I32, header + Layouts.ARRAY_LENGTH, newLength);
+    }
+
+    public boolean getBooleanArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.BOOLEAN);
+        return arrayHeap.segment().get(
+                Layouts.I8,
+                arrayElementOffset(arrayFsRef, index, ValueKind.BOOLEAN)
+        ) != 0;
+    }
+
+    public void setBooleanArrayValue(int arrayFsRef, int index, boolean value) {
+        checkArrayKind(arrayFsRef, ValueKind.BOOLEAN);
+        arrayHeap.segment().set(
+                Layouts.I8,
+                arrayElementOffset(arrayFsRef, index, ValueKind.BOOLEAN),
+                (byte) (value ? 1 : 0)
+        );
+    }
+
+    public byte getByteArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.BYTE);
+        return arrayHeap.segment().get(
+                Layouts.I8,
+                arrayElementOffset(arrayFsRef, index, ValueKind.BYTE)
+        );
+    }
+
+    public void setByteArrayValue(int arrayFsRef, int index, byte value) {
+        checkArrayKind(arrayFsRef, ValueKind.BYTE);
+        arrayHeap.segment().set(
+                Layouts.I8,
+                arrayElementOffset(arrayFsRef, index, ValueKind.BYTE),
+                value
+        );
+    }
+
+    public short getShortArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.SHORT);
+        return arrayHeap.segment().get(
+                Layouts.I16,
+                arrayElementOffset(arrayFsRef, index, ValueKind.SHORT)
+        );
+    }
+
+    public void setShortArrayValue(int arrayFsRef, int index, short value) {
+        checkArrayKind(arrayFsRef, ValueKind.SHORT);
+        arrayHeap.segment().set(
+                Layouts.I16,
+                arrayElementOffset(arrayFsRef, index, ValueKind.SHORT),
+                value
+        );
+    }
+
+    public int getIntArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.INT);
+        return arrayHeap.segment().get(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.INT)
+        );
+    }
+
+    public void setIntArrayValue(int arrayFsRef, int index, int value) {
+        checkArrayKind(arrayFsRef, ValueKind.INT);
+        arrayHeap.segment().set(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.INT),
+                value
+        );
+    }
+
+    public long getLongArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.LONG);
+        return arrayHeap.segment().get(
+                Layouts.I64,
+                arrayElementOffset(arrayFsRef, index, ValueKind.LONG)
+        );
+    }
+
+    public void setLongArrayValue(int arrayFsRef, int index, long value) {
+        checkArrayKind(arrayFsRef, ValueKind.LONG);
+        arrayHeap.segment().set(
+                Layouts.I64,
+                arrayElementOffset(arrayFsRef, index, ValueKind.LONG),
+                value
+        );
+    }
+
+    public float getFloatArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.FLOAT);
+        return arrayHeap.segment().get(
+                Layouts.F32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.FLOAT)
+        );
+    }
+
+    public void setFloatArrayValue(int arrayFsRef, int index, float value) {
+        checkArrayKind(arrayFsRef, ValueKind.FLOAT);
+        arrayHeap.segment().set(
+                Layouts.F32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.FLOAT),
+                value
+        );
+    }
+
+    public double getDoubleArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.DOUBLE);
+        return arrayHeap.segment().get(
+                Layouts.F64,
+                arrayElementOffset(arrayFsRef, index, ValueKind.DOUBLE)
+        );
+    }
+
+    public void setDoubleArrayValue(int arrayFsRef, int index, double value) {
+        checkArrayKind(arrayFsRef, ValueKind.DOUBLE);
+        arrayHeap.segment().set(
+                Layouts.F64,
+                arrayElementOffset(arrayFsRef, index, ValueKind.DOUBLE),
+                value
+        );
+    }
+
+    public String getStringArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.STRING);
+        int stringRef = arrayHeap.segment().get(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.STRING)
+        );
+        return getString(stringRef);
+    }
+
+    public int getStringRefArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.STRING);
+        return arrayHeap.segment().get(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.STRING)
+        );
+    }
+
+    public void setStringArrayValue(int arrayFsRef, int index, String value) {
+        setStringRefArrayValue(arrayFsRef, index, putString(value));
+    }
+
+    public void setStringRefArrayValue(int arrayFsRef, int index, int stringRef) {
+        checkArrayKind(arrayFsRef, ValueKind.STRING);
+        validateStringRef(stringRef);
+        arrayHeap.segment().set(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.STRING),
+                stringRef
+        );
+    }
+
+    public int getFsArrayValue(int arrayFsRef, int index) {
+        checkArrayKind(arrayFsRef, ValueKind.FS_REF);
+        return arrayHeap.segment().get(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.FS_REF)
+        );
+    }
+
+    public void setFsArrayValue(int arrayFsRef, int index, int fsRef) {
+        checkArrayKind(arrayFsRef, ValueKind.FS_REF);
+        if (fsRef != 0) {
+            validateFsRef(fsRef);
+        }
+        arrayHeap.segment().set(
+                Layouts.I32,
+                arrayElementOffset(arrayFsRef, index, ValueKind.FS_REF),
+                fsRef
+        );
+    }
+
+    public int createEmptyList(ValueKind kind) {
+        return createFeatureStructure(emptyListTypeFor(kind), 0);
+    }
+
+    public int createNonEmptyList(ValueKind kind, long encodedHeadSlot, int tailFsRef) {
+        int typeCode = nonEmptyListTypeFor(kind);
+        int fsRef = createFeatureStructure(typeCode, 2);
+
+        if (tailFsRef != 0) {
+            validateFsRef(tailFsRef);
+        }
+
+        setRawFeatureSlot(fsRef, LIST_FEAT_HEAD, encodedHeadSlot);
+        setFsRefFeature(fsRef, LIST_FEAT_TAIL, tailFsRef);
+
+        return fsRef;
+    }
+
+    public int createEmptyIntegerList() {
+        return createEmptyList(ValueKind.INT);
+    }
+
+    public int createIntegerListNode(int head, int tailFsRef) {
+        return createNonEmptyList(ValueKind.INT, ValueKind.encodeInt(head), tailFsRef);
+    }
+
+    public int createEmptyFloatList() {
+        return createEmptyList(ValueKind.FLOAT);
+    }
+
+    public int createFloatListNode(float head, int tailFsRef) {
+        return createNonEmptyList(ValueKind.FLOAT, ValueKind.encodeFloat(head), tailFsRef);
+    }
+
+    public int createEmptyStringList() {
+        return createEmptyList(ValueKind.STRING);
+    }
+
+    public int createStringListNode(String head, int tailFsRef) {
+        return createNonEmptyList(ValueKind.STRING, ValueKind.encodeStringRef(putString(head)), tailFsRef);
+    }
+
+    public int createEmptyFsList() {
+        return createEmptyList(ValueKind.FS_REF);
+    }
+
+    public int createFsListNode(int headFsRef, int tailFsRef) {
+        if (headFsRef != 0) {
+            validateFsRef(headFsRef);
+        }
+        return createNonEmptyList(ValueKind.FS_REF, ValueKind.encodeFsRef(headFsRef), tailFsRef);
+    }
+
+    public boolean isEmptyList(int fsRef) {
+        return isEmptyListType(getTypeCode(fsRef));
+    }
+
+    public long getListHeadSlot(int listFsRef) {
+        return getRawFeatureSlot(listFsRef, LIST_FEAT_HEAD);
+    }
+
+    public int getListTail(int listFsRef) {
+        return getFsRefFeature(listFsRef, LIST_FEAT_TAIL);
+    }
+
+    public int getIntegerListHead(int listFsRef) {
+        checkListKind(listFsRef, ValueKind.INT);
+        return ValueKind.decodeInt(getListHeadSlot(listFsRef));
+    }
+
+    public float getFloatListHead(int listFsRef) {
+        checkListKind(listFsRef, ValueKind.FLOAT);
+        return ValueKind.decodeFloat(getListHeadSlot(listFsRef));
+    }
+
+    public String getStringListHead(int listFsRef) {
+        checkListKind(listFsRef, ValueKind.STRING);
+        return getString(ValueKind.decodeStringRef(getListHeadSlot(listFsRef)));
+    }
+
+    public int getFsListHead(int listFsRef) {
+        checkListKind(listFsRef, ValueKind.FS_REF);
+        return ValueKind.decodeFsRef(getListHeadSlot(listFsRef));
+    }
+
+    public int copyFeatureStructure(int fsRef) {
+        validateFsRef(fsRef);
+
+        int typeCode = getTypeCode(fsRef);
+        int featureCount = getFeatureCount(fsRef);
+        int copy = createFeatureStructure(typeCode, featureCount);
+
+        setFlags(copy, getFlags(fsRef));
+
+        for (int i = 0; i < featureCount; i++) {
+            setRawFeatureSlot(copy, i, getRawFeatureSlot(fsRef, i));
+        }
+
+        if (isArrayType(typeCode)) {
+            cloneArrayAux(fsRef, copy);
+        } else {
+            setAuxOffset(copy, getAuxOffset(fsRef));
+        }
+
+        return copy;
+    }
+
+    public void addToIndexes(int fsRef) {
+        validateFsRef(fsRef);
+        indexes.add(getTypeCode(fsRef), fsRef);
+    }
+
+    public boolean removeFromIndexes(int fsRef) {
+        validateFsRef(fsRef);
+        return indexes.remove(getTypeCode(fsRef), fsRef);
+    }
+
+    public int[] indexedByExactType(int typeCode) {
+        return indexes.snapshot(typeCode);
+    }
+
+    public void clearIndexes() {
+        indexes.clear();
+    }
+
+    public Mark mark() {
+        return new Mark(
+                fsCount,
+                stringCount,
+                fsHeap.used(),
+                featureHeap.used(),
+                arrayHeap.used(),
+                stringRecordHeap.used(),
+                stringByteHeap.used()
+        );
+    }
+
+    public synchronized void resetToMark(Mark mark) {
+        Objects.requireNonNull(mark, "mark");
+
+        if (mark.fsCount < 0 || mark.fsCount > fsCount
+                || mark.stringCount < 0 || mark.stringCount > stringCount) {
+            throw new IllegalArgumentException("mark is not from this backend state");
+        }
+
+        fsCount = mark.fsCount;
+        stringCount = mark.stringCount;
+
+        fsHeap.setUsed(mark.fsHeapUsed);
+        featureHeap.setUsed(mark.featureHeapUsed);
+        arrayHeap.setUsed(mark.arrayHeapUsed);
+        stringRecordHeap.setUsed(mark.stringRecordHeapUsed);
+        stringByteHeap.setUsed(mark.stringByteHeapUsed);
+
+        while (stringsByRef.size() > stringCount + 1) {
+            String removed = stringsByRef.remove(stringsByRef.size() - 1);
+            if (removed != null) {
+                internedStrings.remove(removed);
+            }
+        }
+
+        internedStrings.entrySet().removeIf(e -> e.getValue() > stringCount);
+        indexes.clear();
+    }
+
+    public synchronized void clearCas() {
+        fsHeap.clear();
+        featureHeap.clear();
+        arrayHeap.clear();
+        stringRecordHeap.clear();
+        stringByteHeap.clear();
+
+        internedStrings.clear();
+        stringsByRef.clear();
+        stringsByRef.add(null);
+
+        indexes.clear();
+
+        fsCount = 0;
+        stringCount = 0;
+    }
+
+    @Override
+    public synchronized void close() {
+        if (!closed) {
+            closed = true;
+            if (ownsArena) {
+                arena.close();
+            }
+        }
+    }
+
+    private void cloneArrayAux(int sourceFsRef, int targetFsRef) {
+        long sourceHeader = arrayHeaderOffset(sourceFsRef);
+        ValueKind kind = arrayKind(sourceFsRef);
+
+        int length = arrayLength(sourceFsRef);
+        int capacity = arrayCapacity(sourceFsRef);
+
+        long sourceData = arrayHeap.segment().get(
+                Layouts.I64,
+                sourceHeader + Layouts.ARRAY_DATA_OFFSET
+        );
+
+        long targetHeader = arrayHeap.allocate(Layouts.ARRAY_HEADER_SIZE, 8);
+        long targetData = capacity == 0
+                ? NULL_OFFSET
+                : arrayHeap.allocate(capacity * (long) kind.byteWidth(), alignmentFor(kind));
+
+        writeArrayHeader(targetHeader, arrayTypeFor(kind), kind, length, capacity, targetData);
+
+        if (length > 0) {
+            MemorySegment.copy(
+                    arrayHeap.segment(),
+                    sourceData,
+                    arrayHeap.segment(),
+                    targetData,
+                    length * (long) kind.byteWidth()
+            );
+        }
+
+        setAuxOffset(targetFsRef, targetHeader);
+    }
+
+    private long recordOffset(int fsRef) {
+        validateFsRef(fsRef);
+        return (fsRef - 1L) * Layouts.FS_RECORD_SIZE;
+    }
+
+    private long stringRecordOffset(int stringRef) {
+        return (stringRef - 1L) * Layouts.STRING_RECORD_SIZE;
+    }
+
+    private long featureSlotOffset(int fsRef, int featureIndex) {
+        long record = recordOffset(fsRef);
+
+        int count = fsHeap.segment().get(
+                Layouts.I32,
+                record + Layouts.FS_FEATURE_COUNT
+        );
+
+        if (featureIndex < 0 || featureIndex >= count) {
+            throw new IndexOutOfBoundsException(
+                    "featureIndex=" + featureIndex + ", featureCount=" + count
+            );
+        }
+
+        long featureOffset = fsHeap.segment().get(
+                Layouts.I64,
+                record + Layouts.FS_FEATURE_OFFSET
+        );
+
+        if (featureOffset == NULL_OFFSET) {
+            throw new IllegalStateException("FS has no feature slots: " + fsRef);
+        }
+
+        return featureOffset + featureIndex * (long) Layouts.SLOT_WIDTH;
+    }
+
+    private long arrayHeaderOffset(int arrayFsRef) {
+        validateFsRef(arrayFsRef);
+
+        if (!isArrayType(getTypeCode(arrayFsRef))) {
+            throw new IllegalArgumentException("Not an array FS: " + arrayFsRef);
+        }
+
+        long aux = getAuxOffset(arrayFsRef);
+
+        if (aux == NULL_OFFSET) {
+            throw new IllegalStateException("Array has no auxiliary header: " + arrayFsRef);
+        }
+
+        return aux;
+    }
+
+    private long arrayElementOffset(int arrayFsRef, int index, ValueKind kind) {
+        long header = arrayHeaderOffset(arrayFsRef);
+
+        int length = arrayHeap.segment().get(
+                Layouts.I32,
+                header + Layouts.ARRAY_LENGTH
+        );
+
+        if (index < 0 || index >= length) {
+            throw new IndexOutOfBoundsException("index=" + index + ", length=" + length);
+        }
+
+        long dataOffset = arrayHeap.segment().get(
+                Layouts.I64,
+                header + Layouts.ARRAY_DATA_OFFSET
+        );
+
+        if (dataOffset == NULL_OFFSET) {
+            throw new IndexOutOfBoundsException("empty array");
+        }
+
+        return dataOffset + index * (long) kind.byteWidth();
+    }
+
+    private void writeArrayHeader(
+            long headerOffset,
+            int typeCode,
+            ValueKind kind,
+            int length,
+            int capacity,
+            long dataOffset
+    ) {
+        MemorySegment arrays = arrayHeap.segment();
+        arrays.set(Layouts.I32, headerOffset + Layouts.ARRAY_TYPE_CODE, typeCode);
+        arrays.set(Layouts.I32, headerOffset + Layouts.ARRAY_VALUE_KIND, kind.code());
+        arrays.set(Layouts.I32, headerOffset + Layouts.ARRAY_LENGTH, length);
+        arrays.set(Layouts.I32, headerOffset + Layouts.ARRAY_CAPACITY, capacity);
+        arrays.set(Layouts.I64, headerOffset + Layouts.ARRAY_DATA_OFFSET, dataOffset);
+    }
+
+    private void zeroArrayRange(long dataOffset, ValueKind kind, int start, int length) {
+        if (length <= 0) {
+            return;
+        }
+
+        long from = dataOffset + start * (long) kind.byteWidth();
+        long bytes = length * (long) kind.byteWidth();
+
+        for (long i = 0; i < bytes; i++) {
+            arrayHeap.segment().set(Layouts.I8, from + i, (byte) 0);
+        }
+    }
+
+    private void checkArrayKind(int arrayFsRef, ValueKind expected) {
+        ValueKind actual = arrayKind(arrayFsRef);
+
+        if (actual != expected) {
+            throw new IllegalArgumentException(
+                    "Expected array kind " + expected + " but was " + actual
+            );
+        }
+    }
+
+    private void checkListKind(int listFsRef, ValueKind expected) {
+        int typeCode = getTypeCode(listFsRef);
+
+        if (isEmptyListType(typeCode)) {
+            throw new IllegalArgumentException("Empty list has no head: " + listFsRef);
+        }
+
+        ValueKind actual = listElementKindFor(typeCode);
+
+        if (actual != expected) {
+            throw new IllegalArgumentException(
+                    "Expected list kind " + expected + " but was " + actual
+            );
+        }
+    }
+
+    private void validateFsRef(int fsRef) {
+        if (fsRef <= 0 || fsRef > fsCount) {
+            throw new IllegalArgumentException("Invalid FS ref: " + fsRef + ", fsCount=" + fsCount);
+        }
+    }
+
+    private void validateStringRef(int stringRef) {
+        if (stringRef < 0 || stringRef > stringCount) {
+            throw new IllegalArgumentException(
+                    "Invalid string ref: " + stringRef + ", stringCount=" + stringCount
+            );
+        }
+    }
+
+    private void requireOpen() {
+        if (closed) {
+            throw new IllegalStateException("backend is closed");
+        }
+    }
+
+    private static int alignmentFor(ValueKind kind) {
+        return switch (kind) {
+            case BOOLEAN, BYTE -> 1;
+            case SHORT -> 2;
+            case INT, FLOAT, STRING, FS_REF -> 4;
+            case LONG, DOUBLE -> 8;
+        };
+    }
+
+    private static boolean isArrayType(int typeCode) {
+        return typeCode >= TYPE_BOOLEAN_ARRAY && typeCode <= TYPE_FS_ARRAY;
+    }
+
+    private static int arrayTypeFor(ValueKind kind) {
+        return switch (kind) {
+            case BOOLEAN -> TYPE_BOOLEAN_ARRAY;
+            case BYTE -> TYPE_BYTE_ARRAY;
+            case SHORT -> TYPE_SHORT_ARRAY;
+            case INT -> TYPE_INT_ARRAY;
+            case LONG -> TYPE_LONG_ARRAY;
+            case FLOAT -> TYPE_FLOAT_ARRAY;
+            case DOUBLE -> TYPE_DOUBLE_ARRAY;
+            case STRING -> TYPE_STRING_ARRAY;
+            case FS_REF -> TYPE_FS_ARRAY;
+        };
+    }
+
+    private static int emptyListTypeFor(ValueKind kind) {
+        return switch (kind) {
+            case INT -> TYPE_EMPTY_INTEGER_LIST;
+            case FLOAT -> TYPE_EMPTY_FLOAT_LIST;
+            case STRING -> TYPE_EMPTY_STRING_LIST;
+            case FS_REF -> TYPE_EMPTY_FS_LIST;
+            default -> throw new IllegalArgumentException(
+                    "UIMA built-in lists are only INT, FLOAT, STRING, and FS_REF: " + kind
+            );
+        };
+    }
+
+    private static int nonEmptyListTypeFor(ValueKind kind) {
+        return switch (kind) {
+            case INT -> TYPE_NON_EMPTY_INTEGER_LIST;
+            case FLOAT -> TYPE_NON_EMPTY_FLOAT_LIST;
+            case STRING -> TYPE_NON_EMPTY_STRING_LIST;
+            case FS_REF -> TYPE_NON_EMPTY_FS_LIST;
+            default -> throw new IllegalArgumentException(
+                    "UIMA built-in lists are only INT, FLOAT, STRING, and FS_REF: " + kind
+            );
+        };
+    }
+
+    private static ValueKind listElementKindFor(int typeCode) {
+        return switch (typeCode) {
+            case TYPE_EMPTY_INTEGER_LIST, TYPE_NON_EMPTY_INTEGER_LIST -> ValueKind.INT;
+            case TYPE_EMPTY_FLOAT_LIST, TYPE_NON_EMPTY_FLOAT_LIST -> ValueKind.FLOAT;
+            case TYPE_EMPTY_STRING_LIST, TYPE_NON_EMPTY_STRING_LIST -> ValueKind.STRING;
+            case TYPE_EMPTY_FS_LIST, TYPE_NON_EMPTY_FS_LIST -> ValueKind.FS_REF;
+            default -> throw new IllegalArgumentException("Not a built-in list type: " + typeCode);
+        };
+    }
+
+    private static boolean isEmptyListType(int typeCode) {
+        return typeCode == TYPE_EMPTY_INTEGER_LIST
+                || typeCode == TYPE_EMPTY_FLOAT_LIST
+                || typeCode == TYPE_EMPTY_STRING_LIST
+                || typeCode == TYPE_EMPTY_FS_LIST;
+    }
+
+    public record Mark(
+            int fsCount,
+            int stringCount,
+            long fsHeapUsed,
+            long featureHeapUsed,
+            long arrayHeapUsed,
+            long stringRecordHeapUsed,
+            long stringByteHeapUsed
+    ) {
+    }
+
+    public enum ValueKind {
+        BOOLEAN(1, 1),
+        BYTE(2, 1),
+        SHORT(3, 2),
+        INT(4, 4),
+        LONG(5, 8),
+        FLOAT(6, 4),
+        DOUBLE(7, 8),
+        STRING(8, 4),
+        FS_REF(9, 4);
+
+        private final int code;
+        private final int byteWidth;
+
+        ValueKind(int code, int byteWidth) {
+            this.code = code;
+            this.byteWidth = byteWidth;
+        }
+
+        public int code() {
+            return code;
+        }
+
+        public int byteWidth() {
+            return byteWidth;
+        }
+
+        public static ValueKind fromCode(int code) {
+            for (ValueKind value : values()) {
+                if (value.code == code) {
+                    return value;
+                }
+            }
+            throw new IllegalArgumentException("Unknown value kind code: " + code);
+        }
+
+        public static long encodeBoolean(boolean value) {
+            return value ? 1L : 0L;
+        }
+
+        public static boolean decodeBoolean(long slot) {
+            return slot != 0L;
+        }
+
+        public static long encodeByte(byte value) {
+            return value;
+        }
+
+        public static byte decodeByte(long slot) {
+            return (byte) slot;
+        }
+
+        public static long encodeShort(short value) {
+            return value;
+        }
+
+        public static short decodeShort(long slot) {
+            return (short) slot;
+        }
+
+        public static long encodeInt(int value) {
+            return value;
+        }
+
+        public static int decodeInt(long slot) {
+            return (int) slot;
+        }
+
+        public static long encodeLong(long value) {
+            return value;
+        }
+
+        public static long decodeLong(long slot) {
+            return slot;
+        }
+
+        public static long encodeFloat(float value) {
+            return Float.floatToRawIntBits(value) & 0xffff_ffffL;
+        }
+
+        public static float decodeFloat(long slot) {
+            return Float.intBitsToFloat((int) slot);
+        }
+
+        public static long encodeDouble(double value) {
+            return Double.doubleToRawLongBits(value);
+        }
+
+        public static double decodeDouble(long slot) {
+            return Double.longBitsToDouble(slot);
+        }
+
+        public static long encodeStringRef(int stringRef) {
+            return stringRef;
+        }
+
+        public static int decodeStringRef(long slot) {
+            return (int) slot;
+        }
+
+        public static long encodeFsRef(int fsRef) {
+            return fsRef;
+        }
+
+        public static int decodeFsRef(long slot) {
+            return (int) slot;
+        }
+    }
+
+    private static final class Layouts {
+        static final ValueLayout.OfByte I8 = ValueLayout.JAVA_BYTE.withOrder(ByteOrder.nativeOrder());
+        static final ValueLayout.OfShort I16 = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.nativeOrder());
+        static final ValueLayout.OfInt I32 = ValueLayout.JAVA_INT.withOrder(ByteOrder.nativeOrder());
+        static final ValueLayout.OfLong I64 = ValueLayout.JAVA_LONG.withOrder(ByteOrder.nativeOrder());
+        static final ValueLayout.OfFloat F32 = ValueLayout.JAVA_FLOAT.withOrder(ByteOrder.nativeOrder());
+        static final ValueLayout.OfDouble F64 = ValueLayout.JAVA_DOUBLE.withOrder(ByteOrder.nativeOrder());
+
+        static final StructLayout FS_RECORD = MemoryLayout.structLayout(
+                I32.withName("typeCode"),
+                I32.withName("flags"),
+                I32.withName("featureCount"),
+                I32.withName("reserved"),
+                I64.withName("featureOffset"),
+                I64.withName("auxOffset")
+        ).withByteAlignment(8).withName("FsRecord");
+
+        static final long FS_RECORD_SIZE = FS_RECORD.byteSize();
+        static final long FS_TYPE_CODE = FS_RECORD.byteOffset(groupElement("typeCode"));
+        static final long FS_FLAGS = FS_RECORD.byteOffset(groupElement("flags"));
+        static final long FS_FEATURE_COUNT = FS_RECORD.byteOffset(groupElement("featureCount"));
+        static final long FS_RESERVED = FS_RECORD.byteOffset(groupElement("reserved"));
+        static final long FS_FEATURE_OFFSET = FS_RECORD.byteOffset(groupElement("featureOffset"));
+        static final long FS_AUX_OFFSET = FS_RECORD.byteOffset(groupElement("auxOffset"));
+
+        static final StructLayout ARRAY_HEADER = MemoryLayout.structLayout(
+                I32.withName("typeCode"),
+                I32.withName("valueKind"),
+                I32.withName("length"),
+                I32.withName("capacity"),
+                I64.withName("dataOffset")
+        ).withByteAlignment(8).withName("ArrayHeader");
+
+        static final long ARRAY_HEADER_SIZE = ARRAY_HEADER.byteSize();
+        static final long ARRAY_TYPE_CODE = ARRAY_HEADER.byteOffset(groupElement("typeCode"));
+        static final long ARRAY_VALUE_KIND = ARRAY_HEADER.byteOffset(groupElement("valueKind"));
+        static final long ARRAY_LENGTH = ARRAY_HEADER.byteOffset(groupElement("length"));
+        static final long ARRAY_CAPACITY = ARRAY_HEADER.byteOffset(groupElement("capacity"));
+        static final long ARRAY_DATA_OFFSET = ARRAY_HEADER.byteOffset(groupElement("dataOffset"));
+
+        static final StructLayout STRING_RECORD = MemoryLayout.structLayout(
+                I64.withName("byteOffset"),
+                I32.withName("byteLength"),
+                I32.withName("hash")
+        ).withByteAlignment(8).withName("StringRecord");
+
+        static final long STRING_RECORD_SIZE = STRING_RECORD.byteSize();
+        static final long STRING_BYTE_OFFSET = STRING_RECORD.byteOffset(groupElement("byteOffset"));
+        static final long STRING_BYTE_LENGTH = STRING_RECORD.byteOffset(groupElement("byteLength"));
+        static final long STRING_HASH = STRING_RECORD.byteOffset(groupElement("hash"));
+        static final int SLOT_WIDTH = Long.BYTES;
+    }
+
+    private static final class SegmentHeap {
+        private final Arena arena;
+        private final String name;
+        private final long defaultAlignment;
+
+        private MemorySegment segment;
+        private long capacity;
+        private long used;
+
+        SegmentHeap(Arena arena, String name, long initialCapacity, long defaultAlignment) {
+            this.arena = arena;
+            this.name = name;
+
+            if (defaultAlignment <= 0 || Long.bitCount(defaultAlignment) != 1) {
+                throw new IllegalArgumentException("defaultAlignment must be a positive power of two");
+            }
+
+            this.defaultAlignment = defaultAlignment;
+            this.capacity = Math.max(defaultAlignment, alignUp(initialCapacity, defaultAlignment));
+            this.segment = arena.allocate(capacity, defaultAlignment);
+        }
+
+        synchronized long allocate(long byteSize, long byteAlignment) {
+            if (byteSize < 0) {
+                throw new IllegalArgumentException("byteSize must be non-negative");
+            }
+
+            if (byteAlignment <= 0 || Long.bitCount(byteAlignment) != 1) {
+                throw new IllegalArgumentException("byteAlignment must be a positive power of two");
+            }
+
+            long aligned = alignUp(used, byteAlignment);
+            long end = Math.addExact(aligned, byteSize);
+
+            ensureCapacity(end);
+            used = end;
+
+            return aligned;
+        }
+
+        synchronized void ensureCapacity(long minCapacity) {
+            if (minCapacity <= capacity) {
+                return;
+            }
+
+            long newCapacity = capacity;
+            while (newCapacity < minCapacity) {
+                newCapacity = Math.multiplyExact(newCapacity, 2L);
+            }
+
+            MemorySegment newSegment = arena.allocate(newCapacity, defaultAlignment);
+            MemorySegment.copy(segment, 0, newSegment, 0, used);
+
+            segment = newSegment;
+            capacity = newCapacity;
+        }
+
+        synchronized void setUsed(long newUsed) {
+            if (newUsed < 0 || newUsed > used) {
+                throw new IllegalArgumentException("invalid used mark for " + name + ": " + newUsed);
+            }
+
+            used = newUsed;
+        }
+
+        synchronized void clear() {
+            used = 0L;
+        }
+
+        MemorySegment segment() {
+            return segment;
+        }
+
+        synchronized long used() {
+            return used;
+        }
+
+        static long alignUp(long value, long alignment) {
+            long mask = alignment - 1L;
+            return (value + mask) & ~mask;
+        }
+    }
+
+    private static final class IntVector {
+        private final SegmentHeap heap;
+
+        private long dataOffset;
+        private int size;
+        private int capacity;
+
+        IntVector(Arena arena, String name, int initialCapacity) {
+            this.capacity = Math.max(4, initialCapacity);
+            this.heap = new SegmentHeap(
+                    arena,
+                    name,
+                    capacity * (long) Integer.BYTES,
+                    Integer.BYTES
+            );
+            this.dataOffset = heap.allocate(capacity * (long) Integer.BYTES, Integer.BYTES);
+        }
+
+        int size() {
+            return size;
+        }
+
+        int get(int index) {
+            check(index);
+            return heap.segment().get(
+                    Layouts.I32,
+                    dataOffset + index * (long) Integer.BYTES
+            );
+        }
+
+        void set(int index, int value) {
+            check(index);
+            heap.segment().set(
+                    Layouts.I32,
+                    dataOffset + index * (long) Integer.BYTES,
+                    value
+            );
+        }
+
+        boolean contains(int value) {
+            for (int i = 0; i < size; i++) {
+                if (get(i) == value) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void add(int value) {
+            ensure(size + 1);
+            heap.segment().set(
+                    Layouts.I32,
+                    dataOffset + size * (long) Integer.BYTES,
+                    value
+            );
+            size++;
+        }
+
+        boolean removeValue(int value) {
+            for (int i = 0; i < size; i++) {
+                if (get(i) == value) {
+                    int last = get(size - 1);
+                    set(i, last);
+                    size--;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        int[] toArray() {
+            int[] out = new int[size];
+
+            for (int i = 0; i < size; i++) {
+                out[i] = get(i);
+            }
+
+            return out;
+        }
+
+        void clear() {
+            size = 0;
+        }
+
+        private void ensure(int min) {
+            if (min <= capacity) {
+                return;
+            }
+
+            int newCapacity = capacity;
+            while (newCapacity < min) {
+                newCapacity = Math.multiplyExact(newCapacity, 2);
+            }
+
+            long newOffset = heap.allocate(
+                    newCapacity * (long) Integer.BYTES,
+                    Integer.BYTES
+            );
+
+            MemorySegment.copy(
+                    heap.segment(),
+                    dataOffset,
+                    heap.segment(),
+                    newOffset,
+                    size * (long) Integer.BYTES
+            );
+
+            dataOffset = newOffset;
+            capacity = newCapacity;
+        }
+
+        private void check(int index) {
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException("index=" + index + ", size=" + size);
+            }
+        }
+    }
+
+    public static final class LongVector {
+        private final SegmentHeap heap;
+
+        private long dataOffset;
+        private int size;
+        private int capacity;
+
+        public LongVector(Arena arena, String name, int initialCapacity) {
+            this.capacity = Math.max(4, initialCapacity);
+            this.heap = new SegmentHeap(
+                    arena,
+                    name,
+                    capacity * (long) Long.BYTES,
+                    Long.BYTES
+            );
+            this.dataOffset = heap.allocate(capacity * (long) Long.BYTES, Long.BYTES);
+        }
+
+        public int size() {
+            return size;
+        }
+
+        public long get(int index) {
+            check(index);
+            return heap.segment().get(
+                    Layouts.I64,
+                    dataOffset + index * (long) Long.BYTES
+            );
+        }
+
+        public void set(int index, long value) {
+            check(index);
+            heap.segment().set(
+                    Layouts.I64,
+                    dataOffset + index * (long) Long.BYTES,
+                    value
+            );
+        }
+
+        public void add(long value) {
+            ensure(size + 1);
+            heap.segment().set(
+                    Layouts.I64,
+                    dataOffset + size * (long) Long.BYTES,
+                    value
+            );
+            size++;
+        }
+
+        public long[] toArray() {
+            long[] out = new long[size];
+
+            for (int i = 0; i < size; i++) {
+                out[i] = get(i);
+            }
+
+            return out;
+        }
+
+        public void clear() {
+            size = 0;
+        }
+
+        private void ensure(int min) {
+            if (min <= capacity) {
+                return;
+            }
+
+            int newCapacity = capacity;
+            while (newCapacity < min) {
+                newCapacity = Math.multiplyExact(newCapacity, 2);
+            }
+
+            long newOffset = heap.allocate(
+                    newCapacity * (long) Long.BYTES,
+                    Long.BYTES
+            );
+
+            MemorySegment.copy(
+                    heap.segment(),
+                    dataOffset,
+                    heap.segment(),
+                    newOffset,
+                    size * (long) Long.BYTES
+            );
+
+            dataOffset = newOffset;
+            capacity = newCapacity;
+        }
+
+        private void check(int index) {
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException("index=" + index + ", size=" + size);
+            }
+        }
+    }
+
+    private static final class IndexRepository {
+        private final Arena arena;
+        private final Map<Integer, IntVector> byExactType = new HashMap<>();
+
+        IndexRepository(Arena arena) {
+            this.arena = arena;
+        }
+
+        void add(int typeCode, int fsRef) {
+            IntVector vector = byExactType.computeIfAbsent(
+                    typeCode,
+                    t -> new IntVector(arena, "idx-" + t, 16)
+            );
+
+            if (!vector.contains(fsRef)) {
+                vector.add(fsRef);
+            }
+        }
+
+        boolean remove(int typeCode, int fsRef) {
+            IntVector vector = byExactType.get(typeCode);
+            return vector != null && vector.removeValue(fsRef);
+        }
+
+        int[] snapshot(int typeCode) {
+            IntVector vector = byExactType.get(typeCode);
+            return vector == null ? new int[0] : vector.toArray();
+        }
+
+        void clear() {
+            for (IntVector vector : byExactType.values()) {
+                vector.clear();
+            }
+            byExactType.clear();
+        }
+    }
+}

@@ -31,7 +31,6 @@
 
     <modules>
         <module>duui-base</module>
-        <module>duui-storage</module>
         <module>duui-core</module>
         <module>duui-dua</module>
     </modules>
@@ -74,11 +73,6 @@
             <dependency>
                 <groupId>org.texttechnologylab</groupId>
                 <artifactId>duui-base</artifactId>
-                <version>${duui.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.texttechnologylab</groupId>
-                <artifactId>duui-storage</artifactId>
                 <version>${duui.version}</version>
             </dependency>
             <dependency>

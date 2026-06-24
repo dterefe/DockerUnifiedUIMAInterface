@@ -120,9 +120,10 @@ public class DUUIRayDriver implements IDUUIDriverInterface {
 
     /**
      * Sets the ray file for both starting and stopping the cluster
-     * Use this when ray is not on PATH or you want a specific env (e.g. conda)
+     * Use this when ray is not on PATH or you want a specific env (e.g. conda or a UV-managed venv)
      * Takes priority over the component-level {@code withRayExecutable()}
      *
+     * See {@code instructions/ray/README.md} for setting up a UV-managed venv whose
      * <pre>
      * new DUUIRayDriver()
      *     .withRaySource("/opt/conda/envs/myenv/bin/ray")

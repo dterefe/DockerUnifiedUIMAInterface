@@ -1,5 +1,7 @@
 package org.texttechnologylab.DockerUnifiedUIMAInterface.io.reader;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import de.tudarmstadt.ukp.dkpro.core.api.metadata.type.DocumentMetaData;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.compress.compressors.CompressorException;
@@ -29,6 +31,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
 
@@ -57,14 +60,18 @@ public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
     private String targetLocation = null;
 
     public DUUIMultimodalCollectionReader(String folder, String ending) {
-        this(folder, ending, "_InitialView", 25, getRandomFromMode(null, -1), getSortFromMode(null), "", true, null, 0, "", null);
+        this(folder, ending, "_InitialView", -1, 25, getRandomFromMode(null, -1), getSortFromMode(null), "", true, null, 0, "", null);
     }
 
     public DUUIMultimodalCollectionReader(String folder, String ending, String viewName) {
-        this(folder, ending, viewName, 25, getRandomFromMode(null, -1), getSortFromMode(null), "", true, null, 0, "", null);
+        this(folder, ending, viewName, -1, 25, getRandomFromMode(null, -1), getSortFromMode(null), "", true, null, 0, "", null);
     }
 
-    public DUUIMultimodalCollectionReader(String folder, String ending, String viewName, int debugCount, int iRandom, boolean bSort, String savePath, boolean bAddMetadata, String language, int skipSmallerFiles, String targetLocation, String targetEnding) {
+    public DUUIMultimodalCollectionReader(String folder, String ending, int maxFiles) {
+        this(folder, ending, "_InitialView", maxFiles, 25, getRandomFromMode(null, -1), getSortFromMode(null), "", true, null, 0, "", null);
+    }
+
+    public DUUIMultimodalCollectionReader(String folder, String ending, String viewName, int maxFiles, int debugCount, int iRandom, boolean bSort, String savePath, boolean bAddMetadata, String language, int skipSmallerFiles, String targetLocation, String targetEnding) {
         this.targetLocation = targetLocation;
         _addMetadata = bAddMetadata;
         _language = language;
@@ -85,16 +92,16 @@ public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
             String[] sSplit = sContent.split("\n");
 
             Collections.addAll(_filePaths, sSplit);
-
         } else {
             File fl = new File(folder);
             if (!fl.isDirectory()) {
                 throw new RuntimeException("The folder is not a directory!");
             }
 
+            AtomicInteger addedCount = new AtomicInteger(0);
 
             _path = folder;
-            addFilesToConcurrentList(fl, ending, _filePaths);
+            addFilesToConcurrentList(fl, ending, _filePaths, maxFiles, addedCount);
 
             if (skipSmallerFiles > 0) {
                 _filePaths = skipBySize(_filePaths, skipSmallerFiles);
@@ -167,16 +174,28 @@ public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
         return mode != AsyncCollectionReader.DUUI_ASYNC_COLLECTION_READER_SAMPLE_MODE.RANDOM;
     }
 
-    public static void addFilesToConcurrentList(File folder, String ending, ConcurrentLinkedQueue<String> paths) {
-        File[] listOfFiles = folder.listFiles();
+    public static void addFilesToConcurrentList(File folder, String ending, ConcurrentLinkedQueue<String> paths, int maxFiles, AtomicInteger addedCount) {
+        if (maxFiles > 0 && addedCount.get() >= maxFiles) {
+            return;
+        }
 
-        for (int i = 0; i < listOfFiles.length; i++) {
-            if (listOfFiles[i].isFile()) {
-                if (listOfFiles[i].getName().endsWith(ending)) {
-                    paths.add(listOfFiles[i].getPath());
+        File[] listOfFiles = folder.listFiles();
+        if (listOfFiles == null) {
+            return;
+        }
+
+        for (File file : listOfFiles) {
+            if (maxFiles > 0 && addedCount.get() >= maxFiles) {
+                return;
+            }
+
+            if (file.isFile()) {
+                if (file.getName().endsWith(ending)) {
+                    paths.add(file.getPath());
+                    addedCount.incrementAndGet();
                 }
-            } else if (listOfFiles[i].isDirectory()) {
-                addFilesToConcurrentList(listOfFiles[i], ending, paths);
+            } else if (file.isDirectory()) {
+                addFilesToConcurrentList(file, ending, paths, maxFiles, addedCount);
             }
         }
 
@@ -340,8 +359,12 @@ public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
                         XmiCasDeserializer.deserialize(decodedFile, mView.getCas(), true);
                         break;
                     } else if (mimeType.split("/")[1].equals("x-gzip") || mimeType.split("/")[1].equals("gzip")) {
-                        CompressorInputStream decodedFile = new CompressorStreamFactory(true).createCompressorInputStream(CompressorStreamFactory.GZIP, new ByteArrayInputStream(Files.readAllBytes(fFile.toPath())));
-                        XmiCasDeserializer.deserialize(decodedFile, mView.getCas(), true);
+                        //CompressorInputStream decodedFile = new CompressorStreamFactory(true).createCompressorInputStream(CompressorStreamFactory.GZIP, new ByteArrayInputStream(Files.readAllBytes(fFile.toPath())));
+                        //XmiCasDeserializer.deserialize(decodedFile, mView.getCas(), true);
+                        GzJsonReader.ParsedArticle r = GzJsonReader.readSingleJsonFromGz(fFile.toPath());
+                        mView.setSofaDataString(r.getText(),"text/plain");
+
+
                         break;
                     } else if (mimeType.split("/")[1].equals("x-xz")) {
                         CompressorInputStream decodedFile = new CompressorStreamFactory(true).createCompressorInputStream(CompressorStreamFactory.XZ, new ByteArrayInputStream(Files.readAllBytes(fFile.toPath())));
@@ -350,6 +373,7 @@ public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
                     }
 
                     sofaString = Base64.encodeBase64String(FileUtils.readFileToByteArray(fFile));
+                    System.out.println(sofaString.substring(0, 150));
                     mView.setSofaDataString(sofaString, mimeType);
                     break;
                 default:
@@ -472,5 +496,109 @@ public class DUUIMultimodalCollectionReader implements DUUICollectionReader {
         public byte[] getBytes() {
             return _bytes;
         }
+    }
+}
+
+class GzJsonReader {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    public static class ParsedArticle {
+        private final String extractedFileName;
+        private final String url;
+        private final String text;
+
+        public ParsedArticle(String extractedFileName, String url, String text) {
+            this.extractedFileName = extractedFileName;
+            this.url = url;
+            this.text = text;
+        }
+
+        public String getExtractedFileName() {
+            return extractedFileName;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public String getText() {
+            return text;
+        }
+    }
+
+    public static ParsedArticle readSingleJsonFromGz(Path gzFile) throws IOException {
+        String extractedFileName = deriveExtractedFileName(gzFile);
+
+        try (InputStream fileIn = Files.newInputStream(gzFile);
+             InputStream gzipIn = new GZIPInputStream(fileIn)) {
+
+            JsonNode root = MAPPER.readTree(gzipIn);
+
+            String url = root.path("url").asText("");
+
+            StringBuilder textBuilder = new StringBuilder();
+            JsonNode article = root.path("article");
+
+            if (article.isArray()) {
+                for (JsonNode item : article) {
+                    if ("text".equals(item.path("type").asText())) {
+                        collectText(item.path("text"), textBuilder);
+                    }
+                }
+            }
+
+            return new ParsedArticle(extractedFileName, url, textBuilder.toString().trim());
+        }
+    }
+
+    private static void collectText(JsonNode node, StringBuilder sb) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return;
+        }
+
+        if (node.isTextual()) {
+            appendWithSpace(sb, node.asText());
+            return;
+        }
+
+        if (node.isArray()) {
+            for (JsonNode child : node) {
+                if ("text".equals(child.path("type").asText())) {
+                    collectText(child.path("text"), sb);
+                }
+            }
+            return;
+        }
+
+        if (node.isObject()) {
+            if ("text".equals(node.path("type").asText())) {
+                collectText(node.path("text"), sb);
+            }
+        }
+    }
+
+    private static void appendWithSpace(StringBuilder sb, String text) {
+        if (text == null) {
+            return;
+        }
+
+        String cleaned = text.trim();
+        if (cleaned.isEmpty()) {
+            return;
+        }
+
+        if (sb.length() > 0) {
+            sb.append(' ');
+        }
+        sb.append(cleaned);
+    }
+
+    private static String deriveExtractedFileName(Path gzFile) {
+        String fileName = gzFile.getFileName().toString();
+        if (fileName.endsWith(".gz")) {
+            return fileName.substring(0, fileName.length() - 3);
+        }
+        return fileName;
     }
 }

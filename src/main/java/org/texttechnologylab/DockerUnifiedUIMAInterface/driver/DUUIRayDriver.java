@@ -46,7 +46,7 @@ import java.util.function.Consumer;
  *
  * @author Daniel Bundan
  */
-public class DUUIRayParallelDriver implements IDUUIDriverInterface {
+public class DUUIRayDriver implements IDUUIDriverInterface {
 
     // These keys are stripped before passing params to Lua
     // num_workers is kept out of this set on purpose: Lua needs it for the request body
@@ -105,11 +105,11 @@ public class DUUIRayParallelDriver implements IDUUIDriverInterface {
     private static final java.util.regex.Pattern JOB_ID_PATTERN =
             java.util.regex.Pattern.compile("Job '(raysubmit_\\w+)'");
 
-    public DUUIRayParallelDriver() {
+    public DUUIRayDriver() {
         this(120);
     }
 
-    public DUUIRayParallelDriver(int connectionTimeoutSeconds) {
+    public DUUIRayDriver(int connectionTimeoutSeconds) {
         components = new ConcurrentHashMap<>();
         client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(connectionTimeoutSeconds))
@@ -124,11 +124,11 @@ public class DUUIRayParallelDriver implements IDUUIDriverInterface {
      * Takes priority over the component-level {@code withRayExecutable()}
      *
      * <pre>
-     * new DUUIRayParallelDriver()
+     * new DUUIRayDriver()
      *     .withRaySource("/opt/conda/envs/myenv/bin/ray")
      * </pre>
      */
-    public DUUIRayParallelDriver withRaySource(String rayExecutablePath) {
+    public DUUIRayDriver withRaySource(String rayExecutablePath) {
         Objects.requireNonNull(rayExecutablePath, "rayExecutablePath must not be null");
         this.userRaySource = rayExecutablePath;
         this.activeRayExecutable = rayExecutablePath;
@@ -863,7 +863,7 @@ public class DUUIRayParallelDriver implements IDUUIDriverInterface {
          * we just submit the job to it
          *
          * <pre>
-         * new DUUIRayParallelDriver.Component("/home/user/my_component", "server.py")
+         * new DUUIRayDriver.Component("/home/user/my_component", "server.py")
          *     .withClusterUrl("http://10.0.0.1:8265")
          *     .withTaskUrl("http://10.0.0.1:25590")
          *     .build()
@@ -951,7 +951,7 @@ public class DUUIRayParallelDriver implements IDUUIDriverInterface {
 
         /**
          * Stop and delete the job from the dashboard once finished (default: {@code false})
-         * Overrides {@link #withKeepJobAlive} stop & delete always runs when this is set
+         * Overrides {@link #withKeepJobAlive}; stop and delete always run when this is set
          */
         public Component withDeleteJob(boolean delete) {
             this.deleteJob = delete;
@@ -986,7 +986,7 @@ public class DUUIRayParallelDriver implements IDUUIDriverInterface {
         /**
          * When enabled, the finalize result is written into a freshly created JCas instead of
          * the last document CAS received from the reader. The last document CAS is left unchanged.
-         * Retrieve the result CAS via {@link DUUIRayParallelDriver#getResultCas(String)}.
+         * Retrieve the result CAS via {@link DUUIRayDriver#getResultCas(String)}.
          * Only meaningful when combined with {@link #withStreamMode(boolean)}
          */
         public Component withCreateOwnCas(boolean createOwnCas) {
@@ -1042,7 +1042,7 @@ public class DUUIRayParallelDriver implements IDUUIDriverInterface {
                                 " — the existing cluster topology is used as-is.%n", numWorkers);
             }
             component.withUrl(taskUrl);
-            component.withDriver(DUUIRayParallelDriver.class);
+            component.withDriver(DUUIRayDriver.class);
             component.withScale(1); // Ray handles parallelism internally; multiple DUUI instances would conflict on ports
             component.withParameter("num_workers", String.valueOf(numWorkers));
             component.withParameter("cpus_per_worker", String.valueOf(cpusPerWorker));

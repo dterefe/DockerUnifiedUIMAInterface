@@ -434,3 +434,275 @@ flow_summary: |
   ├─ Scheduler reads snapshot → deprioritizes saturated checkpoint
   ├─ All saturated → WAIT → executor blocks/polls
   └─ Consumer drains → availability ↑ → scheduler resumes
+
+# =============================================================================
+# SCHEDULER POLICIES — Abstract Strategy Space
+# =============================================================================
+#
+# Every scheduler policy answers exactly one question:
+#   "Given N queues, each with work waiting, which one do I pull from next?"
+#
+# The answer is always a tradeoff between competing goals:
+#   throughput ↔ fairness ↔ latency ↔ stability ↔ resource pressure
+#
+# Below are the pure strategies, explained without reference to any
+# implementation detail.
+
+scheduler_policy_abstractions:
+
+  # ── THROUGHPUT-ORIENTED ──────────────────────────────────────
+
+  deepest_first:
+    name: "Deepest Queue First"
+    strategy: >
+      Always pull from the queue with the most waiting work. This maximizes
+      throughput because the stage with the highest backlog is the one most
+      likely to have downstream capacity available — idle consumers won't
+      starve if you keep feeding the bottleneck.
+    tradeoff: >
+      Shallow queues may starve indefinitely if the deep queue never drains.
+      A short stage behind a deep stage gets no CPU time.
+    best_when: >
+      All stages feed a common consumer with uniform processing cost.
+      The bottleneck IS the deepest queue — feeding it maximizes total
+      system throughput.
+    failure_mode: "Starvation of shallow queues."
+
+  widest_first:
+    name: "Widest Fan-Out First"
+    strategy: >
+      Prefer queues where each dequeued task spawns the most downstream work.
+      Like deepest-first but the "depth" is measured in downstream impact,
+      not queue length.
+    tradeoff: >
+      Requires knowledge of the pipeline DAG. A queue that fans out to 10
+      downstream stages gets priority even if it's shallow.
+    best_when: >
+      Fork/join pipelines where some forks have more branches than others.
+    failure_mode: "Low-fan-out stages starve."
+
+  # ── FAIRNESS-ORIENTED ────────────────────────────────────────
+
+  round_robin:
+    name: "Round Robin"
+    strategy: >
+      Cycle through all ready queues in fixed order. Each queue gets exactly
+      one dequeue per cycle. No queue is favored — pure equality.
+    tradeoff: >
+      A fast stage (1ms per task) gets the same pull frequency as a slow
+      stage (1000ms per task). The fast stage's queue grows while waiting
+      for its turn — throughput suffers.
+    best_when: >
+      All stages have identical processing cost. Debugging or testing.
+    failure_mode: "Slow stages become bottleneck while fast stages idle-wait."
+
+  weighted_fair_share:
+    name: "Weighted Fair Share"
+    strategy: >
+      Each queue gets a configurable weight. Dequeue slots are allocated
+      proportionally: weight 3 gets three times the pulls of weight 1.
+    tradeoff: >
+      Requires manual weight tuning. Wrong weights cause the same problems
+      as round robin.
+    best_when: >
+      Known heterogeneous stage costs — you KNOW stage A is 3x slower
+      than stage B, so give it 3x the pull frequency.
+    failure_mode: "Misconfigured weights → bottleneck or starvation."
+
+  oldest_waiting_first:
+    name: "Oldest Waiting First"
+    strategy: >
+      Pull from whichever queue has had a task waiting the longest.
+      Pure temporal fairness — no task waits longer than necessary.
+    tradeoff: >
+      Ignores throughput entirely. A queue with 1000 waiting tasks where
+      the oldest is 5ms gets priority over a queue where the oldest is 4ms
+      even if the 4ms queue has 10000 tasks.
+    best_when: >
+      Latency-sensitive workloads where per-task wait time matters more
+      than aggregate throughput.
+    failure_mode: "Throughput collapse under load — oldest-wait-first
+      degenerates to effectively random selection when all queues are
+      continuously fed."
+
+  # ── LATENCY-ORIENTED ─────────────────────────────────────────
+
+  shortest_processing_time:
+    name: "Shortest Processing Time First"
+    strategy: >
+      Prefer queues whose downstream stage completes tasks fastest.
+      Measured by rolling average of downstreamPhaseLatencyMillis.
+      Fast stages drain first → more tasks complete per second.
+    tradeoff: >
+      Slow stages may never get CPU — the fast stage always wins.
+      Requires accurate latency measurement.
+    best_when: >
+      Mixed workloads where some stages are trivially fast and others
+      are expensive. Fast stages clear quickly, freeing capacity for
+      slow stages once the fast queue is empty.
+    failure_mode: "Slow stage starvation if fast stage is continuously fed."
+
+  least_utilized_first:
+    name: "Least Utilized First"
+    strategy: >
+      Prefer queues whose downstream consumer has the most idle capacity
+      (highest downstreamWorkerAvailability). Pull from idle consumers
+      to keep them busy.
+    tradeoff: >
+      A consumer that's always idle (because its upstream stage is slow)
+      will always win — but pulling from it doesn't help because there's
+      nothing to pull.
+    best_when: >
+      Consumers are the bottleneck, not producers. You want to keep all
+      consumers saturated.
+    failure_mode: "Pulling from idle consumers with empty queues."
+
+  # ── QUALITY-ORIENTED ─────────────────────────────────────────
+
+  lowest_error_rate:
+    name: "Lowest Error Rate First"
+    strategy: >
+      Prefer queues whose downstream stage has the fewest errors.
+      Deprioritize error-prone stages to avoid wasting capacity on
+      work that will likely fail.
+    tradeoff: >
+      Error-prone stages may never get retried — errors are sticky.
+      A transient error spike can permanently deprioritize a stage.
+    best_when: >
+      Failure is expensive (retries cost real money/GPU time).
+      You'd rather process known-good work first.
+    failure_mode: "Error-prone stages permanently starved. Requires decay
+      or reset mechanism."
+
+  highest_success_yield:
+    name: "Highest Success Yield First"
+    strategy: >
+      Prefer queues where the completed/(completed+failed) ratio is highest.
+      Similar to lowest-error but normalizes for volume — a stage with
+      1/1 success beats a stage with 99/100 success.
+    tradeoff: >
+      Small sample sizes dominate. The first few successes of a new stage
+      give it 100% yield and priority over established stages.
+    best_when: >
+      Stages have widely varying volumes and you want to maximize the
+      absolute number of successes.
+    failure_mode: "New stages dominate, established stages starve."
+
+  # ── RESOURCE-AWARE ───────────────────────────────────────────
+
+  utilization_aware:
+    name: "Utilization-Constrained"
+    strategy: >
+      Pull normally until heap or system resource utilization crosses a
+      threshold (default 80%). Above threshold, switch to WAIT.
+      Below threshold, resume normal policy.
+    tradeoff: >
+      This is a throttle, not a selection strategy. It layers on top of
+      another policy. When throttled, ALL queues wait — no discrimination.
+    best_when: >
+      Memory-constrained environments. GPU pipelines where VRAM is the
+      limiting factor.
+    failure_mode: "Thrashing — oscillating between pull and wait near
+      threshold boundary."
+
+  backpressure_aware:
+    name: "Backpressure-Aware"
+    strategy: >
+      Read the downstreamWorkerAvailability signal from each queue's
+      snapshot. Deprioritize queues where availability < threshold.
+      Only pull from queues whose downstream can accept work.
+    tradeoff: >
+      If ALL queues signal saturation, the scheduler issues WAIT and
+      the executor thread blocks. No work gets done even if some
+      downstream was only slightly saturated.
+    best_when: >
+      Backpressure is the primary flow control mechanism. STREAMLINE
+      or BACKPRESSURE checkpoint modes.
+    failure_mode: "Deadlock if all queues signal saturated simultaneously
+      and no external trigger resets the signal."
+
+  # ── COMPOSITE ────────────────────────────────────────────────
+
+  composite:
+    name: "Composite / Chained"
+    strategy: >
+      Run multiple policies in sequence. First policy selects candidates.
+      Second policy breaks ties. Third policy validates resource constraints.
+      If no candidate survives all filters, fall back to WAIT.
+    tradeoff: >
+      Each policy layer adds decision latency. The more layers, the longer
+      the scheduler cycle takes.
+    best_when: >
+      Complex pipelines with heterogeneous stages, resource constraints,
+      and quality requirements. Production environments.
+    failure_mode: "Over-constrained — no candidate survives all filters,
+      system deadlocks."
+
+  # ── ADAPTIVE ─────────────────────────────────────────────────
+
+  adaptive:
+    name: "Adaptive / Learned"
+    strategy: >
+      Dynamically switch between strategies based on observed system state.
+      Use throughput during normal operation. Switch to oldest-first when
+      any queue's wait time exceeds a threshold. Switch to error-avoidance
+      when error rate spikes. Switch to backpressure-aware when saturation
+      detected.
+    tradeoff: >
+      Complex state machine. Hard to debug. Transitions may oscillate.
+    best_when: >
+      Long-running pipelines where conditions change over time (warm-up,
+      steady state, degradation, recovery).
+    failure_mode: "Policy oscillation — rapid switching between strategies
+      causes unstable throughput."
+
+# =============================================================================
+# POLICY COMPARISON MATRIX
+# =============================================================================
+
+policy_comparison:
+  dimensions:
+    - dimension: "Throughput"
+      description: "Total tasks completed per second across all stages"
+    - dimension: "Fairness"
+      description: "How evenly work is distributed across stages"
+    - dimension: "Tail Latency"
+      description: "Maximum wait time for any individual task"
+    - dimension: "Starvation Risk"
+      description: "Probability that a stage never gets pulled"
+    - dimension: "Resource Safety"
+      description: "Resistance to OOM or resource exhaustion"
+    - dimension: "Simplicity"
+      description: "Ease of reasoning about behavior"
+
+  matrix:
+    deepest_first:            { throughput: HIGH,   fairness: LOW,    tail_latency: HIGH,   starvation: HIGH,   resource_safety: NONE,   simplicity: HIGH }
+    round_robin:              { throughput: MEDIUM, fairness: HIGH,   tail_latency: MEDIUM, starvation: NONE,   resource_safety: NONE,   simplicity: HIGH }
+    weighted_fair_share:      { throughput: MEDIUM, fairness: HIGH,   tail_latency: MEDIUM, starvation: LOW,    resource_safety: NONE,   simplicity: MEDIUM }
+    oldest_waiting_first:     { throughput: LOW,    fairness: HIGH,   tail_latency: LOW,    starvation: NONE,   resource_safety: NONE,   simplicity: HIGH }
+    shortest_processing_time: { throughput: HIGH,   fairness: LOW,    tail_latency: MEDIUM, starvation: HIGH,   resource_safety: NONE,   simplicity: MEDIUM }
+    lowest_error_rate:        { throughput: MEDIUM, fairness: LOW,    tail_latency: MEDIUM, starvation: HIGH,   resource_safety: NONE,   simplicity: MEDIUM }
+    utilization_aware:        { throughput: MEDIUM, fairness: MEDIUM, tail_latency: MEDIUM, starvation: NONE,   resource_safety: HIGH,   simplicity: MEDIUM }
+    backpressure_aware:       { throughput: MEDIUM, fairness: MEDIUM, tail_latency: MEDIUM, starvation: NONE,   resource_safety: HIGH,   simplicity: MEDIUM }
+    composite:                { throughput: HIGH,   fairness: HIGH,   tail_latency: LOW,    starvation: LOW,    resource_safety: HIGH,   simplicity: LOW }
+    adaptive:                 { throughput: HIGH,   fairness: HIGH,   tail_latency: LOW,    starvation: LOW,    resource_safety: HIGH,   simplicity: VERY_LOW }
+
+# =============================================================================
+# CURRENT DEFAULT: CheckpointPriorityPolicy
+# =============================================================================
+
+current_default:
+  name: "CheckpointPriorityPolicy"
+  type: "Composite of two pure strategies"
+  composition:
+    primary: "Deepest First — sort by depth descending"
+    tiebreaker: "Oldest Waiting First — sort by oldestArtifactWait ascending"
+  behavior: >
+    Among all queues with ready work, pick the one with the most waiting
+    tasks. If two queues have the same depth, pick the one whose oldest
+    task has been waiting longer. This is a throughput-biased policy with
+    a fairness tiebreaker.
+  rationale: >
+    Depth-priority maximizes throughput (keep the bottleneck fed).
+    Oldest-wait tiebreaker prevents indefinite starvation — a shallow
+    queue will eventually become the oldest and get pulled.

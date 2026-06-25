@@ -8,10 +8,10 @@ meta:
   principle: |
     Everything is a trait. Entities compose traits. DUUIEntity<T extends DUUITrait>
     is the single base class with shallow inheritance (DUUIEntity → DUUIManager).
-    Clients are UNCHANGED. Managers are added ON TOP to centralize creation and
-    emit sealed DUUIHandle subtypes. All creation is centralized (Managers via
-    DUUIOrchestrator config, managed entities via factories). Lifecycle via
-    @Phase. Telemetry via composable DUUIProfile with dot-separated namespacing.
+    DUUIManager enforces single-instance-per-DUUIRuntime. DUUIClient extends
+    DUUIManager — every client IS a manager, a singleton per runtime. Managed
+    entities are created ONLY through factories. Lifecycle via @Phase.
+    Telemetry via composable DUUIProfile with dot-separated namespacing.
     DUUIScope<T> for try-with-resources builder scoping.
 
 # ═══════════════════════════════════════════════════════════════
@@ -52,17 +52,23 @@ entity:
       - "doInitialize/doStart/doStop/doDispose create DUUIPhase in timeline"
       - "validTransitions(): CREATED→INITIALIZING→READY→STARTING→RUNNING→STOPPING→STOPPED→DISPOSING→DISPOSED"
 
-  DUUIManager<T extends DUUITrait, H extends DUUIHandle> extends DUUIEntity<T>:
-    description: "Runtime SINGLETONS. Initialized by DUUIOrchestrator from config. Emit a sealed DUUIHandle."
-    singleton: "ConcurrentHashMap<Class<?>, DUUIManager<?,?>> — putIfAbsent in constructor"
+  DUUIManager<T extends DUUITrait> extends DUUIEntity<T>:
+    description: |
+      Runtime SINGLETONS — only ONE instance per concrete class per DUUIRuntime.
+      EVERY client IS a DUUIManager. The manager trait enforces single-instance
+      semantics. Initialized by DUUIOrchestrator from configuration.
+    singleton: "ConcurrentHashMap<Class<?>, DUUIManager<?>> — putIfAbsent in constructor"
     contract:
-      - "handle(): H — sealed handle this manager emits"
       - "initialize(Object runtime): void — called once by DUUIOrchestrator"
       - "shutdown(): void"
       - "health(): DUUIResourceUseSnapshot"
     static:
       - "instance(Class<M>): M — retrieve singleton"
       - "exists(Class): boolean"
+
+  # NOTE: There is NO separate DUUIHandle type parameter on DUUIManager.
+  # DUUIManager does NOT emit a handle. The handle is a property of the
+  # concrete client subclass, not the manager base class.
 
 # ═══════════════════════════════════════════════════════════════
 # 3. CREATION — CENTRALIZED, TWO-TIER
@@ -71,29 +77,25 @@ entity:
 creation:
   principle: |
     ALL creation and management is centralized. Either the entity is a MANAGER
-    (initialized through DUUIOrchestrator configuration) OR it's a MANAGED
-    ENTITY (created ONLY through factories, lifecycle via @Phase methods).
+    (extends DUUIManager — single instance per DUUIRuntime, initialized through
+    DUUIOrchestrator configuration) OR it's a MANAGED ENTITY (created ONLY
+    through factories, lifecycle via @Phase methods).
 
   DUUIOrchestrator:
     description: "Central orchestrator — initializes all DUUIManager singletons from config."
     contract:
       - "initializeManager(M): M — register a manager"
-      - "managers(): List<DUUIManager<?,?>>"
-      - "managerByHandle(Class<H>): Optional<DUUIManager<?,H>>"
+      - "managers(): List<DUUIManager<?>>"
       - "shutdown(): void — reverse-order shutdown"
 
   managers:
-    description: "Runtime singletons initialized by DUUIOrchestrator."
+    description: "Entities extending DUUIManager — singletons per DUUIRuntime."
     instances:
-      - "DUUITelemetryService     → DUUIManager<Observable & Measurable & Traceable, DUUIHandle>"
-      - "DUUIEntityRegistry       → DUUIManager<Indexable & Observable, DUUIHandle>"
-      - "DUUIEndpointManager      → DUUIManager<HTTP & Observable & Measurable, DUUIHandle.Endpoint>"
-      - "DUUIContainerManager     → DUUIManager<ContainerRuntime & Observable & Measurable, DUUIHandle.Container>"
-      - "DUUIFileSystemManager    → DUUIManager<FileSystem & Observable & Measurable, DUUIHandle.FileSystem>"
-      - "DUUIDatabaseManager      → DUUIManager<Observable & Measurable, DUUIHandle.Database>"
-      - "DUUIHttpClientManager    → DUUIManager<HTTP & RateLimitPolicy & Observable & Measurable, DUUIHandle.HttpClient>"
-      - "DUUIScheduler            → DUUIManager<SchedulingStrategy & Measurable & Observable, DUUIHandle>"
-      - "DUUIExecutorService      → DUUIManager<Pooled & Virtual & Measurable & Observable, DUUIHandle>"
+      - "DUUITelemetryService     extends DUUIManager<Observable & Measurable & Traceable>"
+      - "DUUIEntityRegistry       extends DUUIManager<Indexable & Observable>"
+      - "DUUIScheduler            extends DUUIManager<SchedulingStrategy & Measurable & Observable>"
+      - "DUUIExecutorService      extends DUUIManager<Pooled & Virtual & Measurable & Observable>"
+      - "DUUIClient<H> (itself)   extends DUUIManager — every client IS a manager"
 
   managed_entities:
     description: "Created ONLY through factories. Lifecycle via @Phase."
@@ -108,7 +110,7 @@ creation:
 
 handles:
   DUUIHandle:
-    description: "SEALED interface — ALL DUUIManager instances emit from this hierarchy. Compiler knows every subtype."
+    description: "SEALED interface extending DUUIService. Compiler knows every subtype."
     subtypes:
       Endpoint:        "(GID gid, URI uri, HttpClient client) — raw URL OR container projection"
       AnalysisEngine:  "(GID gid, AnalysisEngine engine) — UIMA in-process"
@@ -119,29 +121,33 @@ handles:
       Process:         "(GID gid, long pid, String name)"
 
 # ═══════════════════════════════════════════════════════════════
-# 5. CLIENT HIERARCHY — UNCHANGED, MANAGERS ADDED ON TOP
+# 5. CLIENT HIERARCHY — DUUIClient EXTENDS DUUIManager
 # ═══════════════════════════════════════════════════════════════
 
 clients:
   principle: |
-    Clients are UNCHANGED from the original DUUI design. Managers are a NEW
-    layer added ON TOP to centralize creation and emit sealed handles.
-    Every client still operates through its handle. Every manager wraps
-    creation of its client type.
+    DUUIClient<H extends DUUIHandle> extends DUUIManager<T>.
+    Every client IS a DUUIManager — a singleton per DUUIRuntime.
+    The manager base class enforces single-instance semantics.
+    Clients operate through sealed DUUIHandle subtypes.
 
-  # ── Root contracts ───────────────────────────────────────────
+  # ── Root: DUUIClient extends DUUIManager ─────────────────────
   DUUIClient<H extends DUUIHandle>:
-    description: "Top-level client contract. Operates through a sealed handle."
-    extends: "DUUIService"
+    description: "Top-level client contract. EXTENDS DUUIManager — singleton per runtime."
+    extends: "DUUIManager<...> (extends DUUIService is legacy — now DUUIManager)"
     contract:
-      - "handle(): H — sealed handle this client uses"
+      - "handle(): H — sealed handle this client operates through"
       - "auth(): Object — authentication record"
-      - "shutdown(): void"
+    manager_contract:
+      - "initialize(Object runtime): void — from DUUIManager"
+      - "shutdown(): void — from DUUIManager"
+      - "health(): DUUIResourceUseSnapshot — from DUUIManager"
+    singleton: "One instance per concrete client class per DUUIRuntime"
 
-  # ── Filesystem clients (unchanged hierarchy) ─────────────────
+  # ── Filesystem clients ───────────────────────────────────────
   filesystem:
     DUUIFileSystemClient:
-      description: "Filesystem contract — all FS operations @Phase-annotated."
+      description: "Filesystem contract. Extends DUUIClient<DUUIHandle.FileSystem> which extends DUUIManager."
       extends: "DUUIClient<DUUIHandle.FileSystem>, AutoCloseable"
       phases:
         - "@Phase(V1_FILE_READ)  metadata(DUUILocator): DUUIFileMetadata"
@@ -158,114 +164,104 @@ clients:
           readOnly: false
     providers:
       DUUILocalFSClient:
-        extends: "DUUIFileSystemClient"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         phases: "@Phase on read, write, list, discover, traverse, delete"
         yaml: |
           localfs:
             provider: LOCAL_FS
             root: /data
       DUUIS3Client:
-        extends: "DUUIFileSystemClient"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         phases: "@Phase on read, write, list, traverse"
         yaml: |
           s3:
             provider: S3
             bucket: my-bucket
-            region: us-east-1
       DUUIMinIOClient:
-        extends: "DUUIFileSystemClient"
-        phases: "@Phase on read, write, list, traverse"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         yaml: |
           minio:
             provider: MINIO
-            bucket: my-bucket
             endpoint: http://minio:9000
       DUUIGoogleDriveClient:
-        extends: "DUUIFileSystemClient"
-        phases: "@Phase on read, write, list, traverse"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         yaml: |
           googledrive:
             provider: GOOGLE_DRIVE
             credentials: /secrets/gdrive.json
       DUUIDropboxClient:
-        extends: "DUUIFileSystemClient"
-        phases: "@Phase on read, write, list, traverse"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         yaml: |
           dropbox:
             provider: DROPBOX
             token: ${DROPBOX_TOKEN}
       DUUINextCloudClient:
-        extends: "DUUIFileSystemClient"
-        phases: "@Phase on read, write, list, traverse"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         yaml: |
           nextcloud:
             provider: NEXTCLOUD
             endpoint: https://nc.example.com
       DUUIMongoGridFSClient:
-        extends: "DUUIFileSystemClient"
-        phases: "@Phase on read, write, list, traverse"
+        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
         yaml: |
           mongogridfs:
             provider: MONGO_GRIDFS
             uri: mongodb://localhost:27017
-            database: duui
 
-  # ── Virtualization clients (unchanged hierarchy) ─────────────
+  # ── Virtualization clients ───────────────────────────────────
   virtualization:
     DUUIVirtualizationClient:
-      extends: "DUUIClient"
+      extends: "DUUIClient (abstract) → DUUIManager"
       description: "Abstract base for container runtime clients."
-      phases: "@Phase on pull, create, start, stop, remove"
       yaml: |
         virtualization:
           kind: DOCKER | PODMAN | KUBERNETES | SWARM
-          socket: unix:///var/run/docker.sock
     runtimes:
       DUUIDockerClient:
-        extends: "DUUIVirtualizationClient"
+        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
         phases: "@Phase on pullImage, createContainer, startContainer, stopContainer, removeContainer"
         yaml: |
           docker:
             engine: docker
             registry: docker.io
       DUUIPodmanClient:
-        extends: "DUUIVirtualizationClient"
+        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
         phases: "@Phase on pullImage, createContainer, startContainer, stopContainer, removeContainer"
         yaml: |
           podman:
             engine: podman
             rootless: true
       DUUIKubernetesClient:
-        extends: "DUUIVirtualizationClient"
+        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
         phases: "@Phase on ensureImage, createDeployment, waitReady, deleteDeployment"
         yaml: |
           kubernetes:
             engine: kubernetes
             namespace: duui
       DUUISwarmClient:
-        extends: "DUUIVirtualizationClient"
+        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
         phases: "@Phase on pullImage, deployService, removeService"
         yaml: |
           swarm:
             engine: swarm
             network: overlay
 
-  # ── HTTP client (unchanged) ──────────────────────────────────
+  # ── HTTP client ──────────────────────────────────────────────
   http:
     DUUIHttpClient:
-      extends: "DUUIClient<DUUIHandle.HttpClient>"
+      extends: "DUUIClient<DUUIHandle.HttpClient> → DUUIManager"
       phases:
-        - "@Phase(V1_SERIALIZE_REQUEST) get(URI, Map<String,String>): DUUIHttpResponse"
-        - "@Phase(V1_ANALYSE_REQUEST) post(URI, byte[], Map<String,String>): DUUIHttpResponse"
+        - "@Phase(V1_SERIALIZE_REQUEST) get(URI, Map): DUUIHttpResponse"
+        - "@Phase(V1_ANALYSE_REQUEST) post(URI, byte[], Map): DUUIHttpResponse"
       yaml: |
         http:
           baseUri: http://localhost:8080
           timeout: 30s
 
-  # ── Database clients (unchanged hierarchy) ───────────────────
+  # ── Database clients ─────────────────────────────────────────
   database:
     DUUIDatabaseClient:
-      extends: "DUUIClient<DUUIHandle.Database>"
+      extends: "DUUIClient<DUUIHandle.Database> → DUUIManager"
       phases:
         - "@Phase(V1_CONTAINER_CREATE) connect(): void"
         - "@Phase(V1_SERIALIZE_REQUEST) execute(String): void"
@@ -275,7 +271,7 @@ clients:
           kind: SQLITE
           url: jdbc:sqlite:/data/duui.db
     DUUISqliteClient:
-      extends: "DUUIDatabaseClient"
+      extends: "DUUIDatabaseClient → DUUIClient<Database> → DUUIManager"
       phases: "@Phase on connect, executeUpdate, query"
       yaml: |
         sqlite:
@@ -283,33 +279,31 @@ clients:
           path: /data/duui.db
           wal: true
 
-  # ── Telemetry profiler clients (unchanged hierarchy) ─────────
+  # ── Telemetry profiler clients ───────────────────────────────
   telemetry:
     DUUIProfilerClient:
-      extends: "DUUIClient"
-      description: "Profiler contract (interface)."
+      extends: "DUUIClient → DUUIManager"
+      description: "Profiler contract (interface extending DUUIClient)."
       yaml: |
         profiler:
           kind: JFR | MXBEAN | PROMETHEUS
-          enabled: true
     DUUIAbstractProfilerClient:
-      extends: "DUUIProfilerClient"
-      description: "Abstract base with common logic."
+      extends: "DUUIProfilerClient → DUUIClient → DUUIManager"
     DUUIJfrClient:
-      extends: "DUUIAbstractProfilerClient"
+      extends: "DUUIAbstractProfilerClient → ... → DUUIManager"
       phases: "@Phase on startRecording, stopRecording"
       yaml: |
         jfr:
           settings: profile
           maxSize: 250MB
     DUUIMxBeanClient:
-      extends: "DUUIAbstractProfilerClient"
+      extends: "DUUIAbstractProfilerClient → ... → DUUIManager"
       phases: "@Phase on collectMetrics"
       yaml: |
         jmx:
           domains: [java.lang, java.nio]
     DUUIPrometheusClient:
-      extends: "DUUIAbstractProfilerClient"
+      extends: "DUUIAbstractProfilerClient → ... → DUUIManager"
       phases: "@Phase on pushMetrics, exportMetrics"
       yaml: |
         prometheus:
@@ -341,8 +335,8 @@ builders:
     description: "Fluent builder for DUUIPipeline. Supports sub-builder chaining."
     scope_entry: "DUUIPipeline.scope() → DUUIScope<PipelineBuilder>"
     sub_builders:
-      - "v1(String id): DUUIV1ComponentBuilder — initiate V1 component sub-builder"
-      - "uima(String id): DUUIUimaComponentBuilder — initiate UIMA component sub-builder"
+      - "v1(String id): DUUIV1ComponentBuilder"
+      - "uima(String id): DUUIUimaComponentBuilder"
     chaining: |
       PipelineBuilder.v1("name") → DUUIV1ComponentBuilder
         .endpoint(url) / .image(img) / .docker() / .podman() / .kubernetes() / .swarm()
@@ -385,7 +379,6 @@ profile:
     to entity resource costs. All normalized via dot-separated namespacing.
 
   DUUIProfile:
-    description: "Immutable specification surface. Composes sub-profiles."
     operations:
       - "forEntity(DUUIEntity): DUUIProfile — factory"
       - "merge(DUUIProfile): DUUIProfile — hierarchical, subordinate wins"
@@ -393,7 +386,6 @@ profile:
       - "flatten(): DUUIProfile — normalized dot-separated namespace"
     namespacing: |
       entity.<id>.cpu.utilization
-      entity.<id>.memory.heap.used
       entity.<id>.component.<cid>.replica.<n>.latency.p99
       pipeline.<pid>.stage.<sid>.throughput.ops_per_sec
 
@@ -402,20 +394,13 @@ profile:
     contract:
       - "resourceSpecs(): List<ResourceSpec>"
       - "telemetryInstruments(): List<InstrumentSpec>"
-    scheduler_transparency: |
-      Scheduler reads flattened DUUIProfile as Map<String,Double>.
-      Decisions based on profile comparison — no entity internals exposed.
-      Objectives: MAXIMIZE_SUCCESS_YIELD, MAXIMIZE_PROGRESS,
-      MINIMIZE_FAILURE_RATIO, MINIMIZE_LATENCY, MAXIMIZE_THROUGHPUT,
-      CONSTRAIN_UTILIZATION (0.80 default), CONSTRAIN_SATURATION,
-      CONSTRAIN_PRESSURE
 
 # ═══════════════════════════════════════════════════════════════
 # 8. TELEMETRY — AUTO-WIRED VIA TRAITS
 # ═══════════════════════════════════════════════════════════════
 
 telemetry_service:
-  DUUITelemetryService:
+  DUUITelemetryService extends DUUIManager<Observable & Measurable & Traceable>:
     description: "Singleton — auto-scans registry for telemetry traits."
     auto_wiring:
       Measurable:   "For each metricName → create COUNTER"
@@ -425,7 +410,6 @@ telemetry_service:
     contract:
       - "autoInstrument(DUUIEntityRegistry): void"
       - "autoInstrument(DUUIEntity<?>): void"
-      - "instruments(): Map<String, TelemetryInstrument>"
       - "addSink(DUUITelemetrySink): void"
 
 # ═══════════════════════════════════════════════════════════════

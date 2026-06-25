@@ -1,396 +1,148 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# DUUI Formal Design Specification — Trait-Driven Entity Management System
-# 
-# This document formalizes the COMPLETE design in YAML. Every concept from
-# the original design sessions is captured verbatim. This is the SOURCE OF
-# TRUTH. Code must conform to this specification, not the other way around.
+# DUUI Formal Design Specification
 # ═══════════════════════════════════════════════════════════════════════════
 
 meta:
   version: "2.0.0"
   date: "2026-06-25"
-  status: "formal-specification"
   principle: |
     Everything is a trait. Entities compose traits. DUUIEntity<T extends DUUITrait>
     is the single base class with shallow inheritance (DUUIEntity → DUUIManager).
-    All creation is centralized. All lifecycle is phase-driven. All telemetry
-    flows through profiles with dot-separated namespacing.
+    Clients are UNCHANGED. Managers are added ON TOP to centralize creation and
+    emit sealed DUUIHandle subtypes. All creation is centralized (Managers via
+    DUUIOrchestrator config, managed entities via factories). Lifecycle via
+    @Phase. Telemetry via composable DUUIProfile with dot-separated namespacing.
+    DUUIScope<T> for try-with-resources builder scoping.
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 1. ENTITY MANAGEMENT SYSTEM — CORE TYPES
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# 1. TRAIT SYSTEM
+# ═══════════════════════════════════════════════════════════════
 
-ems:
-  root_types:
-    DUUITrait:
-      description: "Root of ALL behavioural contracts. Services, resources, endpoints, annotators, clients — all are traits, not classes."
-      contract:
-        - traitId(): "String — unique identifier for runtime discovery and serialization"
-        - label(): "String — human-readable, defaults to traitId()"
-        - priority(): "int — conflict resolution, higher wins, default 0"
-      families:
-        DUUIBehaviour:       "how an entity acts (Loggable, Measurable, Traceable, Observable, Profilable, Versionable, Attributable, Indexable, Cacheable)"
-        DUUIProtocol:        "how an entity communicates (HTTP, gRPC, UIMA, Streaming, MessagePack, Lua, XMI, JSON, FileSystem, ContainerRuntime, WebSocket, DUUIEndpoint)"
-        DUUISpecification:   "what an entity declares (Identity, Address, Resource, Capability, Contract, MetricSpec, Endpoint, Image, Scale)"
-        DUUIPolicy:          "what rules govern (FailurePolicy, RetryPolicy, QuarantinePolicy, RateLimitPolicy, TimeoutPolicy, AdmissionPolicy, CircuitBreakerPolicy, ConcurrencyPolicy)"
-        DUUIStrategy:        "how an entity decides (SchedulingStrategy, RoutingStrategy, LoadBalancing, BackoffStrategy, CachingStrategy, DiscoveryStrategy)"
-        DUUILifecycle:       "what states an entity traverses (Creatable, Startable, Pausable, Stoppable, Restartable, Disposable, Failable, Retryable)"
-        DUUIConcurrency:     "how an entity handles concurrency (SingleThreaded, ThreadBound, Slot, Pooled, Unbounded, Virtual, Platform, Serialized, Partitioned)"
+traits:
+  DUUITrait:
+    description: "Root of ALL behavioural contracts."
+    families:
+      DUUIBehaviour:       "Loggable, Measurable, Traceable, Observable, Profilable, Versionable, Attributable, Indexable, Cacheable"
+      DUUIProtocol:        "HTTP, gRPC, UIMA, Streaming, MessagePack, Lua, XMI, JSON, FileSystem, ContainerRuntime, WebSocket, DUUIEndpoint"
+      DUUISpecification:   "Identity, Address, Resource, Capability, Contract, MetricSpec, Endpoint, Image, Scale"
+      DUUIPolicy:          "FailurePolicy, RetryPolicy, QuarantinePolicy, RateLimitPolicy, TimeoutPolicy, AdmissionPolicy, CircuitBreakerPolicy, ConcurrencyPolicy"
+      DUUIStrategy:        "SchedulingStrategy, RoutingStrategy, LoadBalancing, BackoffStrategy, CachingStrategy, DiscoveryStrategy"
+      DUUILifecycle:       "Creatable, Startable, Pausable, Stoppable, Restartable, Disposable, Failable, Retryable"
+      DUUIConcurrency:     "SingleThreaded, ThreadBound, Slot, Pooled, Unbounded, Virtual, Platform, Serialized, Partitioned"
 
-    DUUIEntity<T extends DUUITrait>:
-      description: "SINGLE base class for ALL domain objects. Shallow inheritance — only DUUIEntity and DUUIManager exist in the class hierarchy."
-      framework_managed:
-        - gid: "GID — immutable, framework-assigned at construction"
-        - traits: "DUUITraits — immutable set of composed traits"
-        - profile: "DUUIProfile — derived from trait composition, composes sub-profiles"
-        - timeline: "DUUITimeline — lifecycle phase recording"
-        - lifecycleState: "AtomicReference<String> — shared across all lifecycle traits"
-        - logger: "DUUILogger — bound to entity, auto-wired"
-        - primaryTraitClass: "Class<?> — runtime marker surviving type erasure"
-      template_methods:
-        - describe(): "DUUIDescription — auto-generated from traits"
-        - builder(): "DUUIBuilder — from description"
-        - configuration(): "DUUIConfiguration<T> — validated snapshot"
-        - collectAttributes(): "Map<String,Object> — overridable for custom fields"
-      introspection:
-        - has(Class): "boolean — runtime trait check"
-        - get(Class): "Optional<T> — retrieve trait instance"
-        - is(Class): "boolean — erasure-safe type check via primaryTraitClass"
-      lifecycle_integration:
-        - doInitialize(): "void — creates DUUIPhase PROFILE_BEGIN in timeline"
-        - doStart(): "void — creates DUUIPhase SCHEDULED in timeline"
-        - doStop(): "void — creates DUUIPhase COMPLETED in timeline"
-        - doDispose(): "void — creates DUUIPhase COMPLETED in timeline"
-      phase_wrapping:
-        - "wrap(Consumer<PhaseWrapper>, Supplier<R>): R — lambda injection for telemetry & control flow"
-        - "PhaseWrapper supports: before(Runnable), after(Runnable), onFailure(Consumer<Throwable>)"
+# ═══════════════════════════════════════════════════════════════
+# 2. ENTITY BASE CLASSES — SHALLOW INHERITANCE
+# ═══════════════════════════════════════════════════════════════
 
-    DUUIManager<T extends DUUITrait, H extends DUUIHandle>:
-      description: "For RUNTIME SINGLETON entities — clients, services, registries, schedulers. Only ONE instance per concrete class per runtime. Initialized by DUUIOrchestrator from configuration."
-      extends: "DUUIEntity<T>"
-      singleton_enforcement: "ConcurrentHashMap<Class<?>, DUUIManager<?,?>> — putIfAbsent in constructor throws DUIContractException on duplicate"
-      contract:
-        - handle(): "H — the sealed DUUIHandle this manager emits"
-        - initialize(Object runtime): "void — called once by DUUIOrchestrator during startup"
-        - shutdown(): "void — called once during shutdown"
-        - health(): "DUUIResourceUseSnapshot — resource utilization and health indicators"
-      static_access:
-        - "instance(Class<M>): M — retrieve singleton, throws if not initialized"
-        - "exists(Class): boolean — check if singleton exists"
+entity:
+  DUUIEntity<T extends DUUITrait>:
+    description: "SINGLE base class for ALL domain objects."
+    framework_managed:
+      - gid, traits, profile, timeline, lifecycleState (AtomicReference<String>)
+      - logger, primaryTraitClass (erasure-safe)
+    methods:
+      - "has(Class): boolean — runtime trait check"
+      - "get(Class): Optional<T> — retrieve trait"
+      - "is(Class): boolean — erasure-safe via primaryTraitClass"
+      - "describe(): DUUIDescription — auto from traits"
+      - "builder(): DUUIBuilder — from description"
+      - "configuration(): DUIConfiguration<T> — validated snapshot"
+      - "wrap(Consumer<PhaseWrapper>, Supplier<R>): R — lambda injection hooks"
+    lifecycle:
+      - "doInitialize/doStart/doStop/doDispose create DUUIPhase in timeline"
+      - "validTransitions(): CREATED→INITIALIZING→READY→STARTING→RUNNING→STOPPING→STOPPED→DISPOSING→DISPOSED"
 
-    DUUIHandle:
-      description: "SEALED interface — ALL DUUIManager instances emit a handle from this hierarchy. ALL DUUIClient instances operate through a handle. Compiler knows every possible subtype."
-      sealed_subtypes:
-        Endpoint:        "record(GID gid, URI uri, HttpClient client) — HTTP/gRPC, raw URL OR container projection"
-        AnalysisEngine:  "record(GID gid, AnalysisEngine engine) — UIMA in-process engine reference"
-        FileSystem:      "record(GID gid, Path root, boolean local) — local or remote filesystem"
-        Container:       "record(GID gid, String image, String containerId) — container runtime reference"
-        Database:        "record(GID gid, String url, String driver) — database connection"
-        HttpClient:      "record(GID gid, HttpClient client) — managed HTTP client"
-        Process:         "record(GID gid, long pid, String name) — JVM process reference"
+  DUUIManager<T extends DUUITrait, H extends DUUIHandle> extends DUUIEntity<T>:
+    description: "Runtime SINGLETONS. Initialized by DUUIOrchestrator from config. Emit a sealed DUUIHandle."
+    singleton: "ConcurrentHashMap<Class<?>, DUUIManager<?,?>> — putIfAbsent in constructor"
+    contract:
+      - "handle(): H — sealed handle this manager emits"
+      - "initialize(Object runtime): void — called once by DUUIOrchestrator"
+      - "shutdown(): void"
+      - "health(): DUUIResourceUseSnapshot"
+    static:
+      - "instance(Class<M>): M — retrieve singleton"
+      - "exists(Class): boolean"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. CREATION & LIFECYCLE — CENTRALIZED, TWO-TIER
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# 3. CREATION — CENTRALIZED, TWO-TIER
+# ═══════════════════════════════════════════════════════════════
 
 creation:
   principle: |
-    ALL creation and management within the DUUI framework is centralized.
-    Either the entity is a MANAGER which is initialized through the
-    DUUIOrchestrator configuration, OR it's a MANAGED ENTITY meaning it's
-    ONLY created using factories and its lifecycle is derived by its @Phase methods.
-
-  managers:
-    description: "Runtime singletons. Initialized by DUUIOrchestrator from config map."
-    lifecycle: "initialize(runtime) → operational → shutdown()"
-    examples:
-      - DUUITelemetryService
-      - DUUIEntityRegistry
-      - DUUIEndpointManager
-      - DUIContainerManager
-      - DUUIFileSystemManager
-      - DUIDatabaseManager
-      - DUUIHttpClientManager
-      - DUUIScheduler
-      - DUUIExecutorService
-
-  managed_entities:
-    description: "Created ONLY through factories. Lifecycle derived from @Phase methods."
-    lifecycle: "CREATED → INITIALIZING → READY → STARTING → RUNNING → STOPPING → STOPPED → DISPOSING → DISPOSED"
-    examples:
-      - DUUIAnnotator<H> — created by DUUIV1Driver or DUUIUIMADriver
-      - DUUIComponent<H,C,A> — created by ComponentFactory
-      - DUUIPipeline — created by PipelineBuilder.build()
-      - DUUIWorker<C> — created by DUUIExecutorService
-      - DUUITask<R> — created by DUUIStage.Producer
+    ALL creation and management is centralized. Either the entity is a MANAGER
+    (initialized through DUUIOrchestrator configuration) OR it's a MANAGED
+    ENTITY (created ONLY through factories, lifecycle via @Phase methods).
 
   DUUIOrchestrator:
-    description: |
-      Central orchestrator — initializes all DUUIManager singletons from
-      configuration. The single entry point for framework initialization.
+    description: "Central orchestrator — initializes all DUUIManager singletons from config."
     contract:
-      - "initializeManager(M): M — initialize and register a manager"
-      - "managers(): List<DUUIManager<?,?>> — all registered managers"
-      - "managerByHandle(Class<H>): Optional<DUUIManager<?,H>> — find by handle type"
+      - "initializeManager(M): M — register a manager"
+      - "managers(): List<DUUIManager<?,?>>"
+      - "managerByHandle(Class<H>): Optional<DUUIManager<?,H>>"
       - "shutdown(): void — reverse-order shutdown"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 3. BUILDER SYSTEM — SCOPE-BASED, CHAINING, SUB-BUILDER COMPOSITION
-# ═══════════════════════════════════════════════════════════════════════════
+  managers:
+    description: "Runtime singletons initialized by DUUIOrchestrator."
+    instances:
+      - "DUUITelemetryService     → DUUIManager<Observable & Measurable & Traceable, DUUIHandle>"
+      - "DUUIEntityRegistry       → DUUIManager<Indexable & Observable, DUUIHandle>"
+      - "DUUIEndpointManager      → DUUIManager<HTTP & Observable & Measurable, DUUIHandle.Endpoint>"
+      - "DUUIContainerManager     → DUUIManager<ContainerRuntime & Observable & Measurable, DUUIHandle.Container>"
+      - "DUUIFileSystemManager    → DUUIManager<FileSystem & Observable & Measurable, DUUIHandle.FileSystem>"
+      - "DUUIDatabaseManager      → DUUIManager<Observable & Measurable, DUUIHandle.Database>"
+      - "DUUIHttpClientManager    → DUUIManager<HTTP & RateLimitPolicy & Observable & Measurable, DUUIHandle.HttpClient>"
+      - "DUUIScheduler            → DUUIManager<SchedulingStrategy & Measurable & Observable, DUUIHandle>"
+      - "DUUIExecutorService      → DUUIManager<Pooled & Virtual & Measurable & Observable, DUUIHandle>"
 
-builders:
-  principle: |
-    Builders use DUUIScope<> for try-with-resources scoping. A SINGLE
-    DUUIScope<T> type works for ALL builders. Builders can initiate
-    sub-builders for sub-entities. Context-based attachment composes
-    builders together. DUUIScope provides automatic cleanup on close.
+  managed_entities:
+    description: "Created ONLY through factories. Lifecycle via @Phase."
+    examples:
+      - "DUUIAnnotator<H> — created by DUUIV1Driver or DUUIUIMADriver"
+      - "DUUIComponent<H,C,A> — created by ComponentFactory"
+      - "DUUIPipeline — created by PipelineBuilder.build()"
 
-  DUUIScope<T extends AutoCloseable>:
-    description: |
-      Generic RAII scope wrapper. Works with try-with-resources.
-      The builder is the resource — on scope close, un-built resources
-      are cleaned up in reverse order. A single DUUIScope<> type for
-      all builders across the entire framework.
-    contract:
-      - "DUUIScope(T resource) — wrap a builder"
-      - "resource(): T — get the wrapped builder"
-      - "close(): void — cleanup un-built resources in reverse order"
-    usage: |
-      try (var scope = DUUIPipeline.scope()) {
-          var pipeline = scope.resource()
-              .v1("tokenizer").endpoint("http://tok:8080").add()
-              .v1("ner").image("ner:latest").docker().scale(4).add()
-              .build();
-          pipeline.run();
-      } // scope.close() cleans up any un-built resources
+# ═══════════════════════════════════════════════════════════════
+# 4. SEALED HANDLE HIERARCHY
+# ═══════════════════════════════════════════════════════════════
 
-  PipelineBuilder:
-    description: |
-      Fluent builder for DUUIPipeline. Supports chaining, sub-builder
-      initiation, and resource tracking. Builder IS AutoCloseable —
-      un-built resources are cleaned up on close.
-    scope_entry: "DUUIPipeline.scope() → DUUIScope<PipelineBuilder>"
-    methods:
-      - "platformThreads(int): PipelineBuilder"
-      - "stage(DUUIStage): PipelineBuilder"
-      - "resource(AutoCloseable): PipelineBuilder"
-      - "component(ComponentInitializer): PipelineBuilder"
-      - "v1(String id): DUUIV1ComponentBuilder — initiate sub-builder"
-      - "uima(String id): DUUIUimaComponentBuilder — initiate sub-builder"
-      - "v1Component(DUUIV1Driver, DUUIV1ComponentSpec): PipelineBuilder — shortcut"
-      - "build(): DUUIPipeline"
-      - "close(): void — cleanup resources in reverse order"
-    sub_builder_chain: |
-      PipelineBuilder.v1("name") → DUUIV1ComponentBuilder
-        .endpoint("http://...")  → sets endpoint
-        .image("img:latest")     → sets image
-        .docker()                → sets environment to DOCKER
-        .scale(4)                → sets replica count
-        .add()                   → returns to PipelineBuilder with component registered
-      PipelineBuilder.uima("name") → DUUIUimaComponentBuilder
-        .engine(analysisEngine)  → sets UIMA engine
-        .add()                   → returns to PipelineBuilder
+handles:
+  DUUIHandle:
+    description: "SEALED interface — ALL DUUIManager instances emit from this hierarchy. Compiler knows every subtype."
+    subtypes:
+      Endpoint:        "(GID gid, URI uri, HttpClient client) — raw URL OR container projection"
+      AnalysisEngine:  "(GID gid, AnalysisEngine engine) — UIMA in-process"
+      FileSystem:      "(GID gid, Path root, boolean local)"
+      Container:       "(GID gid, String image, String containerId)"
+      Database:        "(GID gid, String url, String driver)"
+      HttpClient:      "(GID gid, HttpClient client)"
+      Process:         "(GID gid, long pid, String name)"
 
-  DUUIV1ComponentBuilder:
-    description: "Sub-builder for V1 annotator components. Initiated by PipelineBuilder.v1(id)."
-    methods:
-      - "endpoint(String uri): DUUIV1ComponentBuilder"
-      - "image(String image): DUUIV1ComponentBuilder"
-      - "docker(): DUUIV1ComponentBuilder — sets environment DOCKER"
-      - "podman(): DUUIV1ComponentBuilder — sets environment PODMAN"
-      - "kubernetes(): DUUIV1ComponentBuilder — sets environment KUBERNETES"
-      - "swarm(): DUUIV1ComponentBuilder — sets environment SWARM"
-      - "remote(): DUUIV1ComponentBuilder — sets environment REMOTE"
-      - "scale(int replicas): DUUIV1ComponentBuilder"
-      - "concurrency(int perReplica): DUUIV1ComponentBuilder"
-      - "view(String sourceView, String targetView): DUUIV1ComponentBuilder"
-      - "parameter(String key, String value): DUUIV1ComponentBuilder"
-      - "header(String key, String value): DUUIV1ComponentBuilder"
-      - "timeout(Duration): DUUIV1ComponentBuilder"
-      - "retry(int tries, Duration delay): DUUIV1ComponentBuilder"
-      - "gpu(boolean): DUUIV1ComponentBuilder"
-      - "add(): PipelineBuilder — complete sub-build, return to parent"
-
-  DUUIUimaComponentBuilder:
-    description: "Sub-builder for in-process UIMA components. Initiated by PipelineBuilder.uima(id)."
-    methods:
-      - "engine(AnalysisEngine): DUUIUimaComponentBuilder"
-      - "scale(int replicas): DUUIUimaComponentBuilder"
-      - "add(): PipelineBuilder — complete sub-build, return to parent"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 4. PROFILE SYSTEM — COMPOSABLE, NAMESPACED, SCHEDULER-TRANSPARENT
-# ═══════════════════════════════════════════════════════════════════════════
-
-profile:
-  principle: |
-    DUUIResourceSpecifier allows entities to specify telemetry instruments
-    and specs for resources they want tracked. ALL of this is collected into
-    a DUUIProfile. A DUUIProfile COMPOSES sub-profiles such that during
-    telemetry observation, scheduler-based cost/priority/efficiency analysis
-    it can use the profile as a TRANSPARENT WINDOW to the entire resource
-    costs of the DUUI entity it's analysing. All normalized for consistency
-    using DOT-SEPARATED NAMESPACING.
-
-  DUUIProfile:
-    description: |
-      Immutable snapshot of an entity's specification surface. Composes
-      sub-profiles hierarchically. The profile is the transparent window
-      through which the scheduler and telemetry system observe resource
-      costs without knowing entity internals.
-    composition:
-      - "forEntity(DUUIEntity): DUUIProfile — factory from any entity"
-      - "merge(DUUIProfile): DUUIProfile — hierarchical merge, subordinate wins on absent"
-      - "specifications(): List<DUUISpecification<?>> — all specs"
-      - "specifiers(): List<DUUISpecifier<?>> — only self-aware specs"
-      - "subProfiles(): List<DUUIProfile> — composed child profiles"
-      - "flatten(): DUUIProfile — fully normalized with dot-separated namespace"
-    namespacing: |
-      All specifications use dot-separated namespacing for consistency:
-        entity.<entityId>.cpu.utilization
-        entity.<entityId>.memory.heap.used
-        entity.<entityId>.component.<componentId>.replica.<n>.latency.p99
-        entity.<entityId>.stage.<stageId>.throughput.ops_per_sec
-        pipeline.<pipelineId>.stage.<stageId>.checkpoint.queue_depth
-    scheduler_transparency: |
-      The scheduler does NOT need to know entity internals. It reads
-      the flattened DUUIProfile as a Map<String, Double> of normalized
-      metrics. Scheduling decisions (priority, cost, efficiency) are
-      made by comparing profiles — not by inspecting entity state.
-
-  DUUIResourceSpecifier:
-    description: |
-      Allows entities to declare what telemetry instruments and resource
-      specs they want tracked. Entities compose ResourceSpecifier as a trait.
-      The framework auto-creates instruments based on declared specs.
-    contract:
-      - "resourceSpecs(): List<ResourceSpec> — declared resource requirements"
-      - "telemetryInstruments(): List<InstrumentSpec> — declared instruments"
-    ResourceSpec:
-      fields:
-        - domain: "ResourceDomain — CPU, MEMORY_HEAP, GPU_CORES, DISK_BYTES, NETWORK_BANDWIDTH, etc."
-        - capacity: "long — requested capacity"
-        - role: "ResourceRole — LOAD or CAPACITY"
-        - namespace: "String — dot-separated path for profile integration"
-    InstrumentSpec:
-      fields:
-        - name: "String — metric name"
-        - type: "InstrumentType — COUNTER, GAUGE, HISTOGRAM, TIMER"
-        - unit: "String — measurement unit"
-        - namespace: "String — dot-separated path for profile integration"
-        - labels: "Map<String,String> — dimension labels"
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 5. TELEMETRY — AUTO-WIRED, PROFILE-DRIVEN, SCHEDULER-INTEGRATED
-# ═══════════════════════════════════════════════════════════════════════════
-
-telemetry:
-  principle: |
-    DUUITelemetryService auto-scans all registered entities for telemetry
-    traits (Measurable, Observable, Traceable, Loggable). Instruments are
-    auto-created from DUUIResourceSpecifier declarations. Profiles are
-    the transparent window for schedulers.
-
-  DUUITelemetryService:
-    description: "Singleton orchestrator for logs, metrics, traces. Scans registry, auto-creates instruments."
-    contract:
-      - "autoInstrument(DUUIEntityRegistry): void — scan all entities, create instruments"
-      - "autoInstrument(DUUIEntity<?>): void — scan single entity"
-      - "instruments(): Map<String, TelemetryInstrument> — all active instruments"
-      - "registry(): DUUITelemetryRegistry — in-memory event store"
-      - "addSink(DUUITelemetrySink): void — pluggable output"
-
-  auto_wiring_rules:
-    Measurable:   "For each metric name in metricNames(), create COUNTER instrument"
-    Observable:   "Create GAUGE instrument for health status"
-    Traceable:    "Create SPAN instrument for distributed tracing"
-    Loggable:     "Create COUNTER instrument for log event counts"
-    Profilable:   "Connect to profiler client (JFR, JMX, Prometheus)"
-
-  scheduler_integration:
-    description: |
-      The scheduler reads flattened DUUIProfile to make decisions.
-      No direct entity inspection. Profiles provide normalized metrics
-      via dot-separated namespacing.
-    objectives:
-      - MAXIMIZE_SUCCESS_YIELD: "prioritize checkpoints with highest completion rate"
-      - MAXIMIZE_PROGRESS: "prioritize checkpoints with oldest waiting artifacts"
-      - MINIMIZE_FAILURE_RATIO: "deprioritize checkpoints with high error rates"
-      - MINIMIZE_LATENCY: "prioritize fastest components"
-      - MAXIMIZE_THROUGHPUT: "prioritize components with highest ops/sec"
-      - CONSTRAIN_UTILIZATION: "backpressure when resource utilization > threshold (default 0.80)"
-      - CONSTRAIN_SATURATION: "backpressure when queue depth > threshold"
-      - CONSTRAIN_PRESSURE: "backpressure when error rate > threshold"
-    profile_window: |
-      scheduler.selectCheckpoint(checkpoints):
-        for each checkpoint:
-          profile = checkpoint.entity.profile().flatten()
-          score = evaluate(profile, objectives)
-        return checkpoint with highest score
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 6. CLIENT CATALOGUE — EVERY CLIENT WITH @Phase AND YAML DOMAIN
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# 5. CLIENT HIERARCHY — UNCHANGED, MANAGERS ADDED ON TOP
+# ═══════════════════════════════════════════════════════════════
 
 clients:
-  virtualization:
-    docker:
-      yaml: |
-        docker:
-          engine: docker
-          socket: unix:///var/run/docker.sock
-          registry: docker.io
-          pullPolicy: IfNotPresent
-      phases:
-        - "@Phase(V1_CONTAINER_PULL) pullImage(String image)"
-        - "@Phase(V1_CONTAINER_CREATE) createContainer(String image, Map<String,String> env)"
-        - "@Phase(V1_CONTAINER_START) startContainer(DUUIHandle.Container)"
-        - "@Phase(V1_CONTAINER_STOP) stopContainer(DUUIHandle.Container)"
-        - "@Phase(V1_CONTAINER_REMOVE) removeContainer(DUUIHandle.Container)"
-    podman:
-      yaml: |
-        podman:
-          engine: podman
-          socket: unix:///run/podman/podman.sock
-          rootless: true
-          registry: docker.io
-      phases:
-        - "@Phase(V1_CONTAINER_PULL) pullImage(String image)"
-        - "@Phase(V1_CONTAINER_CREATE) createContainer(String image, Map<String,String> env)"
-        - "@Phase(V1_CONTAINER_START) startContainer(DUUIHandle.Container)"
-        - "@Phase(V1_CONTAINER_STOP) stopContainer(DUUIHandle.Container)"
-        - "@Phase(V1_CONTAINER_REMOVE) removeContainer(DUUIHandle.Container)"
-    kubernetes:
-      yaml: |
-        kubernetes:
-          engine: kubernetes
-          namespace: duui
-          kubeconfig: ~/.kube/config
-          serviceAccount: duui-sa
-          pullSecrets: [regcred]
-      phases:
-        - "@Phase(V1_CONTAINER_PULL) ensureImage(String image)"
-        - "@Phase(V1_CONTAINER_CREATE) createDeployment(String name, String image, int replicas, Map<String,String> env)"
-        - "@Phase(V1_CONTAINER_START) waitReady(String name, int timeoutSeconds)"
-        - "@Phase(V1_CONTAINER_STOP) deleteDeployment(String name)"
-    swarm:
-      yaml: |
-        swarm:
-          engine: swarm
-          managerNodes: [node1, node2]
-          network: overlay
-      phases:
-        - "@Phase(V1_CONTAINER_PULL) pullImage(String image)"
-        - "@Phase(V1_CONTAINER_CREATE) deployService(String name, String image, int replicas)"
-        - "@Phase(V1_CONTAINER_STOP) removeService(String name)"
+  principle: |
+    Clients are UNCHANGED from the original DUUI design. Managers are a NEW
+    layer added ON TOP to centralize creation and emit sealed handles.
+    Every client still operates through its handle. Every manager wraps
+    creation of its client type.
 
+  # ── Root contracts ───────────────────────────────────────────
+  DUUIClient<H extends DUUIHandle>:
+    description: "Top-level client contract. Operates through a sealed handle."
+    extends: "DUUIService"
+    contract:
+      - "handle(): H — sealed handle this client uses"
+      - "auth(): Object — authentication record"
+      - "shutdown(): void"
+
+  # ── Filesystem clients (unchanged hierarchy) ─────────────────
   filesystem:
-    interface:
-      yaml: |
-        filesystem:
-          provider: LOCAL_FS | S3 | MINIO | GOOGLE_DRIVE | DROPBOX | NEXTCLOUD | MONGO_GRIDFS
-          root: /data or s3://bucket
-          readOnly: false
+    DUUIFileSystemClient:
+      description: "Filesystem contract — all FS operations @Phase-annotated."
+      extends: "DUUIClient<DUUIHandle.FileSystem>, AutoCloseable"
       phases:
         - "@Phase(V1_FILE_READ)  metadata(DUUILocator): DUUIFileMetadata"
         - "@Phase(V1_FILE_READ)  file(DUUILocator): DUUIFile"
@@ -399,191 +151,320 @@ clients:
         - "@Phase(V1_FILE_READ)  read(DUUILocator): byte[]"
         - "@Phase(V1_FILE_WRITE) write(DUUILocator, byte[]): void"
         - "@Phase(V1_FILE_READ)  list(DUUILocator): List<DUUIFileMetadata>"
-        - "@Phase(V1_FILE_READ)  discover(DUUILocator): List<DUUIFileMetadata>"
-        - "@Phase(V1_FILE_READ)  traverse(DUUILocator): Stream<DUUIFileMetadata>"
+      yaml: |
+        filesystem:
+          provider: LOCAL_FS | S3 | MINIO | GOOGLE_DRIVE | DROPBOX | NEXTCLOUD | MONGO_GRIDFS
+          root: /data or s3://bucket
+          readOnly: false
     providers:
-      local:
+      DUUILocalFSClient:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, discover, traverse, delete"
         yaml: |
           localfs:
             provider: LOCAL_FS
             root: /data
-            readOnly: false
-      s3:
+      DUUIS3Client:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, traverse"
         yaml: |
           s3:
             provider: S3
             bucket: my-bucket
             region: us-east-1
-            endpoint: https://s3.amazonaws.com
-      minio:
+      DUUIMinIOClient:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, traverse"
         yaml: |
           minio:
             provider: MINIO
             bucket: my-bucket
             endpoint: http://minio:9000
-            accessKey: minioadmin
-      googledrive:
+      DUUIGoogleDriveClient:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, traverse"
         yaml: |
           googledrive:
             provider: GOOGLE_DRIVE
             credentials: /secrets/gdrive.json
-            rootFolder: shared-drive-id
-      dropbox:
+      DUUIDropboxClient:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, traverse"
         yaml: |
           dropbox:
             provider: DROPBOX
             token: ${DROPBOX_TOKEN}
-            rootPath: /duui
-      nextcloud:
+      DUUINextCloudClient:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, traverse"
         yaml: |
           nextcloud:
             provider: NEXTCLOUD
-            endpoint: https://nextcloud.example.com
-            username: duui
-      mongogridfs:
+            endpoint: https://nc.example.com
+      DUUIMongoGridFSClient:
+        extends: "DUUIFileSystemClient"
+        phases: "@Phase on read, write, list, traverse"
         yaml: |
           mongogridfs:
             provider: MONGO_GRIDFS
             uri: mongodb://localhost:27017
             database: duui
-            bucket: fs
 
+  # ── Virtualization clients (unchanged hierarchy) ─────────────
+  virtualization:
+    DUUIVirtualizationClient:
+      extends: "DUUIClient"
+      description: "Abstract base for container runtime clients."
+      phases: "@Phase on pull, create, start, stop, remove"
+      yaml: |
+        virtualization:
+          kind: DOCKER | PODMAN | KUBERNETES | SWARM
+          socket: unix:///var/run/docker.sock
+    runtimes:
+      DUUIDockerClient:
+        extends: "DUUIVirtualizationClient"
+        phases: "@Phase on pullImage, createContainer, startContainer, stopContainer, removeContainer"
+        yaml: |
+          docker:
+            engine: docker
+            registry: docker.io
+      DUUIPodmanClient:
+        extends: "DUUIVirtualizationClient"
+        phases: "@Phase on pullImage, createContainer, startContainer, stopContainer, removeContainer"
+        yaml: |
+          podman:
+            engine: podman
+            rootless: true
+      DUUIKubernetesClient:
+        extends: "DUUIVirtualizationClient"
+        phases: "@Phase on ensureImage, createDeployment, waitReady, deleteDeployment"
+        yaml: |
+          kubernetes:
+            engine: kubernetes
+            namespace: duui
+      DUUISwarmClient:
+        extends: "DUUIVirtualizationClient"
+        phases: "@Phase on pullImage, deployService, removeService"
+        yaml: |
+          swarm:
+            engine: swarm
+            network: overlay
+
+  # ── HTTP client (unchanged) ──────────────────────────────────
   http:
-    yaml: |
-      http:
-        baseUri: http://localhost:8080
-        timeout: 30s
-        retries: 3
-        headers:
-          Accept: application/json
-    phases:
-      - "@Phase(V1_SERIALIZE_REQUEST) get(URI, Map<String,String>): DUUIHttpResponse"
-      - "@Phase(V1_ANALYSE_REQUEST) post(URI, byte[], Map<String,String>): DUUIHttpResponse"
+    DUUIHttpClient:
+      extends: "DUUIClient<DUUIHandle.HttpClient>"
+      phases:
+        - "@Phase(V1_SERIALIZE_REQUEST) get(URI, Map<String,String>): DUUIHttpResponse"
+        - "@Phase(V1_ANALYSE_REQUEST) post(URI, byte[], Map<String,String>): DUUIHttpResponse"
+      yaml: |
+        http:
+          baseUri: http://localhost:8080
+          timeout: 30s
 
+  # ── Database clients (unchanged hierarchy) ───────────────────
   database:
-    yaml: |
-      database:
-        kind: SQLITE
-        url: jdbc:sqlite:/data/duui.db
-        poolSize: 8
-        autoCommit: true
-    phases:
-      - "@Phase(V1_CONTAINER_CREATE) connect(): void"
-      - "@Phase(V1_SERIALIZE_REQUEST) execute(String): void"
-      - "@Phase(V1_DESERIALIZE_REQUEST) query(String): List<Map<String,Object>>"
-    sqlite:
+    DUUIDatabaseClient:
+      extends: "DUUIClient<DUUIHandle.Database>"
+      phases:
+        - "@Phase(V1_CONTAINER_CREATE) connect(): void"
+        - "@Phase(V1_SERIALIZE_REQUEST) execute(String): void"
+        - "@Phase(V1_DESERIALIZE_REQUEST) query(String): List"
+      yaml: |
+        database:
+          kind: SQLITE
+          url: jdbc:sqlite:/data/duui.db
+    DUUISqliteClient:
+      extends: "DUUIDatabaseClient"
+      phases: "@Phase on connect, executeUpdate, query"
       yaml: |
         sqlite:
           kind: SQLITE
           path: /data/duui.db
           wal: true
-          busyTimeout: 5000ms
-      phases:
-        - "@Phase(V1_CONTAINER_CREATE) connect(): void"
-        - "@Phase(V1_SERIALIZE_REQUEST) executeUpdate(String): void"
-        - "@Phase(V1_DESERIALIZE_REQUEST) query(String): List<Map<String,Object>>"
 
-  telemetry_profilers:
-    jfr:
+  # ── Telemetry profiler clients (unchanged hierarchy) ─────────
+  telemetry:
+    DUUIProfilerClient:
+      extends: "DUUIClient"
+      description: "Profiler contract (interface)."
+      yaml: |
+        profiler:
+          kind: JFR | MXBEAN | PROMETHEUS
+          enabled: true
+    DUUIAbstractProfilerClient:
+      extends: "DUUIProfilerClient"
+      description: "Abstract base with common logic."
+    DUUIJfrClient:
+      extends: "DUUIAbstractProfilerClient"
+      phases: "@Phase on startRecording, stopRecording"
       yaml: |
         jfr:
-          enabled: true
           settings: profile
           maxSize: 250MB
-          maxAge: 10m
-      phases:
-        - "@Phase(PROFILE_BEGIN) startRecording(String): void"
-        - "@Phase(PROFILE_END) stopRecording(): byte[]"
-    jmx:
+    DUUIMxBeanClient:
+      extends: "DUUIAbstractProfilerClient"
+      phases: "@Phase on collectMetrics"
       yaml: |
         jmx:
-          enabled: true
           domains: [java.lang, java.nio]
-          interval: 10s
-      phases:
-        - "@Phase(PROFILE_BEGIN) collectMetrics(): Map<String,Object>"
-    prometheus:
+    DUUIPrometheusClient:
+      extends: "DUUIAbstractProfilerClient"
+      phases: "@Phase on pushMetrics, exportMetrics"
       yaml: |
         prometheus:
-          enabled: true
           pushGateway: http://pushgateway:9091
           job: duui
-          interval: 15s
-      phases:
-        - "@Phase(PROFILE_BEGIN) pushMetrics(Map<String,Double>): void"
-        - "@Phase(PROFILE_END) exportMetrics(): String"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 7. END-TO-END EXAMPLE — PIPELINE DEFINITION
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# 6. BUILDER SYSTEM — DUUIScope<T>, CHAINING, SUB-BUILDERS
+# ═══════════════════════════════════════════════════════════════
 
-example_pipeline:
-  description: "Complete pipeline definition showing builder chaining, scopes, sub-builders, profiles, and telemetry."
+builders:
+  principle: |
+    A SINGLE DUUIScope<T> type works for ALL builders (try-with-resources).
+    Builders can initiate sub-builders for sub-entities. Context-based
+    attachment composes builders. DUUIScope provides automatic cleanup.
+
+  DUUIScope<T extends AutoCloseable>:
+    description: "Generic RAII scope — single type for all builders."
+    usage: |
+      try (var scope = DUUIPipeline.scope()) {
+          var pipeline = scope.resource()
+              .v1("tokenizer").endpoint("http://tok:8080").add()
+              .v1("ner").image("ner:latest").docker().scale(4).add()
+              .build();
+          pipeline.run();
+      }
+
+  PipelineBuilder:
+    description: "Fluent builder for DUUIPipeline. Supports sub-builder chaining."
+    scope_entry: "DUUIPipeline.scope() → DUUIScope<PipelineBuilder>"
+    sub_builders:
+      - "v1(String id): DUUIV1ComponentBuilder — initiate V1 component sub-builder"
+      - "uima(String id): DUUIUimaComponentBuilder — initiate UIMA component sub-builder"
+    chaining: |
+      PipelineBuilder.v1("name") → DUUIV1ComponentBuilder
+        .endpoint(url) / .image(img) / .docker() / .podman() / .kubernetes() / .swarm()
+        .scale(n) / .concurrency(n) / .timeout(d) / .retry(n,d) / .gpu(bool)
+        .add() → returns to PipelineBuilder
+
+  DUUIV1ComponentBuilder:
+    description: "Sub-builder for V1 annotator components."
+    methods:
+      - "endpoint(String): self"
+      - "image(String): self"
+      - "docker() / podman() / kubernetes() / swarm() / remote(): self"
+      - "scale(int): self"
+      - "concurrency(int): self"
+      - "view(String src, String tgt): self"
+      - "parameter(String k, String v): self"
+      - "header(String k, String v): self"
+      - "timeout(Duration): self"
+      - "retry(int tries, Duration delay): self"
+      - "gpu(boolean): self"
+      - "add(): PipelineBuilder — return to parent"
+
+  DUUIUimaComponentBuilder:
+    description: "Sub-builder for in-process UIMA components."
+    methods:
+      - "engine(AnalysisEngine): self"
+      - "scale(int): self"
+      - "add(): PipelineBuilder"
+
+# ═══════════════════════════════════════════════════════════════
+# 7. PROFILE SYSTEM — COMPOSABLE, NAMESPACED
+# ═══════════════════════════════════════════════════════════════
+
+profile:
+  principle: |
+    DUUIResourceSpecifier allows entities to specify telemetry instruments
+    and specs for resources they want tracked. All collected into DUUIProfile.
+    DUUIProfile composes sub-profiles hierarchically. During telemetry
+    observation and scheduler analysis, the profile is a TRANSPARENT WINDOW
+    to entity resource costs. All normalized via dot-separated namespacing.
+
+  DUUIProfile:
+    description: "Immutable specification surface. Composes sub-profiles."
+    operations:
+      - "forEntity(DUUIEntity): DUUIProfile — factory"
+      - "merge(DUUIProfile): DUUIProfile — hierarchical, subordinate wins"
+      - "subProfiles(): List<DUUIProfile>"
+      - "flatten(): DUUIProfile — normalized dot-separated namespace"
+    namespacing: |
+      entity.<id>.cpu.utilization
+      entity.<id>.memory.heap.used
+      entity.<id>.component.<cid>.replica.<n>.latency.p99
+      pipeline.<pid>.stage.<sid>.throughput.ops_per_sec
+
+  DUUIResourceSpecifier:
+    description: "Trait — entities declare instruments and resource specs."
+    contract:
+      - "resourceSpecs(): List<ResourceSpec>"
+      - "telemetryInstruments(): List<InstrumentSpec>"
+    scheduler_transparency: |
+      Scheduler reads flattened DUUIProfile as Map<String,Double>.
+      Decisions based on profile comparison — no entity internals exposed.
+      Objectives: MAXIMIZE_SUCCESS_YIELD, MAXIMIZE_PROGRESS,
+      MINIMIZE_FAILURE_RATIO, MINIMIZE_LATENCY, MAXIMIZE_THROUGHPUT,
+      CONSTRAIN_UTILIZATION (0.80 default), CONSTRAIN_SATURATION,
+      CONSTRAIN_PRESSURE
+
+# ═══════════════════════════════════════════════════════════════
+# 8. TELEMETRY — AUTO-WIRED VIA TRAITS
+# ═══════════════════════════════════════════════════════════════
+
+telemetry_service:
+  DUUITelemetryService:
+    description: "Singleton — auto-scans registry for telemetry traits."
+    auto_wiring:
+      Measurable:   "For each metricName → create COUNTER"
+      Observable:   "Create GAUGE for health"
+      Traceable:    "Create SPAN for tracing"
+      Loggable:     "Create COUNTER for log events"
+    contract:
+      - "autoInstrument(DUUIEntityRegistry): void"
+      - "autoInstrument(DUUIEntity<?>): void"
+      - "instruments(): Map<String, TelemetryInstrument>"
+      - "addSink(DUUITelemetrySink): void"
+
+# ═══════════════════════════════════════════════════════════════
+# 9. END-TO-END EXAMPLE
+# ═══════════════════════════════════════════════════════════════
+
+example:
   yaml_config: |
     pipeline:
       id: biofid-nova
-      platformThreads: 8
       stages:
-        - source:
-            type: directory
-            path: /data/input
-            pattern: "*.xmi.gz"
-        - processor:
-            component: tokenizer
-            environment: docker
-            image: docker.io/biofid/tokenizer:latest
-            endpoint: http://tokenizer:8080
-            scale: 4
-            concurrency: 2
-            timeout: 5m
-            retry: { tries: 3, delay: 60ms }
-        - processor:
-            component: ner
-            environment: kubernetes
-            image: docker.io/biofid/ner:latest
-            scale: 2
-            concurrency: 4
-            gpu: true
-        - target:
-            type: xmi
-            path: /data/output
+        - component: tokenizer
+          environment: docker
+          image: docker.io/biofid/tokenizer:latest
+          endpoint: http://tokenizer:8080
+          scale: 4
+          concurrency: 2
+        - component: ner
+          environment: kubernetes
+          image: docker.io/biofid/ner:latest
+          scale: 2
+          gpu: true
+
   java_usage: |
-    // Scope-based builder with sub-builders
     try (var scope = DUUIPipeline.scope("biofid-nova")) {
         var pipeline = scope.resource()
-            .platformThreads(8)
             .v1("tokenizer")
                 .image("docker.io/biofid/tokenizer:latest")
                 .endpoint("http://tokenizer:8080")
-                .docker()
-                .scale(4)
-                .concurrency(2)
-                .timeout(Duration.ofMinutes(5))
-                .retry(3, Duration.ofMillis(60))
+                .docker().scale(4).concurrency(2)
                 .add()
             .v1("ner")
                 .image("docker.io/biofid/ner:latest")
-                .kubernetes()
-                .scale(2)
-                .concurrency(4)
-                .gpu(true)
+                .kubernetes().scale(2).gpu(true)
                 .add()
             .build();
 
-        // Wrap pipeline execution with telemetry hooks
         pipeline.wrap(phase -> phase
-            .before(() -> log.info("Pipeline starting"))
-            .after(() -> log.info("Pipeline complete"))
-            .onFailure(e -> log.error("Pipeline failed", e)),
+            .before(() -> log.info("Starting"))
+            .onFailure(e -> log.error("Failed", e)),
             pipeline::run);
-
-        // Scheduler reads profile to make decisions
-        var profile = pipeline.profile().flatten();
-        // profile contains:
-        //   pipeline.biofid-nova.stages.2
-        //   pipeline.biofid-nova.components.2
-        //   pipeline.biofid-nova.component.tokenizer.replicas.4
-        //   pipeline.biofid-nova.component.tokenizer.concurrency.2
-        //   pipeline.biofid-nova.component.ner.replicas.2
-        //   pipeline.biofid-nova.component.ner.concurrency.4
     }

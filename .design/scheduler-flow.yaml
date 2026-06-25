@@ -1,0 +1,436 @@
+# =============================================================================
+# DUUI Scheduler — Complete Procedural Flow
+# Generated: 2026-06-25 | Source: duui-core/scheduler + duui-base/carrier
+# =============================================================================
+#
+# This describes the DUUI checkpoint-based scheduling system purely in terms
+# of procedural steps, data flow, scope, and configurability. No entities,
+# no traits — only what happens, when, and how.
+#
+
+scheduler_overview:
+  role: >
+    Selects which checkpoint to dequeue a task from next, based on
+    configurable objectives, downstream backpressure signals, and a
+    pluggable selection policy. Runs as part of the pipeline's executor
+    thread — NOT as a separate thread or service.
+
+  scope: "per-pipeline-instance — one scheduler per DUUIPipeline"
+  threading: "runs inline on the calling executor thread (no async dispatch)"
+
+  lifecycle:
+    - "Created when DUUIPipeline is constructed"
+    - "Defaults to CheckpointPriorityPolicy if no policy given"
+    - "Destroyed when pipeline shuts down"
+
+# =============================================================================
+# DATA STRUCTURES — What Flows Through
+# =============================================================================
+
+data_structures:
+
+  checkpoint:
+    description: >
+      A thread-safe, admission-controlled FIFO queue. Every pipeline stage
+      has exactly one checkpoint. Tasks are accepted into the checkpoint
+      when a stage produces work; tasks are polled out when the scheduler
+      selects this checkpoint for dequeue.
+    internal_state:
+      - field: "admitted (ArrayDeque<T>)"
+        description: "The FIFO queue of admitted tasks"
+      - field: "lock (ReentrantLock)"
+        description: "Guards all queue mutations"
+      - field: "notEmpty (Condition)"
+        description: "Signaled when a task is accepted — wakes threads blocked on poll"
+      - field: "mode (DUUICheckpointMode)"
+        description: "BACKPRESSURE | QUEUE | STREAMLINE — affects admission behavior"
+      - field: "acceptedAt (Map<Object, Instant>)"
+        description: "Timestamps when each task was accepted — used for oldestArtifactWait calculation"
+      - field: "accepted / rejected / cancelled / enqueued / dequeued (AtomicLong)"
+        description: "Counter metrics"
+      - field: "downstreamWorkerAvailability (double)"
+        description: "0.0–1.0 signal from downstream stage about available capacity"
+      - field: "downstreamPhaseLatencyMillis (double)"
+        description: "Rolling average of downstream processing latency"
+      - field: "downstreamErrors (long)"
+        description: "Error count from downstream"
+
+    operations:
+      accept:
+        input: "task T"
+        steps:
+          - "Acquire lock"
+          - "Append task to admitted deque"
+          - "Increment accepted counter"
+          - "Increment enqueued counter"
+          - "Record acceptedAt timestamp keyed by task identity"
+          - "Signal notEmpty condition"
+          - "Release lock"
+        blocking: "no — always succeeds"
+
+      hasReadyItem:
+        steps:
+          - "Acquire lock"
+          - "Check if admitted.isEmpty()"
+          - "Release lock"
+          - "Return boolean"
+        blocking: "no"
+
+      pollTask:
+        steps:
+          - "Acquire lock"
+          - "Poll first element from admitted deque"
+          - "If non-null: increment dequeued, remove acceptedAt entry"
+          - "Release lock"
+          - "Return task or null"
+        blocking: "no — caller handles emptiness"
+
+      snapshot:
+        output: "DUUICheckpointSnapshot record"
+        fields:
+          - "depth: int — current queue depth"
+          - "remainingCapacity: int — capacity minus depth"
+          - "oldestArtifactWait: Duration — time since oldest accepted task"
+          - "accepted / rejected / cancelled / enqueued / dequeued: long counters"
+          - "enqueueRatePerSecond / dequeueRatePerSecond: double rates"
+          - "downstreamWorkerAvailability: double — 0.0 = fully saturated, 1.0 = fully idle"
+          - "downstreamPhaseLatencyMillis: double"
+          - "downstreamErrors: long"
+
+  checkpoint_mode:
+    values:
+      BACKPRESSURE: "Block producer when queue is full. Producer thread waits until space available."
+      QUEUE: "Unbounded queue. Accept everything, let consumer pace determine throughput."
+      STREAMLINE: "Accept if downstream has capacity. Reject (return false) if saturated."
+
+  scheduling_decision:
+    description: "The result of a scheduler selection cycle — either ADVANCE or WAIT"
+    fields:
+      - "decidedAt: Instant — when decision was made"
+      - "action: ADVANCE | WAIT"
+      - "checkpoint: GID — which checkpoint was selected (null if WAIT)"
+      - "task: GID — which task was selected (null if WAIT)"
+      - "selectedTask: DUUITask<?> — the actual task reference"
+      - "lane: PLATFORM | VIRTUAL — which thread pool to use"
+      - "dispatchMode: DEFAULT | CPU | IO | MIXED — task dispatch mode"
+      - "virtualExecutor: Executor — nullable virtual thread executor reference"
+      - "reason: String — human-readable reason for decision"
+      - "attributes: Map<String, Object> — arbitrary metadata"
+
+  scheduler_objectives:
+    description: "Configuration driving scheduler policy decisions"
+    fields:
+      - "objectives: Set<DUUISchedulerObjective>"
+      - "heapUtilizationLimit: double — default 0.80"
+      - "resourceUtilizationLimit: double — default 0.80"
+    default_objectives:
+      - "MAXIMIZE_PROGRESS — prefer checkpoints that move most work forward"
+      - "CONSTRAIN_UTILIZATION — throttle when heap/resource limits hit"
+    available_objectives:
+      - "MAXIMIZE_SUCCESS_YIELD — maximize completed/total ratio"
+      - "MAXIMIZE_PROGRESS — maximize throughput"
+      - "MINIMIZE_FAILURE_RATIO — prefer stages with low errors"
+      - "MINIMIZE_LATENCY — prefer stages with low queue wait time"
+      - "MAXIMIZE_THROUGHPUT — maximize dequeues/second"
+      - "CONSTRAIN_UTILIZATION — throttle when heap/resource > limit"
+      - "CONSTRAIN_SATURATION — throttle when downstream saturated"
+      - "CONSTRAIN_PRESSURE — throttle when queue depth exceeds threshold"
+
+# =============================================================================
+# PROCEDURAL FLOW — Step by Step
+# =============================================================================
+
+procedural_flow:
+
+  # ── PHASE 1: PIPELINE SETUP ──────────────────────────────────
+
+  pipeline_setup:
+    description: "What happens when a DUUIPipeline is constructed"
+
+    step_1_create_stages:
+      description: "Each pipeline stage (Source, Processor, Fork, Join, Target) is instantiated"
+      output: "List of stages, each with an associated DUUICheckpoint"
+
+    step_2_create_scheduler:
+      description: "Scheduler is created with the default CheckpointPriorityPolicy"
+      policy: "CheckpointPriorityPolicy (inner class of DUUIScheduler)"
+      alternatives:
+        - "Custom policy implementing DUUISchedulerPolicy can be injected"
+        - "DUUIScheduler(policy) constructor accepts any policy"
+
+    step_3_create_executor:
+      description: "DUUIExecutorService is created with platform + virtual thread pools"
+      platform_threads: "CPU count"
+      virtual_threads: "unbounded (virtual-thread-per-task executor)"
+
+    step_4_register_checkpoints:
+      description: "All stage checkpoints are registered with the scheduler"
+      scope: "The scheduler holds a reference to all checkpoints via the pipeline"
+
+  # ── PHASE 2: TASK ENQUEUE (HAPPENS PER-PRODUCER) ────────────
+
+  task_enqueue:
+    description: "When a pipeline stage produces work, it enqueues tasks into its checkpoint"
+
+    step_1_producer_creates_task:
+      description: "A Stage.Producer creates a DUUITask<R>"
+      task_contents:
+        - "Callable<R> payload — the actual work"
+        - "Dependencies list — tasks that must complete first"
+        - "Metadata map — scheduling hints"
+        - "State: CREATED"
+
+    step_2_checkpoint_admission:
+      description: "Task is submitted to the stage's checkpoint via accept()"
+      mode_dependent_behavior:
+        BACKPRESSURE:
+          - "If queue is at capacity: producer thread blocks on lock condition"
+          - "When consumer dequeues: condition signals, producer wakes, accepts"
+          - "If timeout: reject with reason 'backpressure_timeout'"
+        QUEUE:
+          - "Always accepts — queue grows unbounded"
+          - "No blocking"
+        STREAMLINE:
+          - "Checks downstreamWorkerAvailability"
+          - "If < threshold: reject with reason 'downstream_saturated'"
+          - "If >= threshold: accept"
+
+    step_3_signal_ready:
+      description: "notEmpty.signalAll() wakes any thread blocked on poll"
+
+  # ── PHASE 3: SCHEDULER DECISION CYCLE (HAPPENS PER-DEQUEUE) ──
+
+  scheduler_cycle:
+    description: >
+      Called by the pipeline executor every time it needs a new task.
+      Runs inline on the executor thread — no background polling.
+
+    step_1_collect_checkpoints:
+      description: "Gather all checkpoints from all pipeline stages"
+      input: "Map<Checkpoint, List<DUUITask>> or Collection<Checkpoint>"
+      scope: "All stages in the pipeline"
+
+    step_2_filter_ready:
+      description: "Filter to only checkpoints with hasReadyItem() == true"
+      details: >
+        For each checkpoint: acquire lock, check admitted.isEmpty(),
+        release lock. Skip empty checkpoints.
+
+    step_3_build_request:
+      description: "Construct a Request record from the filtered checkpoints"
+      request_contents:
+        - "checkpoints: Collection<DUUICheckpoint> — the ready checkpoints"
+        - "capabilities: Set<Capability> — named capability constraints"
+        - "objectives: DUUISchedulerObjectives — scheduling goals (defaults: MAXIMIZE_PROGRESS + CONSTRAIN_UTILIZATION)"
+        - "workload: Map<String, Object> — arbitrary workload metadata"
+      note: "Capabilities and workload are currently empty/default in the standard flow"
+
+    step_4_delegate_to_policy:
+      description: "policy.selectCheckpoint(request) is called"
+      default_policy: "CheckpointPriorityPolicy"
+
+    step_4a_checkpoint_priority_policy:
+      description: "Default policy — depth-priority with oldest-wait tiebreaker"
+      substeps:
+        - "Iterate all checkpoints in request"
+        - "Filter: only checkpoints with hasReadyItem() == true"
+        - "If no candidates: return null (→ WAIT decision)"
+        - "Sort candidates with custom comparator:"
+        - "  Primary: depth descending (deeper queues first → maximize throughput)"
+        - "  Secondary: oldestArtifactWait ascending (oldest waiting task first → fairness)"
+        - "Return candidates[0]"
+
+    step_5_produce_decision:
+      description: "Convert the selected checkpoint into a DUUISchedulingDecision"
+      if_advance:
+        - "Set action = ADVANCE"
+        - "Set checkpoint GID = selected checkpoint"
+        - "Set task GID = peekTask().gid()"
+        - "Set selectedTask = the actual task reference"
+        - "Set lane = VIRTUAL or PLATFORM based on dispatch mode"
+        - "Set dispatchMode = DEFAULT | CPU | IO | MIXED"
+        - "Set virtualExecutor = the virtual thread executor reference"
+        - "Set reason = 'selected by CheckpointPriorityPolicy'"
+      if_wait:
+        - "Set action = WAIT"
+        - "Set reason = 'no ready checkpoints' or 'policy returned null'"
+        - "All other fields null/default"
+
+  # ── PHASE 4: TASK EXECUTION (POST-SCHEDULER) ─────────────────
+
+  task_execution:
+    description: "After the scheduler produces an ADVANCE decision"
+
+    step_1_dequeue_task:
+      description: "pollTask() on the selected checkpoint to get the actual task"
+      details: >
+        The decision's selectedTask is a reference, but the actual dequeue
+        happens via pollTask() which removes it from the checkpoint.
+
+    step_2_resolve_lane:
+      description: "Determine which executor to use"
+      platform_lane:
+        when: "lane == PLATFORM or dispatchMode == CPU"
+        executor: "FixedThreadPool (CPU count threads)"
+        usage: "CPU-bound tasks, UIMA AnalysisEngine calls"
+      virtual_lane:
+        when: "lane == VIRTUAL or dispatchMode == IO"
+        executor: "VirtualThreadPerTaskExecutor (unbounded)"
+        usage: "I/O-bound tasks, HTTP requests, FS operations"
+      mixed:
+        when: "dispatchMode == MIXED"
+        behavior: "Dispatch to virtual executor, but use platform thread count as concurrency hint"
+
+    step_3_dispatch:
+      description: "executor.submit(task) or virtual executor execute(task)"
+      thread_binding:
+        - "DUUIWorker.bindCurrent(worker) — binds worker to current thread"
+        - "task.run() executes the Callable<R> payload"
+        - "On completion: task.state = COMPLETED, CompletableFuture<R> resolved"
+        - "On failure: task.state = FAILED, CompletableFuture<R> completedExceptionally"
+        - "DUUIWorker.unbindCurrent() — unbinds worker"
+
+    step_4_backpressure_feedback:
+      description: "After task completes, update downstream signals on checkpoint"
+      signals:
+        - "downstreamWorkerAvailability: updated based on queue depth vs capacity"
+        - "downstreamPhaseLatencyMillis: updated with rolling average"
+        - "downstreamErrors: incremented if task failed"
+
+  # ── PHASE 5: BACKPRESSURE PROPAGATION ────────────────────────
+
+  backpressure_propagation:
+    description: "How saturation at one stage propagates upstream"
+
+    signal_chain:
+      - step: 1
+        action: "Checkpoint B (consumer) is full → downstreamWorkerAvailability drops to 0.0"
+      - step: 2
+        action: "Scheduler reads snapshot from Checkpoint B — sees saturation"
+      - step: 3
+        action: "Scheduler selects Checkpoint A (producer) instead — Checkpoint B is deprioritized"
+      - step: 4
+        action: "If all checkpoints saturated → WAIT decision → executor thread blocks or polls"
+      - step: 5
+        action: "When Checkpoint B drains → downstreamWorkerAvailability rises → scheduler resumes B"
+
+    blocking_behavior:
+      BACKPRESSURE_mode:
+        - "Producer calls checkpoint.accept(task)"
+        - "If queue full: producer thread blocks on condition.await()"
+        - "Consumer dequeues: condition.signal() → producer wakes"
+        - "Timeout: after configurable duration, reject with DUUIAdmissionDecision.reject()"
+      QUEUE_mode:
+        - "Never blocks. Queue grows until OOM or pipeline limit."
+      STREAMLINE_mode:
+        - "Check downstreamWorkerAvailability before accept"
+        - "If saturated: reject immediately, no blocking"
+        - "Producer must handle rejection (retry, skip, fail)"
+
+# =============================================================================
+# CONFIGURABILITY — What Can Be Changed
+# =============================================================================
+
+configurability:
+
+  checkpoint_mode:
+    per_stage: "Each stage's checkpoint can be independently set to BACKPRESSURE, QUEUE, or STREAMLINE"
+    default: "QUEUE"
+    how: "Pass DUUICheckpointMode when constructing the checkpoint or stage"
+
+  scheduler_policy:
+    interface: "DUUISchedulerPolicy — single method: selectCheckpoint(Request) → DUUICheckpoint<?>"
+    pluggability: "Inject any implementation at construction time"
+    default: "CheckpointPriorityPolicy (depth descending, oldest wait tiebreaker)"
+    custom_examples:
+      - "RoundRobinPolicy: cycles through checkpoints in order"
+      - "FairSharePolicy: allocates dequeue slots proportionally to stage weight"
+      - "LatencyMinimizingPolicy: prefers stages with lowest downstreamPhaseLatencyMillis"
+      - "ErrorAvoidancePolicy: deprioritizes stages with high downstreamErrors"
+      - "CompositePolicy: chains multiple policies with fallback"
+
+  scheduler_objectives:
+    description: "DUUISchedulerObjectives record — passed to policy in Request"
+    defaults:
+      objectives: ["MAXIMIZE_PROGRESS", "CONSTRAIN_UTILIZATION"]
+      heapUtilizationLimit: 0.80
+      resourceUtilizationLimit: 0.80
+
+  dispatch_routing:
+    lane_selection:
+      how: "DUUIExecutionLane enum: PLATFORM or VIRTUAL"
+      per_task: "Set on DUUITask metadata before enqueue"
+      per_stage: "Set on DUUIStage configuration"
+    dispatch_mode:
+      values: "DEFAULT | CPU → PLATFORM | IO → VIRTUAL | MIXED"
+      per_task: "DUUIDispatchMode on DUUITask"
+
+  checkpoint_capacity:
+    per_checkpoint: "Integer capacity — max queue depth before BACKPRESSURE kicks in"
+    default: "Integer.MAX_VALUE (effectively unbounded)"
+
+  telemetry_signals:
+    checkpoint_snapshot_signals:
+      - "checkpoint.depth — current queue depth"
+      - "checkpoint.enqueue_rate — tasks accepted per second"
+      - "checkpoint.dequeue_rate — tasks polled per second"
+      - "checkpoint.oldest_wait — time since oldest task was accepted"
+      - "checkpoint.downstream_availability — 0.0–1.0 capacity signal"
+      - "checkpoint.downstream_latency — rolling average processing time"
+      - "checkpoint.downstream_errors — downstream error count"
+    scheduler_decision_signals:
+      - "scheduler.cycle.count — total decision cycles"
+      - "scheduler.cycle.advance — ADVANCE decisions"
+      - "scheduler.cycle.wait — WAIT decisions"
+      - "scheduler.cycle.duration — time per decision cycle"
+      - "scheduler.checkpoint.selected — which checkpoint was chosen"
+
+# =============================================================================
+# FLOW DIAGRAM (Text)
+# =============================================================================
+
+flow_summary: |
+  PIPELINE SETUP
+  │
+  ├─ Create stages → each stage has DUUICheckpoint
+  ├─ Create DUUIScheduler → default CheckpointPriorityPolicy
+  └─ Create DUUIExecutorService → platform + virtual pools
+  
+  TASK ENQUEUE (per-producer, parallel)
+  │
+  ├─ Stage.Producer creates DUUITask<R>
+  ├─ checkpoint.accept(task)
+  │   ├─ BACKPRESSURE: block if full, signal when space
+  │   ├─ QUEUE: always accept
+  │   └─ STREAMLINE: reject if downstream saturated
+  └─ notEmpty.signalAll()
+
+  SCHEDULER CYCLE (per-executor-thread, sequential)
+  │
+  ├─ Collect all checkpoints
+  ├─ Filter: hasReadyItem() == true
+  ├─ Build Request(checkpoints, capabilities, objectives, workload)
+  ├─ policy.selectCheckpoint(request)
+  │   └─ CheckpointPriorityPolicy:
+  │       1. Filter ready checkpoints
+  │       2. Sort: depth DESC, oldestWait ASC
+  │       3. Return first (or null)
+  ├─ If null → WAIT decision
+  └─ If checkpoint → ADVANCE decision
+
+  TASK EXECUTION (per-decision, parallel)
+  │
+  ├─ checkpoint.pollTask() → get task
+  ├─ Resolve lane: PLATFORM (CPU count) or VIRTUAL (unbounded)
+  ├─ executor.dispatch(task, lane)
+  │   ├─ DUUIWorker.bindCurrent()
+  │   ├─ task.run() → Callable<R>
+  │   └─ DUUIWorker.unbindCurrent()
+  └─ Update checkpoint downstream signals
+
+  BACKPRESSURE FEEDBACK LOOP
+  │
+  ├─ Consumer saturated → downstreamWorkerAvailability ↓
+  ├─ Scheduler reads snapshot → deprioritizes saturated checkpoint
+  ├─ All saturated → WAIT → executor blocks/polls
+  └─ Consumer drains → availability ↑ → scheduler resumes

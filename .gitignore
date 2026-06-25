@@ -46,4 +46,6 @@ docs/javadoc/
 duui-core/target/*
 duui-base/target/*
 duui-dua/target/*
-/home/stud_homes/s0424382/projects/ttlab/duui-alpha/DockerUnifiedUIMAInterface/logs
+./logs
+.design/*
+.github/

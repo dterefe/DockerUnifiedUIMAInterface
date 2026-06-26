@@ -24,6 +24,88 @@ scheduler_overview:
     - "Destroyed when pipeline shuts down"
 
 # =============================================================================
+# PACKAGE ORGANIZATION — Keep Base Small And Named By Responsibility
+# =============================================================================
+
+package_organization:
+
+  base_rule: >
+    Package names describe one responsibility. The root telemetry package is
+    only the public facade and shared service surface; concrete concerns live
+    in subpackages.
+
+  telemetry:
+    root: "org.texttechnologylab.duui.base.telemetry"
+    contains:
+      - "DUUITelemetryService"
+      - "DUUITelemetryRegistry"
+    subpackages:
+      logging:
+        package: "org.texttechnologylab.duui.base.telemetry.logging"
+        owns:
+          - "DUUILogger"
+          - "DUUILog"
+          - "DUUILogVerbosity"
+          - "DUUIJULHandler"
+          - "DUUISeverity"
+        rule: "Everything that formats, emits, bridges, or classifies log records."
+
+      instrument:
+        package: "org.texttechnologylab.duui.base.telemetry.instrument"
+        owns:
+          - "DUUIInstrument"
+          - "DUUIMetric"
+          - "DUUIMetricKind"
+          - "DUUIMetricType"
+          - "DUUIInstrumentationScope"
+        rule: "Runtime instruments and metric event shapes. No snapshots here."
+
+      measurement:
+        package: "org.texttechnologylab.duui.base.telemetry.measurement"
+        owns:
+          - "DUUIMetricSpec"
+          - "DUUIMetricCatalog"
+          - "DUUIMeasuredValue"
+          - "DUUIResourceUseSnapshot"
+          - "DUUIPhaseIndicatorSnapshot"
+          - "DUUISchedulerObjectives"
+        rule: "Measurement model, catalog/specification types, and immutable snapshots."
+
+      context:
+        package: "org.texttechnologylab.duui.base.telemetry.context"
+        owns:
+          - "DUUIResourceContext"
+          - "DUUITraceContext"
+          - "DUUIPayload"
+          - "DUUIPayloadKind"
+        rule: "Correlation and payload context attached to logs, metrics, events, and traces."
+
+      event:
+        package: "org.texttechnologylab.duui.base.telemetry.event"
+        owns:
+          - "DUUIEvent"
+          - "DUUIEventKind"
+        rule: "Discrete lifecycle/runtime events that are not logs and not metrics."
+
+      sink:
+        package: "org.texttechnologylab.duui.base.telemetry.sink"
+        owns:
+          - "DUUITelemetrySink"
+        rule: "Exporter interfaces and sink implementations."
+
+  scheduler:
+    package: "org.texttechnologylab.duui.core.scheduler"
+    owns:
+      - "DUUIScheduler"
+      - "DUUISchedulerPolicy"
+      - "DUUISchedulingDecision"
+    imports_from_base:
+      - "telemetry.measurement.DUUISchedulerObjectives"
+      - "telemetry.instrument.DUUIMetric"
+      - "telemetry.context.DUUIResourceContext"
+    rule: "Scheduler makes decisions; telemetry records why. Scheduler does not own telemetry types."
+
+# =============================================================================
 # DATA STRUCTURES — What Flows Through
 # =============================================================================
 

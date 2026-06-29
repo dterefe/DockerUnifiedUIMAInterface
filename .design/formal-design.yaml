@@ -1,62 +1,616 @@
-# ═══════════════════════════════════════════════════════════════════════════
-# DUUI Formal Design Specification
-# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# DUUI Formal Design Specification v3.0
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Key architectural decisions:
+#   - DUUIBehaviour is ELIMINATED as a trait family. Its members (Loggable,
+#     Measurable, Traceable, etc.) remain as FIRST-CLASS DUUITraits directly
+#     under trait/behaviour/, but DUUIBehaviour.java is deleted.
+#   - DUUISpecification is the home for ALL declarative interfaces: lifecycle
+#     specifiers, resource specifiers, execution specifiers, phase specifiers.
+#   - DUUIProtocol is the home for composed API contracts — traits that bundle
+#     multiple protocol facets (e.g., a V1 annotator protocol that composes
+#     HTTP + XMI + Streaming).
+#   - Annotations drive registration: @ResourceSpecifier, @MetricSpec,
+#     @ResourcePhaseEvent, @Phase. The DUUIBuilder reads these and generates
+#     control-flow wrappers, telemetry collectors, and lifecycle hooks.
+#   - Phase annotations with explicit lifecycle guarantees: the second enum
+#     argument on @Phase determines whether the hook is STATELESS (always
+#     guaranteed by the framework) or STATEFUL (must be explicitly configured
+#     in the builder by the implementer).
 
 meta:
-  version: "2.0.0"
+  version: "3.0.0"
   date: "2026-06-25"
   principle: |
-    Everything is a trait. Entities compose traits. DUUIEntity<T extends DUUITrait>
-    is the single base class with shallow inheritance (DUUIEntity → DUUIManager).
-    DUUIManager enforces single-instance-per-DUUIRuntime. DUUIClient extends
-    DUUIManager — every client IS a manager, a singleton per runtime. Managed
-    entities are created ONLY through factories. Lifecycle via @Phase.
-    Telemetry via composable DUUIProfile with dot-separated namespacing.
-    DUUIScope<T> for try-with-resources builder scoping.
+    Traits compose entities. DUUIEntity<T extends DUUITrait> is the single base
+    class. DUUIManager<T> enforces singleton-per-runtime. DUUIClient extends
+    DUUIManager — every client IS a manager. Managed entities created ONLY
+    through factories. Lifecycle via @Phase. Telemetry via @ResourceSpecifier
+    annotations and DUUICollector lambdas. Protocol traits compose APIs.
+    Specifications declare what entities ARE. Control-flow traits declare what
+    entities CAN DO. DUUIBuilder generates wrappers from annotations.
 
-# ═══════════════════════════════════════════════════════════════
-# 1. TRAIT SYSTEM
-# ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. TRAIT SYSTEM — RESTRUCTURED
+# ═══════════════════════════════════════════════════════════════════════════════
 
 traits:
   DUUITrait:
-    description: "Root of ALL behavioural contracts."
-    families:
-      DUUIBehaviour:       "Loggable, Measurable, Traceable, Observable, Profilable, Versionable, Attributable, Indexable, Cacheable"
-      DUUIProtocol:        "HTTP, gRPC, UIMA, Streaming, MessagePack, Lua, XMI, JSON, FileSystem, ContainerRuntime, WebSocket, DUUIEndpoint"
-      DUUISpecification:   "Identity, Address, Resource, Capability, Contract, MetricSpec, Endpoint, Image, Scale"
-      DUUIPolicy:          "FailurePolicy, RetryPolicy, QuarantinePolicy, RateLimitPolicy, TimeoutPolicy, AdmissionPolicy, CircuitBreakerPolicy, ConcurrencyPolicy"
-      DUUIStrategy:        "SchedulingStrategy, RoutingStrategy, LoadBalancing, BackoffStrategy, CachingStrategy, DiscoveryStrategy"
-      DUUILifecycle:       "Creatable, Startable, Pausable, Stoppable, Restartable, Disposable, Failable, Retryable"
-      DUUIConcurrency:     "SingleThreaded, ThreadBound, Slot, Pooled, Unbounded, Virtual, Platform, Serialized, Partitioned"
+    description: "Root marker for ALL behavioural, declarative, and compositional contracts."
 
-# ═══════════════════════════════════════════════════════════════
-# 2. ENTITY BASE CLASSES — SHALLOW INHERITANCE
-# ═══════════════════════════════════════════════════════════════
+  # ── FAMILY: Protocol (API composition) ────────────────────────────────
+  protocol:
+    marker: "DUUIProtocol extends DUUITrait"
+    description: |
+      Protocol traits COMPOSE communication contracts. They bundle serialization
+      formats, transport mechanisms, and API contracts into reusable named
+      composites. Backend providers implement protocol traits rather than
+      subclassing. A single entity can implement multiple protocol traits.
+    members:
+      - HTTP              # REST semantics (GET/POST/PUT/DELETE)
+      - gRPC              # Bidirectional streaming RPC
+      - UIMA              # UIMA CAS analysis contract
+      - Streaming         # Chunked or continuous byte/data stream
+      - MessagePack       # Binary serialization format
+      - Lua               # Lua scripting interface
+      - XMI               # UIMA XMI serialization format
+      - JSON              # JSON serialization format
+      - FileSystem         # File I/O contract
+      - ContainerRuntime  # Docker/Podman/K8s lifecycle contract
+      - WebSocket         # Full-duplex persistent connection
+      - DUUIEndpoint      # Generic addressable endpoint (URI + HttpClient projection)
+
+    composites:
+      V1Annotator:
+        description: "Composed protocol for DUUI V1 annotator endpoints."
+        bundles: [HTTP, XMI, Streaming, DUUIEndpoint]
+      V1AnnotatorContainer:
+        description: "V1 annotator running in a container."
+        bundles: [HTTP, XMI, Streaming, DUUIEndpoint, ContainerRuntime]
+      LocalAnalysisEngine:
+        description: "In-process UIMA analysis engine."
+        bundles: [UIMA, XMI]
+      FileSystemProvider:
+        description: "Abstract file system backend."
+        bundles: [FileSystem, DUUIEndpoint]
+      MessageBusSubscriber:
+        description: "WebSocket subscriber with binary payload."
+        bundles: [WebSocket, MessagePack]
+
+  # ── FAMILY: Specification (declarative contracts) ─────────────────────
+  specification:
+    marker: "DUUISpecification extends DUUITrait"
+    description: |
+      Specifications declare WHAT an entity is. They are metadata contracts
+      consumed by the framework at initialization time. Specifications are
+      STATELESS — they carry no mutable state, only typed declarations.
+      The DUUIBuilder reads specification annotations to generate wrappers.
+    members:
+      - DUUILifecycleSpecifier   # Maps lifecycle enum values → DUUILifecycle primitives
+      - DUUIPhaseSpecifier       # Declares which @Phase methods an entity has
+      - DUUIResourceSpecifier    # Declares telemetry instruments via annotations
+      - DUUIExecutionSpecifier   # Declares execution bound (thread, pool, virtual)
+      - Identity                 # Unique GID declaration
+      - Address                  # Network-addressable location
+      - Capability               # Enumerated capability set
+      - Contract                 # Input/output type contract
+      - MetricSpec               # Single metric declaration (name + unit + type)
+      - Endpoint                 # URI endpoint declaration
+      - Image                    # Container image reference
+      - Scale                    # Replica/instance count specification
+      - EntityKind               # enum { ACTOR, ARTIFACT, RESOURCE, SERVICE }
+
+  # ── FAMILY: Control Flow (simple lambda-style interfaces) ─────────────
+  controlFlow:
+    marker: "All in trait/lifecycle/ — each extends DUUITrait"
+    description: |
+      Control-flow traits are SIMPLE, SINGLE-METHOD interfaces. They declare
+      WHAT an entity CAN DO. They can be registered manually during construction
+      or via similarly named annotations (@Startable, @Stoppable, etc.).
+      The DUUIBuilder generates control-flow wrappers from the declared
+      control-flow traits.
+    members:
+      Creatable:    "void create() — one-time initialization"
+      Startable:    "void start() — begin processing"
+      Pausable:     "void pause() — suspend without teardown"
+      Stoppable:    "void stop() — graceful shutdown"
+      Restartable:  "void restart() — stop then start atomically"
+      Disposable:   "void dispose() — release ALL resources"
+      Failable:     "void onFailure(Throwable) — failure callback"
+      Retryable:    "boolean shouldRetry(int attempt, Throwable) — retry predicate"
+      Resettable:   "void reset() — return to initial state"
+
+  # ── FAMILY: Behaviour (moved from DUUIBehaviour — marker class deleted) ─
+  behaviour:
+    description: |
+      DUUIBehaviour.java is DELETED. Its members remain as first-class
+      DUUITraits in trait/behaviour/. They are runtime behavioral contracts
+      recognized by DUUITelemetryService for auto-instrumentation.
+      NO intermediate marker interface needed — DUUITrait IS the marker.
+    members:
+      - Loggable        # Emits log events
+      - Measurable      # Exposes numeric metrics
+      - Traceable       # Produces spans/traces
+      - Observable      # Health-checkable, emits status
+      - Profilable      # Supports JFR/MXBean/Prometheus profiling
+      - Versionable     # Carries a version string
+      - Attributable    # Carries arbitrary key-value attributes
+      - Indexable       # Can be indexed by the entity registry
+      - Cacheable       # Supports caching with TTL
+
+  # ── FAMILY: Policy (decision contracts) ───────────────────────────────
+  policy:
+    marker: "DUUIPolicy extends DUUITrait"
+    members:
+      - FailurePolicy
+      - RetryPolicy
+      - QuarantinePolicy
+      - RateLimitPolicy
+      - TimeoutPolicy
+      - AdmissionPolicy
+      - CircuitBreakerPolicy
+      - ConcurrencyPolicy
+
+  # ── FAMILY: Strategy (algorithm contracts) ────────────────────────────
+  strategy:
+    marker: "DUUIStrategy extends DUUITrait"
+    members:
+      - SchedulingStrategy
+      - RoutingStrategy
+      - LoadBalancing
+      - BackoffStrategy
+      - CachingStrategy
+      - DiscoveryStrategy
+
+  # ── FAMILY: Concurrency (execution model) ─────────────────────────────
+  concurrency:
+    marker: "DUUIConcurrency extends DUUITrait"
+    members:
+      - SingleThreaded
+      - ThreadBound
+      - Slot
+      - Pooled
+      - Unbounded
+      - Virtual
+      - Platform
+      - Serialized
+      - Partitioned
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. DUUILIFECYCLE — CANONICAL STATE MACHINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+lifecycle:
+  DUUILifecycle:
+    description: |
+      Canonical lifecycle enum. Every entity state maps to exactly ONE of these
+      five primitives. The DUUIPhaseDescriptor interface requires implementing
+      enums to declare which primitive each phase constant belongs to.
+    values:
+      CREATION:    "Entity is being constructed or initialized"
+      ACTIVE:      "Entity is performing work"
+      INACTIVE:    "Entity exists but is idle, blocked, waiting, queued, or paused"
+      QUARANTINED: "Entity is in error-recovery: retrying, backoff, or observation"
+      TERMINAL:    "Entity has completed, failed, or been cancelled"
+
+    rules:
+      no_back_transitions:
+        description: "No transition from a later primitive to an earlier one."
+        detail: |
+          CREATION → ACTIVE/INACTIVE/QUARANTINED/TERMINAL  ✓
+          ACTIVE → INACTIVE/QUARANTINED/TERMINAL           ✓
+          INACTIVE → ACTIVE/QUARANTINED/TERMINAL           ✓
+          QUARANTINED → ACTIVE/INACTIVE/TERMINAL           ✓
+          TERMINAL → ANY                                    ✗
+      cycles_allowed:
+        description: "Cycles between ACTIVE, INACTIVE, and QUARANTINED ARE allowed."
+        detail: |
+          ACTIVE ⇄ INACTIVE        (pause/resume, block/unblock)
+          ACTIVE ⇄ QUARANTINED     (fail → retry → active)
+          INACTIVE ⇄ QUARANTINED   (queued → retry → queued)
+      terminal_absorbing:
+        description: "Once TERMINAL, no further transitions. Period."
+
+  # ── DUUILifecycleSpecifier ───────────────────────────────────────────
+  DUUILifecycleSpecifier:
+    extends: "DUUISpecification"
+    description: |
+      An enum MUST implement DUUILifecycleSpecifier and DUUIPhaseDescriptor.
+      Each enum constant maps to exactly one DUUILifecycle primitive value.
+      The DUUIBuilder reads this to determine which transitions are valid
+      and to generate the interceptor's behavior matrix.
+
+    contract: |
+      public interface DUUILifecycleSpecifier extends DUUISpecification {
+          /** The canonical lifecycle primitive for this specifier's domain states. */
+          DUUILifecycle[] primitives();
+
+          /** The domain this lifecycle governs. */
+          DUUILifecycle.Domain domain();
+
+          /** The implementing enum's constants. */
+          Enum<?>[] values();
+      }
+
+    example: |
+      public enum MyComponentLifecycle implements DUUILifecycleSpecifier {
+          INIT(DUUILifecycle.CREATION),
+          RUNNING(DUUILifecycle.ACTIVE),
+          PAUSED(DUUILifecycle.INACTIVE),
+          RECOVERING(DUUILifecycle.QUARANTINED),
+          DONE(DUUILifecycle.TERMINAL);
+      }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. DUUIPHASE — ANNOTATION-DRIVEN LIFECYCLE HOOKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+phase:
+  DUUIPhaseDescriptor:
+    description: |
+      Interface that ALL domain-specific phase enum constants MUST implement.
+      Every phase constant declares:
+        - Its DUUILifecycle primitive bucket (CREATION/ACTIVE/INACTIVE/QUARANTINED/TERMINAL)
+        - Its domain category (ACTOR/ARTIFACT/RESOURCE/SERVICE)
+      The DUUIPhaseInterceptor derives ALL runtime behavior — event emission,
+      timeline recording, metric collection, tracker attachment — from the
+      primitive alone. No hardcoded transition sequences.
+    contract: |
+      public interface DUUIPhaseDescriptor {
+          DUUILifecycle primitive();
+          DUUILifecycle.Domain domain();
+      }
+
+  DUUIPhaseSpecifier:
+    extends: "DUUISpecification"
+    description: |
+      A DUMMY marker interface. Its sole purpose is to be detected by the
+      DUUIPhaseInterceptor at framework initialization. The interceptor
+      scans all classes implementing DUUIPhaseSpecifier, discovers their
+      @Phase-annotated methods, and generates interceptor proxies.
+    contract: |
+      public interface DUUIPhaseSpecifier extends DUUISpecification {
+          // Marker — no methods. Implementers are discovered by the interceptor.
+      }
+
+  PhaseAnnotation:
+    description: |
+      Method-level annotation. MUST appear on methods of classes that implement
+      DUUIPhaseSpecifier. The value() is a DUUIPhaseDescriptor constant.
+      The guarantee() determines the contract strength.
+    definition: |
+      @Retention(RUNTIME) @Target(METHOD)
+      public @interface Phase {
+          /** The phase constant this method hooks into. */
+          DUUIPhaseDescriptor value();
+
+          /** Contract strength — what the framework guarantees vs what the user configures. */
+          PhaseGuarantee guarantee() default PhaseGuarantee.STATELESS;
+
+          /** Optional tracker classes to attach during this phase. */
+          Class<? extends DUUITracker>[] trackers() default {};
+      }
+
+  PhaseGuarantee:
+    description: |
+      Determines whether a phase hook is guaranteed by the framework or must
+      be explicitly configured by the implementer in the DUUIBuilder.
+    values:
+      STATELESS:
+        description: |
+          Framework GUARANTEES the hook will be called. The interceptor always
+          generates a wrapper for @Phase(guarantee=STATELESS) methods. Use for
+          lifecycle events that are always safe and side-effect-free: CREATED,
+          SCHEDULED, QUEUED, COMPLETED, CANCELLED.
+      STATEFUL:
+        description: |
+          The hook MUST be explicitly enabled in the DUUIBuilder configuration.
+          Use for phase hooks that modify external state, require resources,
+          or are domain-specific: STARTED (may require DB connection), FAILED
+          (may trigger alerts), RETRYING (may need backoff config).
+
+  canonicalPhases:
+    description: |
+      The complete set of phase constants. Every entity's lifecycle is a subset
+      of these. The DUUIPhaseInterceptor knows ALL of these and generates
+      interceptor slots for every one — but only activates slots for phases
+      that the implementing class actually annotates.
+    constants:
+      - { const: CREATED,    primitive: CREATION,    defaultGuarantee: STATELESS }
+      - { const: SCHEDULED,  primitive: INACTIVE,    defaultGuarantee: STATELESS }
+      - { const: QUEUED,     primitive: INACTIVE,    defaultGuarantee: STATELESS }
+      - { const: STARTED,    primitive: ACTIVE,      defaultGuarantee: STATEFUL  }
+      - { const: BLOCKED,    primitive: INACTIVE,    defaultGuarantee: STATELESS }
+      - { const: COMPLETED,  primitive: TERMINAL,    defaultGuarantee: STATELESS }
+      - { const: FAILED,     primitive: TERMINAL,    defaultGuarantee: STATEFUL  }
+      - { const: CANCELLED,  primitive: TERMINAL,    defaultGuarantee: STATELESS }
+      - { const: RETRYING,   primitive: QUARANTINED, defaultGuarantee: STATEFUL  }
+      - { const: TIMED_OUT,  primitive: QUARANTINED, defaultGuarantee: STATEFUL  }
+
+  interceptorBehavior:
+    description: |
+      The DUUIPhaseInterceptor behavior matrix — what happens automatically
+      based on the primitive value of the phase constant.
+    matrix:
+      CREATION:
+        emit: CREATED
+        trackers: none (duration tracking not meaningful during construction)
+        telemetry: increment counter
+      ACTIVE:
+        emit: [STARTED, PROFILE_BEGIN, PROFILE_END, COMPLETED]
+        trackers: [DurationTracker, ThreadStateTracker, any user-specified]
+        telemetry: [counter, histogram, timeline]
+      INACTIVE:
+        emit: [QUEUED, BLOCKED]
+        trackers: optional (user-specified only)
+        telemetry: gauge (queue depth, wait time)
+      QUARANTINED:
+        emit: [RETRYING, TIMED_OUT]
+        trackers: [DurationTracker]
+        telemetry: [counter (attempt), histogram (backoff duration)]
+      TERMINAL:
+        emit: [COMPLETED, FAILED, CANCELLED]
+        trackers: stop all running, record final
+        telemetry: [counter, histogram (total duration), snapshot]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. DUUIBUILDER — ANNOTATION-DRIVEN WRAPPER GENERATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+builder:
+  DUUIBuilder<T>:
+    description: |
+      Generated builder for a DUUIEntity subclass. The builder is generated
+      by the framework based on the entity's declared specifications:
+        - DUUIPhaseSpecifier → generates control-flow wrapper with @Phase slots
+        - DUUIResourceSpecifier → generates telemetry collector registration
+        - DUUIExecutionSpecifier → generates executor binding
+        - Control-flow traits → generates lambda registration slots
+    generation_rules:
+      phase_slots:
+        description: |
+          For each @Phase annotation on the entity class, the builder generates:
+            - STATELESS phases: NO builder method — the interceptor always calls them
+            - STATEFUL phases: a builder method to configure/override the hook
+          Example: .onStarted(Runnable)  .onFailed(Consumer<Throwable>)
+      resource_collectors:
+        description: |
+          For each @ResourceSpecifier annotation, the builder generates a
+          telemetry collector registration. The collector type (DUUITracker,
+          DUUIIntervalTracker, DUUIPhaseTracker) determines the collection
+          strategy. The @ResourcePhaseEvent annotation on a @Phase method
+          triggers automatic metric collection at that lifecycle point.
+      control_flow_slots:
+        description: |
+          For each control-flow trait the entity implements, the builder
+          generates a lambda setter. Example:
+            .onCreate(Runnable)   (Creatable)
+            .onStart(Runnable)    (Startable)
+            .onStop(Runnable)     (Stoppable)
+            .onFailure(Consumer<Throwable>)  (Failable)
+          These can alternatively be registered via annotations on the class.
+
+  builderLifecycle:
+    description: |
+      Generated builder flows:
+        1. Framework discovers entity class
+        2. Reads all specifications (phase, resource, execution)
+        3. Reads all control-flow trait implementations
+        4. Generates DUUIBuilder subclass with typed methods for each slot
+        5. Builder collects user configuration
+        6. .build() produces fully wired DUUIEntity subclass instance
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. DUUIResourceSpecifier — ANNOTATION-DRIVEN TELEMETRY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resourceSpecifier:
+  DUUIResourceSpecifier:
+    extends: "DUUISpecification"
+    description: |
+      Declares that an entity has resources whose footprint is of interest to
+      the telemetry system. Implementers use annotations to declare metrics,
+      their units, collection strategies, and phase-based collection points.
+      The DUUIBuilder processes these annotations during build().
+
+  annotations:
+    ResourceSpecifier:
+      description: |
+        FIELD-level annotation. Declares a named resource within the entity
+        whose metrics should be collected.
+      definition: |
+        @Retention(RUNTIME) @Target(FIELD)
+        public @interface ResourceSpecifier {
+            /** Human-readable name for this resource. Used in metric namespace. */
+            String name();
+
+            /** Optional description. */
+            String description() default "";
+        }
+
+    MetricSpec:
+      description: |
+        FIELD-level annotation. Declares a metric to collect for the resource.
+        Multiple MetricSpec annotations can appear on the same field (via
+        @MetricSpecs container).
+      definition: |
+        @Repeatable(MetricSpecs.class)
+        @Retention(RUNTIME) @Target(FIELD)
+        public @interface MetricSpec {
+            /** Metric name (dot-separated, e.g. "latency.p99"). */
+            String name();
+
+            /** Unit of measurement (e.g. "bytes", "milliseconds", "requests_per_sec"). */
+            String unit();
+
+            /** Instrument type. */
+            DUUITelemetryInstrument instrument();
+
+            /** Collection strategy. */
+            Class<? extends DUUICollector> collector() default DUUITracker.class;
+        }
+
+        @Retention(RUNTIME) @Target(FIELD)
+        public @interface MetricSpecs {
+            MetricSpec[] value();
+        }
+
+    ResourcePhaseEvent:
+      description: |
+        METHOD-level annotation. Placed alongside @Phase. Declares that at
+        this lifecycle point, the named resource's metrics should be collected.
+        The framework handles this automatically — the implementer just
+        declares the binding.
+      definition: |
+        @Retention(RUNTIME) @Target(METHOD)
+        public @interface ResourcePhaseEvent {
+            /** Name of the resource (must match a @ResourceSpecifier name on a field). */
+            String resource();
+        }
+
+  telemetryInstruments:
+    description: "The instrument type determines how the metric is stored and reported."
+    DUUITelemetryInstrument:
+      values:
+        DUUIHistogram:    "Distribution with configurable buckets. For latency, size."
+        DUUIGauge:        "Point-in-time value. For queue depth, active threads."
+        DUUITimeline:     "Time-series of events. For lifecycle transitions."
+        DUUIAggregator:   "Running aggregate (sum, avg, min, max). For throughput."
+        DUUIAccumulator:  "Monotonic counter. For bytes read, requests served."
+
+  collectors:
+    description: "Collection strategies determine WHEN and HOW a metric is sampled."
+    DUUICollector:
+      subtypes:
+        DUUITracker:
+          description: "Start/stop based. Caller calls tracker.start() and tracker.stop()."
+          interface: |
+            public interface DUUITracker extends DUUICollector {
+                void start();
+                void stop();
+            }
+        DUUIIntervalTracker:
+          description: "Interval-based with a supplier lambda to report the metric value."
+          interface: |
+            public interface DUUIIntervalTracker extends DUUICollector {
+                void start(Duration interval);
+                void stop();
+                double sample();  // Called by framework at each interval tick
+            }
+        DUUIPhaseTracker:
+          description: "Phase-event-driven. Called automatically at @ResourcePhaseEvent points."
+          interface: |
+            public interface DUUIPhaseTracker extends DUUICollector {
+                void onPhase(DUUIPhaseDescriptor phase, Instant timestamp);
+                double sample();
+            }
+
+  example:
+    description: "Entity with resource specifiers and phase-based collection."
+    code: |
+      @DUUIPhaseSpecifier
+      public class DUUIV1Annotator extends DUUIAnnotator<DUUIHandle.Endpoint> {
+
+          @ResourceSpecifier(name = "requestLatency")
+          @MetricSpec(name = "latency.p99", unit = "milliseconds",
+                       instrument = DUUITelemetryInstrument.DUUIHistogram,
+                       collector = DUUITracker.class)
+          @MetricSpec(name = "latency.avg", unit = "milliseconds",
+                       instrument = DUUITelemetryInstrument.DUUIHistoricalGauge,
+                       collector = DUUIIntervalTracker.class)
+          private final DUUITracker latencyTracker = new DUUITracker.DurationTracker();
+
+          @ResourceSpecifier(name = "throughput")
+          @MetricSpec(name = "documents.processed", unit = "count",
+                       instrument = DUUITelemetryInstrument.DUUIAccumulator,
+                       collector = DUUIPhaseTracker.class)
+          private long documentsProcessed = 0;
+
+          @Override
+          @Phase(V1_PROCESS_REQUEST, guarantee = PhaseGuarantee.STATEFUL)
+          @ResourcePhaseEvent(resource = "requestLatency")
+          @ResourcePhaseEvent(resource = "throughput")
+          public void process(InputStream cas) {
+              // DUUIPhaseInterceptor wraps this:
+              //   1. Creates DUUIPhase(V1_PROCESS_REQUEST)
+              //   2. Starts latencyTracker
+              //   3. Calls process(cas)
+              //   4. Stops latencyTracker, records histogram
+              //   5. Increments documentsProcessed
+              //   6. Records phase completion in timeline
+          }
+      }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. DUUIExecutionSpecifier — EXECUTION BOUNDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+executionSpecifier:
+  DUUIExecutionSpecifier:
+    extends: "DUUISpecification"
+    description: |
+      Declares HOW an entity should be executed. Specifies thread binding,
+      pool requirements, virtual thread eligibility, and isolation level.
+      The DUUIScheduler reads execution specifiers to assign tasks to the
+      correct executor.
+
+    contract: |
+      public interface DUUIExecutionSpecifier extends DUUISpecification {
+          /** The concurrency trait for this entity. */
+          DUIConcurrency concurrency();
+
+          /** Maximum concurrency (replicas/threads). -1 = unbounded. */
+          int maxConcurrency();
+
+          /** Whether this entity is eligible for virtual threads. */
+          boolean supportsVirtual();
+
+          /** Whether this entity must be isolated (dedicated thread/pool). */
+          boolean requiresIsolation();
+
+          /** Timeout for a single execution unit. */
+          Duration executionTimeout();
+      }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. ENTITY BASE CLASSES — SHALLOW INHERITANCE (unchanged from v2)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 entity:
   DUUIEntity<T extends DUUITrait>:
     description: "SINGLE base class for ALL domain objects."
     framework_managed:
-      - gid, traits, profile, timeline, lifecycleState (AtomicReference<String>)
-      - logger, primaryTraitClass (erasure-safe)
+      - gid
+      - traits            # DUUITraits container (single-set storage)
+      - profile            # DUUIProfile (composable, namespaced)
+      - timeline           # DUUITimeline (ordered list of DUUIPhase)
+      - lifecycleState     # AtomicReference<String>
+      - logger             # DUUILogger.of(this)
+      - primaryTraitClass  # Class<?> for erasure-safe is() check
     methods:
       - "has(Class): boolean — runtime trait check"
       - "get(Class): Optional<T> — retrieve trait"
       - "is(Class): boolean — erasure-safe via primaryTraitClass"
-      - "describe(): DUUIDescription — auto from traits"
-      - "builder(): DUUIBuilder — from description"
-      - "configuration(): DUIConfiguration<T> — validated snapshot"
+      - "describe(): DUUIDescription — auto-generated from traits"
+      - "builder(): DUUIBuilder — generated from specifications"
+      - "configuration(): DUUIConfiguration<T> — validated snapshot"
       - "wrap(Consumer<PhaseWrapper>, Supplier<R>): R — lambda injection hooks"
     lifecycle:
       - "doInitialize/doStart/doStop/doDispose create DUUIPhase in timeline"
-      - "validTransitions(): CREATED→INITIALIZING→READY→STARTING→RUNNING→STOPPING→STOPPED→DISPOSING→DISPOSED"
+      - "stateMachine: CREATION→ACTIVE→INACTIVE→QUARANTINED↻ ... →TERMINAL"
 
   DUUIManager<T extends DUUITrait> extends DUUIEntity<T>:
     description: |
       Runtime SINGLETONS — only ONE instance per concrete class per DUUIRuntime.
-      EVERY client IS a DUUIManager. The manager trait enforces single-instance
-      semantics. Initialized by DUUIOrchestrator from configuration.
+      EVERY client IS a DUUIManager. Initialized by DUUIOrchestrator.
     singleton: "ConcurrentHashMap<Class<?>, DUUIManager<?>> — putIfAbsent in constructor"
     contract:
       - "initialize(Object runtime): void — called once by DUUIOrchestrator"
@@ -66,389 +620,23 @@ entity:
       - "instance(Class<M>): M — retrieve singleton"
       - "exists(Class): boolean"
 
-  # NOTE: There is NO separate DUUIHandle type parameter on DUUIManager.
-  # DUUIManager does NOT emit a handle. The handle is a property of the
-  # concrete client subclass, not the manager base class.
 
-# ═══════════════════════════════════════════════════════════════
-# 3. CREATION — CENTRALIZED, TWO-TIER
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. SUMMARY OF CHANGES FROM v2 → v3
+# ═══════════════════════════════════════════════════════════════════════════════
 
-creation:
-  principle: |
-    ALL creation and management is centralized. Either the entity is a MANAGER
-    (extends DUUIManager — single instance per DUUIRuntime, initialized through
-    DUUIOrchestrator configuration) OR it's a MANAGED ENTITY (created ONLY
-    through factories, lifecycle via @Phase methods).
-
-  DUUIOrchestrator:
-    description: "Central orchestrator — initializes all DUUIManager singletons from config."
-    contract:
-      - "initializeManager(M): M — register a manager"
-      - "managers(): List<DUUIManager<?>>"
-      - "shutdown(): void — reverse-order shutdown"
-
-  managers:
-    description: "Entities extending DUUIManager — singletons per DUUIRuntime."
-    instances:
-      - "DUUITelemetryService     extends DUUIManager<Observable & Measurable & Traceable>"
-      - "DUUIEntityRegistry       extends DUUIManager<Indexable & Observable>"
-      - "DUUIScheduler            extends DUUIManager<SchedulingStrategy & Measurable & Observable>"
-      - "DUUIExecutorService      extends DUUIManager<Pooled & Virtual & Measurable & Observable>"
-      - "DUUIClient<H> (itself)   extends DUUIManager — every client IS a manager"
-
-  managed_entities:
-    description: "Created ONLY through factories. Lifecycle via @Phase."
-    examples:
-      - "DUUIAnnotator<H> — created by DUUIV1Driver or DUUIUIMADriver"
-      - "DUUIComponent<H,C,A> — created by ComponentFactory"
-      - "DUUIPipeline — created by PipelineBuilder.build()"
-
-# ═══════════════════════════════════════════════════════════════
-# 4. SEALED HANDLE HIERARCHY
-# ═══════════════════════════════════════════════════════════════
-
-handles:
-  DUUIHandle:
-    description: "SEALED interface extending DUUIService. Compiler knows every subtype."
-    subtypes:
-      Endpoint:        "(GID gid, URI uri, HttpClient client) — raw URL OR container projection"
-      AnalysisEngine:  "(GID gid, AnalysisEngine engine) — UIMA in-process"
-      FileSystem:      "(GID gid, Path root, boolean local)"
-      Container:       "(GID gid, String image, String containerId)"
-      Database:        "(GID gid, String url, String driver)"
-      HttpClient:      "(GID gid, HttpClient client)"
-      Process:         "(GID gid, long pid, String name)"
-
-# ═══════════════════════════════════════════════════════════════
-# 5. CLIENT HIERARCHY — DUUIClient EXTENDS DUUIManager
-# ═══════════════════════════════════════════════════════════════
-
-clients:
-  principle: |
-    DUUIClient<H extends DUUIHandle> extends DUUIManager<T>.
-    Every client IS a DUUIManager — a singleton per DUUIRuntime.
-    The manager base class enforces single-instance semantics.
-    Clients operate through sealed DUUIHandle subtypes.
-
-  # ── Root: DUUIClient extends DUUIManager ─────────────────────
-  DUUIClient<H extends DUUIHandle>:
-    description: "Top-level client contract. EXTENDS DUUIManager — singleton per runtime."
-    extends: "DUUIManager<...> (extends DUUIService is legacy — now DUUIManager)"
-    contract:
-      - "handle(): H — sealed handle this client operates through"
-      - "auth(): Object — authentication record"
-    manager_contract:
-      - "initialize(Object runtime): void — from DUUIManager"
-      - "shutdown(): void — from DUUIManager"
-      - "health(): DUUIResourceUseSnapshot — from DUUIManager"
-    singleton: "One instance per concrete client class per DUUIRuntime"
-
-  # ── Filesystem clients ───────────────────────────────────────
-  filesystem:
-    DUUIFileSystemClient:
-      description: "Filesystem contract. Extends DUUIClient<DUUIHandle.FileSystem> which extends DUUIManager."
-      extends: "DUUIClient<DUUIHandle.FileSystem>, AutoCloseable"
-      phases:
-        - "@Phase(V1_FILE_READ)  metadata(DUUILocator): DUUIFileMetadata"
-        - "@Phase(V1_FILE_READ)  file(DUUILocator): DUUIFile"
-        - "@Phase(V1_FILE_READ)  directory(DUUILocator): DUUIDirectory"
-        - "@Phase(V1_FILE_READ)  explorer(DUUILocator): DUUIExplorer"
-        - "@Phase(V1_FILE_READ)  read(DUUILocator): byte[]"
-        - "@Phase(V1_FILE_WRITE) write(DUUILocator, byte[]): void"
-        - "@Phase(V1_FILE_READ)  list(DUUILocator): List<DUUIFileMetadata>"
-      yaml: |
-        filesystem:
-          provider: LOCAL_FS | S3 | MINIO | GOOGLE_DRIVE | DROPBOX | NEXTCLOUD | MONGO_GRIDFS
-          root: /data or s3://bucket
-          readOnly: false
-    providers:
-      DUUILocalFSClient:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        phases: "@Phase on read, write, list, discover, traverse, delete"
-        yaml: |
-          localfs:
-            provider: LOCAL_FS
-            root: /data
-      DUUIS3Client:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        phases: "@Phase on read, write, list, traverse"
-        yaml: |
-          s3:
-            provider: S3
-            bucket: my-bucket
-      DUUIMinIOClient:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        yaml: |
-          minio:
-            provider: MINIO
-            endpoint: http://minio:9000
-      DUUIGoogleDriveClient:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        yaml: |
-          googledrive:
-            provider: GOOGLE_DRIVE
-            credentials: /secrets/gdrive.json
-      DUUIDropboxClient:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        yaml: |
-          dropbox:
-            provider: DROPBOX
-            token: ${DROPBOX_TOKEN}
-      DUUINextCloudClient:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        yaml: |
-          nextcloud:
-            provider: NEXTCLOUD
-            endpoint: https://nc.example.com
-      DUUIMongoGridFSClient:
-        extends: "DUUIFileSystemClient → DUUIClient<FileSystem> → DUUIManager"
-        yaml: |
-          mongogridfs:
-            provider: MONGO_GRIDFS
-            uri: mongodb://localhost:27017
-
-  # ── Virtualization clients ───────────────────────────────────
-  virtualization:
-    DUUIVirtualizationClient:
-      extends: "DUUIClient (abstract) → DUUIManager"
-      description: "Abstract base for container runtime clients."
-      yaml: |
-        virtualization:
-          kind: DOCKER | PODMAN | KUBERNETES | SWARM
-    runtimes:
-      DUUIDockerClient:
-        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
-        phases: "@Phase on pullImage, createContainer, startContainer, stopContainer, removeContainer"
-        yaml: |
-          docker:
-            engine: docker
-            registry: docker.io
-      DUUIPodmanClient:
-        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
-        phases: "@Phase on pullImage, createContainer, startContainer, stopContainer, removeContainer"
-        yaml: |
-          podman:
-            engine: podman
-            rootless: true
-      DUUIKubernetesClient:
-        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
-        phases: "@Phase on ensureImage, createDeployment, waitReady, deleteDeployment"
-        yaml: |
-          kubernetes:
-            engine: kubernetes
-            namespace: duui
-      DUUISwarmClient:
-        extends: "DUUIVirtualizationClient → DUUIClient → DUUIManager"
-        phases: "@Phase on pullImage, deployService, removeService"
-        yaml: |
-          swarm:
-            engine: swarm
-            network: overlay
-
-  # ── HTTP client ──────────────────────────────────────────────
-  http:
-    DUUIHttpClient:
-      extends: "DUUIClient<DUUIHandle.HttpClient> → DUUIManager"
-      phases:
-        - "@Phase(V1_SERIALIZE_REQUEST) get(URI, Map): DUUIHttpResponse"
-        - "@Phase(V1_ANALYSE_REQUEST) post(URI, byte[], Map): DUUIHttpResponse"
-      yaml: |
-        http:
-          baseUri: http://localhost:8080
-          timeout: 30s
-
-  # ── Database clients ─────────────────────────────────────────
-  database:
-    DUUIDatabaseClient:
-      extends: "DUUIClient<DUUIHandle.Database> → DUUIManager"
-      phases:
-        - "@Phase(V1_CONTAINER_CREATE) connect(): void"
-        - "@Phase(V1_SERIALIZE_REQUEST) execute(String): void"
-        - "@Phase(V1_DESERIALIZE_REQUEST) query(String): List"
-      yaml: |
-        database:
-          kind: SQLITE
-          url: jdbc:sqlite:/data/duui.db
-    DUUISqliteClient:
-      extends: "DUUIDatabaseClient → DUUIClient<Database> → DUUIManager"
-      phases: "@Phase on connect, executeUpdate, query"
-      yaml: |
-        sqlite:
-          kind: SQLITE
-          path: /data/duui.db
-          wal: true
-
-  # ── Telemetry profiler clients ───────────────────────────────
-  telemetry:
-    DUUIProfilerClient:
-      extends: "DUUIClient → DUUIManager"
-      description: "Profiler contract (interface extending DUUIClient)."
-      yaml: |
-        profiler:
-          kind: JFR | MXBEAN | PROMETHEUS
-    DUUIAbstractProfilerClient:
-      extends: "DUUIProfilerClient → DUUIClient → DUUIManager"
-    DUUIJfrClient:
-      extends: "DUUIAbstractProfilerClient → ... → DUUIManager"
-      phases: "@Phase on startRecording, stopRecording"
-      yaml: |
-        jfr:
-          settings: profile
-          maxSize: 250MB
-    DUUIMxBeanClient:
-      extends: "DUUIAbstractProfilerClient → ... → DUUIManager"
-      phases: "@Phase on collectMetrics"
-      yaml: |
-        jmx:
-          domains: [java.lang, java.nio]
-    DUUIPrometheusClient:
-      extends: "DUUIAbstractProfilerClient → ... → DUUIManager"
-      phases: "@Phase on pushMetrics, exportMetrics"
-      yaml: |
-        prometheus:
-          pushGateway: http://pushgateway:9091
-          job: duui
-
-# ═══════════════════════════════════════════════════════════════
-# 6. BUILDER SYSTEM — DUUIScope<T>, CHAINING, SUB-BUILDERS
-# ═══════════════════════════════════════════════════════════════
-
-builders:
-  principle: |
-    A SINGLE DUUIScope<T> type works for ALL builders (try-with-resources).
-    Builders can initiate sub-builders for sub-entities. Context-based
-    attachment composes builders. DUUIScope provides automatic cleanup.
-
-  DUUIScope<T extends AutoCloseable>:
-    description: "Generic RAII scope — single type for all builders."
-    usage: |
-      try (var scope = DUUIPipeline.scope()) {
-          var pipeline = scope.resource()
-              .v1("tokenizer").endpoint("http://tok:8080").add()
-              .v1("ner").image("ner:latest").docker().scale(4).add()
-              .build();
-          pipeline.run();
-      }
-
-  PipelineBuilder:
-    description: "Fluent builder for DUUIPipeline. Supports sub-builder chaining."
-    scope_entry: "DUUIPipeline.scope() → DUUIScope<PipelineBuilder>"
-    sub_builders:
-      - "v1(String id): DUUIV1ComponentBuilder"
-      - "uima(String id): DUUIUimaComponentBuilder"
-    chaining: |
-      PipelineBuilder.v1("name") → DUUIV1ComponentBuilder
-        .endpoint(url) / .image(img) / .docker() / .podman() / .kubernetes() / .swarm()
-        .scale(n) / .concurrency(n) / .timeout(d) / .retry(n,d) / .gpu(bool)
-        .add() → returns to PipelineBuilder
-
-  DUUIV1ComponentBuilder:
-    description: "Sub-builder for V1 annotator components."
-    methods:
-      - "endpoint(String): self"
-      - "image(String): self"
-      - "docker() / podman() / kubernetes() / swarm() / remote(): self"
-      - "scale(int): self"
-      - "concurrency(int): self"
-      - "view(String src, String tgt): self"
-      - "parameter(String k, String v): self"
-      - "header(String k, String v): self"
-      - "timeout(Duration): self"
-      - "retry(int tries, Duration delay): self"
-      - "gpu(boolean): self"
-      - "add(): PipelineBuilder — return to parent"
-
-  DUUIUimaComponentBuilder:
-    description: "Sub-builder for in-process UIMA components."
-    methods:
-      - "engine(AnalysisEngine): self"
-      - "scale(int): self"
-      - "add(): PipelineBuilder"
-
-# ═══════════════════════════════════════════════════════════════
-# 7. PROFILE SYSTEM — COMPOSABLE, NAMESPACED
-# ═══════════════════════════════════════════════════════════════
-
-profile:
-  principle: |
-    DUUIResourceSpecifier allows entities to specify telemetry instruments
-    and specs for resources they want tracked. All collected into DUUIProfile.
-    DUUIProfile composes sub-profiles hierarchically. During telemetry
-    observation and scheduler analysis, the profile is a TRANSPARENT WINDOW
-    to entity resource costs. All normalized via dot-separated namespacing.
-
-  DUUIProfile:
-    operations:
-      - "forEntity(DUUIEntity): DUUIProfile — factory"
-      - "merge(DUUIProfile): DUUIProfile — hierarchical, subordinate wins"
-      - "subProfiles(): List<DUUIProfile>"
-      - "flatten(): DUUIProfile — normalized dot-separated namespace"
-    namespacing: |
-      entity.<id>.cpu.utilization
-      entity.<id>.component.<cid>.replica.<n>.latency.p99
-      pipeline.<pid>.stage.<sid>.throughput.ops_per_sec
-
-  DUUIResourceSpecifier:
-    description: "Trait — entities declare instruments and resource specs."
-    contract:
-      - "resourceSpecs(): List<ResourceSpec>"
-      - "telemetryInstruments(): List<InstrumentSpec>"
-
-# ═══════════════════════════════════════════════════════════════
-# 8. TELEMETRY — AUTO-WIRED VIA TRAITS
-# ═══════════════════════════════════════════════════════════════
-
-telemetry_service:
-  DUUITelemetryService extends DUUIManager<Observable & Measurable & Traceable>:
-    description: "Singleton — auto-scans registry for telemetry traits."
-    auto_wiring:
-      Measurable:   "For each metricName → create COUNTER"
-      Observable:   "Create GAUGE for health"
-      Traceable:    "Create SPAN for tracing"
-      Loggable:     "Create COUNTER for log events"
-    contract:
-      - "autoInstrument(DUUIEntityRegistry): void"
-      - "autoInstrument(DUUIEntity<?>): void"
-      - "addSink(DUUITelemetrySink): void"
-
-# ═══════════════════════════════════════════════════════════════
-# 9. END-TO-END EXAMPLE
-# ═══════════════════════════════════════════════════════════════
-
-example:
-  yaml_config: |
-    pipeline:
-      id: biofid-nova
-      stages:
-        - component: tokenizer
-          environment: docker
-          image: docker.io/biofid/tokenizer:latest
-          endpoint: http://tokenizer:8080
-          scale: 4
-          concurrency: 2
-        - component: ner
-          environment: kubernetes
-          image: docker.io/biofid/ner:latest
-          scale: 2
-          gpu: true
-
-  java_usage: |
-    try (var scope = DUUIPipeline.scope("biofid-nova")) {
-        var pipeline = scope.resource()
-            .v1("tokenizer")
-                .image("docker.io/biofid/tokenizer:latest")
-                .endpoint("http://tokenizer:8080")
-                .docker().scale(4).concurrency(2)
-                .add()
-            .v1("ner")
-                .image("docker.io/biofid/ner:latest")
-                .kubernetes().scale(2).gpu(true)
-                .add()
-            .build();
-
-        pipeline.wrap(phase -> phase
-            .before(() -> log.info("Starting"))
-            .onFailure(e -> log.error("Failed", e)),
-            pipeline::run);
-    }
+changes:
+  - "ELIMINATED DUUIBehaviour marker interface — members are first-class DUUITraits"
+  - "DUUISpecification is now the home for ALL declarative interfaces: LifecycleSpecifier, PhaseSpecifier, ResourceSpecifier, ExecutionSpecifier"
+  - "DUUIProtocol now explicitly composes APIs — protocol traits bundle format+transport contracts"
+  - "DUUILifecycle expanded from 4 to 5 primitives: added QUARANTINED for error-recovery states"
+  - "DUUILifecycleSpecifier: enum-based, requires explicit mapping to DUUILifecycle primitives"
+  - "DUUIPhaseSpecifier: dummy marker for interceptor discovery"
+  - "PhaseGuarantee enum: STATELESS (always guaranteed) vs STATEFUL (builder-configured)"
+  - "Canonical phases: CREATED→SCHEDULED→QUEUED→STARTED→BLOCKED→COMPLETED→FAILED→CANCELLED→RETRYING→TIMED_OUT"
+  - "DUUIBuilder generates control-flow wrappers from @Phase annotations + PhaseGuarantee"
+  - "DUUIResourceSpecifier: field annotation, name → MetricSpec(varargs) → instrument type + unit + collector"
+  - "DUUICollector subtypes: DUUITracker (start/stop), DUUIIntervalTracker (interval+supplier), DUUIPhaseTracker (phase-event-driven)"
+  - "@ResourcePhaseEvent: method annotation, triggers metric collection at @Phase points — auto-handled by framework"
+  - "DUUIExecutionSpecifier: declares concurrency model, virtual thread eligibility, isolation, timeout"
+  - "Control-flow traits (Creatable..Resettable) remain as simple lambda interfaces, registrable via annotations or builder"

@@ -2,6 +2,10 @@
 	path = duui-base
 	url = ./duui-base
 	branch = dev-rework
+[submodule "duui-async"]
+	path = duui-async
+	url = ./duui-async
+	branch = dev-rework
 [submodule "duui-storage"]
 	path = duui-storage
 	url = ./duui-storage

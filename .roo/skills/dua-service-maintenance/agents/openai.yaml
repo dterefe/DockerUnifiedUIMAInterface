@@ -1,4 +1,0 @@
-interface:
-  display_name: "DUA Service Maintenance"
-  short_description: "Maintain BioFID DUA service safely"
-  default_prompt: "Use the DUA service maintenance workflow to patch, rebuild, restart, and verify the current BioFID DUA service without interrupting the importer."
